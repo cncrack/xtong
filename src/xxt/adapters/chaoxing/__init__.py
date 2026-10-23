@@ -77,3 +77,28 @@ class ChaoxingAdapter(PlatformAdapter):
         courses = parse_course_cards(holder["body"])
         log.info("课程抓取完成：%d 门", len(courses))
         return courses
+
+    def fetch_chapters(self, course_row: dict[str, Any], state_path: Path) -> list[dict[str, Any]]:
+        """进入课程章节页，抓取章节树叶子节点（一次导航 + 一次章节导航点击）。"""
+        from playwright.sync_api import sync_playwright
+
+        from .chapters import parse_chapter_tree
+        from .study import find_frame_with, open_chapter_frame
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=str(state_path))
+            page = context.new_page()
+            try:
+                tree_frame = open_chapter_frame(page, course_row["url"])
+                html = tree_frame.evaluate(
+                    "(document.querySelector('#fanyaChapter') || document.body).outerHTML"
+                )
+                if "passport2.chaoxing.com" in page.url:
+                    raise RuntimeError("会话已失效，请先执行 xxt login")
+                context.storage_state(path=str(state_path))  # 滚动续期
+            finally:
+                browser.close()
+        chapters = parse_chapter_tree(html)
+        log.info("章节抓取完成：%d 个叶子节点", len(chapters))
+        return chapters

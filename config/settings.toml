@@ -17,12 +17,25 @@ base_url = "https://open.bigmodel.cn/api/paas/v4/"
 model = "glm-4-flash"
 
 [learn]
-# 播放倍速：不要超过 1.25，高倍速是平台风控重点。
+# 播放倍速：不要超过 1.25，高倍速是平台风控重点（实际值在 [pace].speed_range 内随机）。
 speed = 1.0
-# 操作间随机延迟（秒），拟人化。
-random_delay = [2, 8]
 # 每账号每日学习时长上限（分钟），0 = 不限制。
 daily_max_minutes = 240
+
+[pace]
+# 拟人化节奏（PLAN §5.5）：全部为区间，运行时按分布抽样，代码禁止固定 sleep。
+# 切节间隔三档：约 70% 连看 / 20% 短歇 / 10% 离开
+gap_browse = [3, 15]
+gap_short = [30, 90]
+gap_away = [180, 600]
+gap_weights = [70, 20, 10]
+# 专注会话：连续学习 X 分钟后休息 Y 分钟
+focus_minutes = [25, 60]
+rest_minutes = [5, 15]
+# 学习时段窗口（本地时间），窗口外不学习
+daily_window = ["08:00", "23:00"]
+# 播放倍速区间（每个视频随机取一次）
+speed_range = [1.0, 1.25]
 
 [quiz]
 # 弹题 AI 作答（P2 功能，计分项）。默认关闭：P0/P1 阶段弹题按平台默认行为处理。

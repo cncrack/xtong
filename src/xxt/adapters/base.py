@@ -24,5 +24,8 @@ class PlatformAdapter(ABC):
     def fetch_courses(self, state_path: Path) -> list[dict[str, Any]]:
         """抓取课程列表，返回 [{platform_course_id, name, url}]。"""
 
-    # M2/M3 按里程碑补充接口：
-    # iter_chapters(course) / play_video(chapter) / read_popup_quiz() / submit_answer()
+    @abstractmethod
+    def fetch_chapters(self, course_row: dict[str, Any], state_path: Path) -> list[dict[str, Any]]:
+        """抓取课程章节树叶子节点，返回 [{platform_chapter_id, name, idx, done_on_platform}]。"""
+
+    # M2+ 接口：学习运行器（study.StudyRunner）直接在平台包内实现，不经本抽象调用

@@ -22,3 +22,6 @@ xxt = "xxt.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"xxt.adapters.chaoxing" = ["watcher.js"]

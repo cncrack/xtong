@@ -23,8 +23,17 @@ DEFAULTS: dict[str, Any] = {
     },
     "learn": {
         "speed": 1.0,
-        "random_delay": [2, 8],
         "daily_max_minutes": 240,
+    },
+    "pace": {
+        "gap_browse": [3, 15],
+        "gap_short": [30, 90],
+        "gap_away": [180, 600],
+        "gap_weights": [70, 20, 10],
+        "focus_minutes": [25, 60],
+        "rest_minutes": [5, 15],
+        "daily_window": ["08:00", "23:00"],
+        "speed_range": [1.0, 1.25],
     },
     "quiz": {"enabled": False, "mode": "semi"},
     "stealth": {"headless": True},
@@ -67,6 +76,7 @@ class Settings:
         self.platform: dict[str, Any] = data["platform"]
         self.llm: dict[str, Any] = data["llm"]
         self.learn: dict[str, Any] = data["learn"]
+        self.pace: dict[str, Any] = data["pace"]
         self.quiz: dict[str, Any] = data["quiz"]
         self.stealth: dict[str, Any] = data["stealth"]
 
