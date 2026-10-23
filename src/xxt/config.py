@@ -36,6 +36,11 @@ DEFAULTS: dict[str, Any] = {
         "speed_range": [1.0, 1.25],
     },
     "quiz": {"enabled": False, "mode": "semi"},
+    "quota": {
+        "daily_minutes": 240,
+        "daily_tasks": 60,
+        "float_ratio": [0.7, 1.0],
+    },
     "stealth": {"headless": True},
 }
 
@@ -78,6 +83,7 @@ class Settings:
         self.learn: dict[str, Any] = data["learn"]
         self.pace: dict[str, Any] = data["pace"]
         self.quiz: dict[str, Any] = data["quiz"]
+        self.quota: dict[str, Any] = data["quota"]
         self.stealth: dict[str, Any] = data["stealth"]
 
     @property

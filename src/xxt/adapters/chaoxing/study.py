@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.pace import FocusTimer, sample_gap, sample_speed, within_daily_window
+from ...core.quota import sample_daily_budget
 from ...log import get_logger
 
 log = get_logger("chaoxing.study")
@@ -59,6 +60,17 @@ def current_task_title(page) -> str:
         return fr.locator(".prev_title").first.inner_text(timeout=3_000).strip()
     except Exception:
         return ""
+
+
+def match_chapter_id(conn, course_id: int, title: str) -> int | None:
+    """用旧版页任务标题模糊匹配章节库记录（如"尽快适应大学生活（上）"→ 2.1 记录 id）。"""
+    if not title:
+        return None
+    row = conn.execute(
+        "SELECT id FROM chapters WHERE course_id = ? AND name LIKE ? LIMIT 1",
+        (course_id, f"%{title}%"),
+    ).fetchone()
+    return row["id"] if row else None
 
 
 class StudyRunner:
@@ -173,28 +185,57 @@ class StudyRunner:
                 log.info("进入知识点：%s（%s）", leaf_name, kid)
                 tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 
-                # 旧版页循环：视频 → next → 视频 …
+                # 旧版页循环：视频 → next → 视频 …（受 limit / 每日双额度 / 时段窗口三重约束）
+                budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
+                log.info("当日额度：时长 %.0f 分钟 / 任务 %s 个（任一达标即停）",
+                         budget_minutes, budget_tasks or "不限")
+                study_start: float | None = None
                 no_video_streak, next_frame = 0, None
                 while limit is None or stats["videos"] < limit:
                     if not window_ok():
                         stats["stop_reason"] = "超出每日学习时段"
                         break
-                    video_frame = find_frame_with(page, "video", timeout_s=25)
-                    if video_frame is not None:
-                        no_video_streak = 0
-                        title = current_task_title(page) or leaf_name
-                        if self._play_video(page, video_frame, title):
-                            stats["videos"] += 1
-                            self.conn.execute(
-                                "INSERT INTO run_logs(ts, level, event, detail) VALUES(?,?,?,?)",
-                                (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                 "video-done", f"{course_row['name']}｜{title}"),
-                            )
-                            self.conn.commit()
-                    else:
+                    if budget_tasks and stats["videos"] >= budget_tasks:
+                        stats["stop_reason"] = "任务数额度达标"
+                        break
+                    if budget_minutes and study_start is not None and \
+                            (time.monotonic() - study_start) / 60 >= budget_minutes:
+                        stats["stop_reason"] = "时长额度达标"
+                        break
+                    try:
+                        video_frame = find_frame_with(page, "video", timeout_s=25)
+                        if video_frame is not None:
+                            no_video_streak = 0
+                            if study_start is None:
+                                study_start = time.monotonic()
+                            title = current_task_title(page) or leaf_name
+                            if self._play_video(page, video_frame, title):
+                                stats["videos"] += 1
+                                self.conn.execute(
+                                    "INSERT INTO run_logs(ts, level, event, detail) VALUES(?,?,?,?)",
+                                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
+                                     "video-done", f"{course_row['name']}｜{title}"),
+                                )
+                                # 经"下一节"推进的知识点按任务标题精确落库
+                                cid = match_chapter_id(self.conn, course_row["id"], title)
+                                if cid is not None:
+                                    self.conn.execute(
+                                        "UPDATE chapters SET status='done' WHERE id=?", (cid,)
+                                    )
+                                self.conn.commit()
+                        else:
+                            no_video_streak += 1
+                            if no_video_streak >= 2:
+                                stats["stop_reason"] = "连续无视频任务点，本段结束"
+                                break
+                    except RuntimeError:
+                        raise  # 管道失效等致命错误仍走安全中止
+                    except Exception as exc:
+                        # 单视频异常不终结会话：记失败、跳过、按节奏继续
+                        log.error("视频处理异常（跳过继续）：%r", exc)
                         no_video_streak += 1
-                        if no_video_streak >= 2:
-                            stats["stop_reason"] = "连续无视频任务点，本段结束"
+                        if no_video_streak >= 3:
+                            stats["stop_reason"] = "连续异常过多，中止"
                             break
 
                     # 切下一任务点（旧版页的"下一节"按钮）
