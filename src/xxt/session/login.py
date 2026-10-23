@@ -78,11 +78,14 @@ def probe_session(space_url: str, state_path: Path) -> str:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(storage_state=str(state_path))
         page = context.new_page()
+        state = "invalid"
         try:
             page.goto(space_url, wait_until="domcontentloaded", timeout=30_000)
             final_url = page.url
+            # 未登录访问学习空间会被重定向到 passport 登录页，视为会话失效
+            if "passport2.chaoxing.com" not in final_url and "login" not in final_url.lower():
+                state = "valid"
+                context.storage_state(path=str(state_path))  # 滚动续期（PLAN §5.1）
         finally:
             browser.close()
-    if "passport2.chaoxing.com" in final_url or "login" in final_url.lower():
-        return "invalid"
-    return "valid"
+    return state

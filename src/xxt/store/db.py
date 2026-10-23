@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS courses (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id         INTEGER NOT NULL REFERENCES accounts(id),
     platform_course_id TEXT,
+    clazz_id           TEXT,
     name               TEXT NOT NULL,
     url                TEXT,
     UNIQUE (account_id, platform_course_id)
@@ -69,6 +70,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
+    # 轻量迁移：老库补列（v2：courses.clazz_id）
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(courses)")}
+    if "clazz_id" not in cols:
+        conn.execute("ALTER TABLE courses ADD COLUMN clazz_id TEXT")
     with conn:
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",

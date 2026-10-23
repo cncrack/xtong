@@ -1,16 +1,14 @@
 """学习通页面选择器集中配置。
 
-⚠️ 以下选择器为初始猜测，尚未实况核对——计划在登录可用后用浏览器实况会话
-逐一验证并修正（届时更新本文件与 devlog）。平台改版时优先只改此文件，
-不要把选择器散落到业务代码里。
-"""
+✅ 已实况核对（2026-10-24，方法：scripts/recon_space.py 转储真实页面/接口）：
+  - 课程列表：不走 DOM，走页面自身 XHR `mooc2-ans visit/courselistdata`（HTML 片段），
+    片段内选择器：卡片 `div.course[id^=c_]`、`input.courseId/.clazzId/.curPersonId`、
+    课程名 `.course-name`、入口链接 `a[href]` —— 见 courses.py
+  - 登录成功信号：`uid` / `_uid` / `vc3` 任一带值 cookie（passport2 登录后写入）
 
-SELECTORS = {
-    # 学习空间课程列表
-    "course_card": ".course-info",       # 课程卡片容器（待核对）
-    "course_name": ".course-name",       # 课程名（待核对）
-    # 章节树 / 任务点（M1 核对）
-    "chapter_tree": ".chapter_course",
-    # 视频内弹题容器（M3 核对）
-    "quiz_popup": "[id^='pop']",
-}
+⚠️ 未实况核对（M2 需要时再验证）：
+  - 章节树 / 任务点 / 视频元素（嵌套 iframe 内）
+  - 视频内弹题容器（P2 的事）
+
+平台改版时：先重跑 scripts/recon_space.py 核对，再更新本文件与 courses.py。
+"""
