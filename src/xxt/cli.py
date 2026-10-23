@@ -147,16 +147,28 @@ def cmd_chapters(args: argparse.Namespace) -> int:
 
 
 def cmd_learn(args: argparse.Namespace) -> int:
+    import random as _random
+
     from .adapters.chaoxing.study import StudyRunner
+    from .core.rotation import pick_courses
     from .store.db import connect
 
     s = _settings(args)
     conn = connect(s.db_path)
     try:
-        course = _pick_course(conn, args.course)
-        if course is None:
-            print(f"[FAIL] 未找到课程：{args.course}（先跑 xxt courses）")
-            return 1
+        if args.course:
+            course = _pick_course(conn, args.course)
+            if course is None:
+                print(f"[FAIL] 未找到课程：{args.course}（先跑 xxt courses）")
+                return 1
+        else:
+            # v0.8 课程轮换：优先级 × 未完成度 加权随机（一次会话主学 1 门）
+            picks = pick_courses(conn, _random.Random(), s.rotation, count=1)
+            if not picks:
+                print("[..] 没有可学的课程（章节库为空或已全部完成，先跑 xxt courses / chapters）")
+                return 1
+            course = picks[0]
+            print(f"[轮换选课] 今日主学：《{course['name']}》")
         runner = StudyRunner(s, s.default_state_path, conn)
         stats = runner.run(dict(course), limit=args.limit, ignore_window=args.ignore_window)
         summary = f"学习会话结束：视频 {stats['videos']} 个；原因：{stats['stop_reason'] or '达到 limit'}"
@@ -165,6 +177,48 @@ def cmd_learn(args: argparse.Namespace) -> int:
         return 0
     finally:
         conn.close()
+
+
+def cmd_progress(args: argparse.Namespace) -> int:
+    import time as _time
+
+    from .store.db import connect
+
+    s = _settings(args)
+    conn = connect(s.db_path)
+    try:
+        sql = """
+            SELECT c.name,
+                   (SELECT COUNT(*) FROM chapters h WHERE h.course_id = c.id) AS total,
+                   (SELECT COUNT(*) FROM chapters h WHERE h.course_id = c.id
+                      AND h.status = 'done') AS done
+            FROM courses c WHERE c.account_id = 1 ORDER BY c.id
+        """
+        params: tuple = ()
+        if args.course:
+            row = _pick_course(conn, args.course)
+            if row is None:
+                print(f"[FAIL] 未找到课程：{args.course}")
+                return 1
+            sql = ("SELECT c.name, "
+                   "(SELECT COUNT(*) FROM chapters h WHERE h.course_id = c.id) AS total, "
+                   "(SELECT COUNT(*) FROM chapters h WHERE h.course_id = c.id AND h.status = 'done') AS done "
+                   "FROM courses c WHERE c.id = ?")
+            params = (row["id"],)
+        rows = conn.execute(sql, params).fetchall()
+        today = _time.strftime("%Y-%m-%d")
+        today_videos = conn.execute(
+            "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
+            (f"{today}%",),
+        ).fetchone()["c"]
+        print(f"今日已完成视频：{today_videos} 个")
+        for r in rows:
+            total = r["total"]
+            pct = (r["done"] / total * 100) if total else 0.0
+            print(f"  《{r['name']}》 {r['done']}/{total}（{pct:.0f}%）")
+    finally:
+        conn.close()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,11 +234,14 @@ def main(argv: list[str] | None = None) -> int:
     p_ch = sub.add_parser("chapters", help="抓取指定课程的章节树并入库")
     p_ch.add_argument("course", help="课程名（支持模糊）或 courseid")
 
-    p_learn = sub.add_parser("learn", help="自动学习指定课程（视频真实播放，拟人节奏）")
-    p_learn.add_argument("course", help="课程名（支持模糊）或 courseid")
+    p_learn = sub.add_parser("learn", help="自动学习（不带课程名则按轮换策略自动选课）")
+    p_learn.add_argument("course", nargs="?", default=None, help="课程名（支持模糊）或 courseid，可省略")
     p_learn.add_argument("--limit", type=int, default=None, help="本次最多播放的视频数")
     p_learn.add_argument("--ignore-window", action="store_true",
                          help="忽略每日学习时段限制（仅限验收测试）")
+
+    p_prog = sub.add_parser("progress", help="查看各课程完成进度与今日学习量")
+    p_prog.add_argument("course", nargs="?", default=None, help="课程名或 courseid（可省略）")
 
     args = parser.parse_args(argv)
     handlers = {
@@ -194,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         "courses": cmd_courses,
         "chapters": cmd_chapters,
         "learn": cmd_learn,
+        "progress": cmd_progress,
     }
     try:
         return handlers[args.command](args)

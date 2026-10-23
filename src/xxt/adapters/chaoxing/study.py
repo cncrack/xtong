@@ -159,6 +159,11 @@ class StudyRunner:
         stats = {"videos": 0, "leaves": 0, "stop_reason": ""}
         if ignore_window:
             log.warning("已忽略每日学习时段限制（--ignore-window，仅限验收测试用）")
+        elif not within_daily_window(self.pace):
+            # 时段检查必须在任何浏览器动作之前——窗口外连课程页都不应访问
+            stats["stop_reason"] = "超出每日学习时段"
+            log.info("拒绝启动：%s", stats["stop_reason"])
+            return stats
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(storage_state=str(self.state_path))
@@ -181,14 +186,27 @@ class StudyRunner:
                 kid, leaf_name = pending["platform_chapter_id"], pending["name"]
                 if not window_ok():
                     stats["stop_reason"] = "超出每日学习时段"
-                    return stats
+                    return stats  # 此处为会话中途越窗（browser 已开），交由 finally 收尾
+
+                # v0.10 额度口径：账号×天。任务数扣除当日已完成；时长跨会话累计待 P1 调度器
+                budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
+                today = time.strftime("%Y-%m-%d")
+                done_today = self.conn.execute(
+                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
+                    (f"{today}%",),
+                ).fetchone()["c"]
+                if budget_tasks:
+                    budget_tasks = max(0, budget_tasks - done_today)
+                    if budget_tasks == 0:
+                        stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today} 个）"
+                        log.info("拒绝启动：%s", stats["stop_reason"])
+                        return stats
+                log.info("当日剩余额度：时长 %.0f 分钟 / 任务 %s 个（任一达标即停）",
+                         budget_minutes, budget_tasks or "不限")
                 log.info("进入知识点：%s（%s）", leaf_name, kid)
                 tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 
                 # 旧版页循环：视频 → next → 视频 …（受 limit / 每日双额度 / 时段窗口三重约束）
-                budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
-                log.info("当日额度：时长 %.0f 分钟 / 任务 %s 个（任一达标即停）",
-                         budget_minutes, budget_tasks or "不限")
                 study_start: float | None = None
                 no_video_streak, next_frame = 0, None
                 while limit is None or stats["videos"] < limit:

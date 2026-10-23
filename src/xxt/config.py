@@ -41,6 +41,10 @@ DEFAULTS: dict[str, Any] = {
         "daily_tasks": 60,
         "float_ratio": [0.7, 1.0],
     },
+    "rotation": {
+        "courses_per_day": [1, 3],
+        "priorities": {},
+    },
     "stealth": {"headless": True},
 }
 
@@ -84,6 +88,7 @@ class Settings:
         self.pace: dict[str, Any] = data["pace"]
         self.quiz: dict[str, Any] = data["quiz"]
         self.quota: dict[str, Any] = data["quota"]
+        self.rotation: dict[str, Any] = data["rotation"]
         self.stealth: dict[str, Any] = data["stealth"]
 
     @property
