@@ -1,0 +1,35 @@
+# XXT 配置。敏感信息（API Key、密码）一律放环境变量，不写在这里。
+
+[app]
+# 数据目录（相对项目根）：数据库、账号会话、日志都放这里
+data_dir = "data"
+
+[platform]
+name = "chaoxing"
+login_url = "https://passport2.chaoxing.com/login"
+space_url = "https://i.chaoxing.com/"
+
+[llm]
+# OpenAI 兼容接口，GLM / DeepSeek / Qwen / 本地模型均可，换厂商只改 base_url 和 model。
+# API Key 从环境变量 XXT_LLM_API_KEY 读取，不落盘。
+provider = "glm"
+base_url = "https://open.bigmodel.cn/api/paas/v4/"
+model = "glm-4-flash"
+
+[learn]
+# 播放倍速：不要超过 1.25，高倍速是平台风控重点。
+speed = 1.0
+# 操作间随机延迟（秒），拟人化。
+random_delay = [2, 8]
+# 每账号每日学习时长上限（分钟），0 = 不限制。
+daily_max_minutes = 240
+
+[quiz]
+# 弹题 AI 作答（P2 功能，计分项）。默认关闭：P0/P1 阶段弹题按平台默认行为处理。
+enabled = false
+# semi = AI 只填入建议答案、人工确认后提交；auto = 全自动提交。P2 启用时先 semi 校准正确率。
+mode = "semi"
+
+[stealth]
+# 刷课执行时是否无头。首次登录始终使用有头模式（需要人工操作）。
+headless = true
