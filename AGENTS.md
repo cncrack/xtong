@@ -48,6 +48,6 @@
 
 - 阶段：P0 进行中。**M0 完成**（骨架/配置/SQLite/日志/CLI 可用，测试 2/2）；**M1 登录+会话探测模块已写**，待实机验证；课程抓取待实况核对选择器后实现
 - 方案：v0.4——视频执行=外层 Playwright 编排 + 页内 watcher（复用 xuexitongScript 经验重构，见 PLAN.md §5.3/§5.8）；M2 须按"上报-决策"模式实现，节奏全部走配置区间，**禁止固定延时**；登录防封遵循 §5.1（滚动续期/登录预算制/长会话）
-- 环境：Windows + Python 3.11；venv 在 `.venv/`；CLI 入口 `xxt`（init / login / status）；v0.4 基线 commit 已建立
+- 环境：Windows + Python 3.11；venv 在 `.venv/`；CLI 入口 `xxt`（init / login / status）；v0.4 基线 commit 已建立并**推送至远端 `cncrack/xtong`（main，SSH 别名通道）**；git 提交身份=工作账号（仓库级配置；账号与推送细节见 `data/git-remote.md`，该文件不入库）
 - ⏳ **等用户**：`.venv\Scripts\activate` → `xxt login`（人工登录学习通）→ `xxt status`，把两条命令的输出反馈给 AI
 - AI 下一步（收到登录结果即启动 M1 后半段）：① 实况核对课程页/章节树选择器，实现 `fetch_courses` ② 凭据加密入库 + 滚动续期/自动重登（遵循 §5.1 登录预算制）③ M2 视频自动播放（按 §5.3/§5.8 上报-决策混合架构，禁止固定延时；**弹题是 P2 的事，勿提前实现**）
