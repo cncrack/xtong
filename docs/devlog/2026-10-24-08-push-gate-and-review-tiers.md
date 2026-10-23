@@ -25,7 +25,14 @@
 
 - 新增 `scripts/push_check.py` — push 门禁脚本（纯标准库，Windows/Docker 双形态可用）
 - 修改 `AGENTS.md` — 新增"代码审查三级门禁"专节；"收尾原子化"补推送门禁前置条件
+- 修改 `pyproject.toml` — 新增 `dev` 依赖组（`pytest>=8`）
 - 新增 `docs/devlog/2026-10-24-08-push-gate-and-review-tiers.md` — 本记录
+
+## 门禁首跑发现并修复的两个问题
+
+1. **脚本 bug**：pytest 失败原先未计入拦截项（会错误输出 PASS）——已修，测试不过即 FAIL；
+2. **环境缺陷**：`.venv` 未安装 pytest（此前"测试 2/2"是用非 venv 解释器跑的）——已 `pip install pytest` 入 venv，并写入 pyproject dev 组，新环境用 `pip install -e .[dev]` 可复现。
+   门禁用 venv 解释器跑测试，从今往后测试结果以 venv 为准。
 
 ## 交接块
 
