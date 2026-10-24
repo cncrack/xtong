@@ -57,6 +57,8 @@ enabled = false
 mode = "semi"
 # 章节作业自动作答（P2.5）：semi=只填不交；auto 慎用（同 mode 语义）
 work_enabled = false
+# 作业策略全局默认（owner 号主自理 / reference AI参考答案 / ai AI代答semi）——账号✎管理里未设时生效
+work_mode_default = "owner"
 
 [stealth]
 # 刷课执行时是否无头。首次登录始终使用有头模式（需要人工操作）。

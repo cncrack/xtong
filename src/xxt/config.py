@@ -35,7 +35,8 @@ DEFAULTS: dict[str, Any] = {
         "daily_window": ["08:00", "23:00"],
         "speed_range": [1.0, 1.25],
     },
-    "quiz": {"enabled": False, "mode": "semi"},
+    "quiz": {"enabled": False, "mode": "semi", "work_enabled": False,
+             "work_mode_default": "owner"},
     "quota": {
         "daily_minutes": 240,
         "daily_tasks": 60,

@@ -226,6 +226,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>学习窗口结束</label><input type="time" id="s_we"></div>
   <div class="frow"><label>每日时长额度（分钟，0 不限）<small style="display:block;color:var(--muted);font-size:.72rem">按会话在场时长计（含拟人休息）——限制的是平台视角的总占用，更安全</small></label><input type="number" id="s_min" style="width:90px"></div>
   <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
+  <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
+    <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
@@ -328,7 +330,7 @@ function renderAccounts(){
         : w.ai_answered ? badge('AI已答·待核对','b-info') : badge('未完成','b-warn');
       const btn = w.status==='done' ? '' :
         `<button class="minibtn" title="按该账号作业策略处理（✎管理可改：号主自理/参考答案/AI代答）"
-          onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">📝 ${a.work_mode==='ai'?'AI代答':a.work_mode==='reference'?'参考答案':'去处理'}</button>`;
+          onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">${a.work_mode==='ai'?'📝 AI代答':a.work_mode==='reference'?'📝 参考答案':'📝 去处理'}</button>`;
       return `<div class="course" style="border:1px dashed var(--line);border-radius:11px">
         <div class="t2"><span class="nm">📄 ${hl(w.name,q)} <span class="muted" style="font-size:.7rem">作业任务</span></span>
         <span class="val" style="display:flex;gap:.45rem;align-items:center">${st}${btn}</span></div></div>`;
@@ -357,8 +359,8 @@ function renderAccounts(){
         <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        <button class="minibtn" title="作业处理：按下方课程列表里作业任务的策略执行；策略在✎管理的'作业策略'里设置（号主自理/AI参考答案/AI代答）"
-          onclick="doWork(${a.id},'2.12')">📝 作业</button>
+        <button class="minibtn" title="作业批量处理：遍历该账号全部未完成作业按策略执行；策略在✎管理的'作业策略'里设置（全局默认在⚙设置）"
+          onclick="doWorkAll(${a.id})">📝 作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
@@ -385,12 +387,15 @@ function loadSettings(){
   fetch('/api/settings').then(r=>r.json()).then(d=>{
     s_quiz.checked=!!d.quiz_enabled;
     s_ws.value=d.window_start||'08:00'; s_we.value=d.window_end||'23:00';
-    s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;});
+    s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
+    s_wm.value=d.work_mode_default||'owner';
+    window.QUIZ=d;});
 }
 function saveSettings(){
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({quiz_enabled:s_quiz.checked,window_start:s_ws.value,
-      window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0})}
+      window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
+      work_mode_default:s_wm.value})}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
     if(d.ok)document.getElementById('dlg').close();});
 }
@@ -449,7 +454,8 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
     reload();});}
 function doWork(id,chapter){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
-  const mode=a.work_mode||'owner';
+  const mode=(a.work_mode||'').trim()||( (typeof QUIZ!=='undefined'&&QUIZ.work_mode_default) || 'owner');
+  const named=a.works? a.works.find(w=>w.name===chapter) : null;
   if(mode==='reference'){
     document.getElementById('w_ch').textContent=`#${id} ${a.platform_username||a.label}｜${chapter}`;
     document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
@@ -470,8 +476,14 @@ function doWork(id,chapter){
       alert(d.ok?d.message:'失败：'+d.error); if(d.ok)syncRun();});
   } else {
     const who = a.platform_username || a.label;
-    alert(`该账号作业策略=号主自理（默认）：作业由 ${who} 自己完成，本工具只负责刷视频。如需 AI 辅助：✎ 管理 → 作业策略 → 改为"AI 参考答案"或"AI 代答"。`);
+    alert(`该账号作业策略=号主自理（默认）：作业由 ${who} 自己完成，本工具只负责刷视频。如需 AI 辅助：✎ 管理 → 作业策略 → 改为"AI 参考答案"或"AI 代答"，或⚙设置里改全局默认。`);
   }
+}
+async function doWorkAll(id){
+  const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
+  const pend=(a.works||[]).filter(w=>w.status!=='done');
+  if(!pend.length){alert('该账号没有未完成的作业任务');return;}
+  for(const w of pend){ await doWork(id,w.name); await new Promise(r=>setTimeout(r,800)); }
 }
 function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
   e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
@@ -638,6 +650,7 @@ def create_app(settings: Settings) -> FastAPI:
             "window_end": fresh.pace["daily_window"][1],
             "daily_minutes": int(fresh.quota["daily_minutes"]),
             "daily_tasks": int(fresh.quota["daily_tasks"]),
+            "work_mode_default": fresh.quiz.get("work_mode_default", "owner"),
         }
 
     @app.put("/api/settings")
@@ -671,6 +684,10 @@ def create_app(settings: Settings) -> FastAPI:
                     if not isinstance(v, int) or v < 0:
                         return {"ok": False, "error": f"{field} 需为非负整数"}
                     upsert(conn, key, v)
+            if "work_mode_default" in body:
+                if body["work_mode_default"] not in ("owner", "reference", "ai"):
+                    return {"ok": False, "error": "作业策略仅 owner/reference/ai"}
+                upsert(conn, "quiz.work_mode_default", body["work_mode_default"])
             conn.commit()
         finally:
             conn.close()
@@ -913,7 +930,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/accounts/{account_id}/work")
     def work_api(account_id: int, body: dict):
-        """作业作答（面板入口，按账号 work_mode 分流）：
+        """作业作答（面板入口，策略优先级：账号显式 > 全局默认 > owner）。
         ai → 后台执行 xxt work（headless 填入，结果看日志）；
         reference → 返回 AI 参考答案（只解析题目+AI 作答，不碰作业页表单）；
         owner → 仅返回操作指引（号主自理）。"""
@@ -928,7 +945,9 @@ def create_app(settings: Settings) -> FastAPI:
             conn.close()
         if row is None:
             return {"ok": False, "error": "账号不存在"}
-        mode = row["work_mode"] or "owner"
+        # 策略三层：账号显式（work_mode 非空）> 全局默认（quiz.work_mode_default）> owner
+        global_default = Settings(root=settings.root).quiz.get("work_mode_default", "owner")
+        mode = row["work_mode"] or global_default or "owner"
         chapter = body.get("chapter") or "2.12"
         if mode == "owner":
             return {"ok": True, "action": "owner",
