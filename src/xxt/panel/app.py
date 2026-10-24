@@ -337,7 +337,7 @@ function renderAccounts(){
             data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
       const q=document.getElementById('q').value.trim();
     return `<div class="course${hit}"><span class="nm">${hl(c.name,q)}</span>
-      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b> · 累计 ${fmtDur(c.total_min)}</span>${ctl}</div>
+      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b> · 已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</span>${ctl}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
     // 主显课程：正在刷的 > 最有进度的 > 第一门；其余默认折叠（点击展开；搜索时自动展开）
@@ -723,19 +723,35 @@ def create_app(settings: Settings) -> FastAPI:
                         (a["id"],),
                     )
                 ]
-                # 每门课程累计学习时长（video-done 详情"…｜Ns"后缀，纯观看时长）
+                # 每门课程：已学时长（按标题去重的真实时长和）+ 预计总时长（未看的按平均估）
                 import re as _re_dur
 
                 for c in a["courses"]:
-                    secs = 0
+                    durations: dict[str, int] = {}  # 标题 → 时长（同名视频去重取最大）
                     for (detail,) in conn.execute(
                             "SELECT detail FROM run_logs WHERE account_id=? "
                             "AND event='video-done' AND detail LIKE ?",
                             (a["id"], f"{c['name']}｜%")):
-                        m = _re_dur.search(r"｜(\d+)s$", detail or "")
+                        m = _re_dur.match(rf"{_re_dur.escape(c['name'])}｜(.+)｜(\d+)s$",
+                                          detail or "")
                         if m:
-                            secs += int(m.group(1))
-                    c["total_min"] = int(secs // 60)
+                            t, n = m.group(1), int(m.group(2))
+                            durations[t] = max(durations.get(t, 0), n)
+                    known_secs = sum(durations.values())
+                    c["total_min"] = int(known_secs // 60)
+                    # 视频类知识点数（排除作业/测验/考试）；未看的按已知平均时长估算
+                    video_points = conn.execute(
+                        "SELECT COUNT(*) FROM chapters WHERE course_id="
+                        "(SELECT id FROM courses WHERE account_id=? AND name=?) "
+                        "AND name NOT LIKE '%作业%' AND name NOT LIKE '%测验%' "
+                        "AND name NOT LIKE '%考试%'", (a["id"], c["name"]),
+                    ).fetchone()[0]
+                    if durations and video_points > len(durations):
+                        avg = known_secs / len(durations)
+                        c["est_total_min"] = int((known_secs + avg * (video_points - len(durations))) // 60)
+                    else:
+                        c["est_total_min"] = c["total_min"]  # 全部已知或无数据
+                    c["est_is_exact"] = video_points <= len(durations)
                 # 作业任务点挂课程（名称含作业/测验/考试；状态=章节状态；AI 已答标记）
                 cids = [c2["id"] for c2 in conn.execute(
                     "SELECT id FROM courses WHERE account_id=?", (a["id"],))]
