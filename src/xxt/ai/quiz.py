@@ -18,11 +18,16 @@ MIN_CONFIDENCE = 0.6  # 低于此值 → need_manual（半自动模式由人工�
 
 _PROMPT = """你是在线课程的学习者，请回答下面的课程测验题。
 
+课程：{course}
+章节：{chapter}
 题型：{qtype_desc}
-题干：{stem}
+题目原文：{stem}
 选项：
 {options}
-{context}要求：基于题干与课程常识作答；只输出一个 JSON 对象，不要任何其他文字：
+{context}{extra}要求：
+- 基于题目原文、课程内容与常识作答，答案要贴合题目所问，不要泛泛而谈；
+- 简答/论述题展开充分作答（分点更佳），长度按题目要求，无明确要求则不限长度；
+- 只输出一个 JSON 对象，不要任何其他文字：
 {{"answer": {answer_shape}, "confidence": 0到1的小数, "reason": "20字内依据"}}"""
 
 
@@ -40,12 +45,17 @@ def _answer_shape(qtype: str) -> str:
     return '["选项文本或A/B/C"]' if qtype in ("single", "multi") else '"答案文本或对/错"'
 
 
-def build_messages(stem: str, qtype: str, options: list[str], context: str = "") -> list[dict[str, str]]:
+def build_messages(stem: str, qtype: str, options: list[str], context: str = "",
+                   course: str = "", chapter: str = "",
+                   extra_requirements: str = "") -> list[dict[str, str]]:
+    """构建作答提示词。course/chapter 提供上下文；extra_requirements=用户附加要求。"""
     ctx = f"课程背景资料：{context}\n" if context else ""
+    extra = f"用户附加要求：{extra_requirements}\n" if extra_requirements else ""
     text = _PROMPT.format(
+        course=course or "在线课程", chapter=chapter or "（未提供）",
         qtype_desc=_qtype_desc(qtype), stem=stem.strip(),
         options="\n".join(f"- {o}" for o in options) or "（无选项）",
-        context=ctx, answer_shape=_answer_shape(qtype),
+        context=ctx, extra=extra, answer_shape=_answer_shape(qtype),
     )
     return [{"role": "user", "content": text}]
 
@@ -115,7 +125,8 @@ def bank_record_wrong(conn: sqlite3.Connection, h: str) -> None:
 
 
 def solve(conn: sqlite3.Connection, llm: LLMClient | Any, stem: str, qtype: str,
-          options: list[str], context: str = "") -> dict[str, Any]:
+          options: list[str], context: str = "", course: str = "",
+          chapter: str = "", extra_requirements: str = "") -> dict[str, Any]:
     """作答一条题目。返回：
     {source: bank|llm|manual, answer: [...], confidence, reason?, need_manual}
     """
@@ -125,7 +136,9 @@ def solve(conn: sqlite3.Connection, llm: LLMClient | Any, stem: str, qtype: str,
         return {"source": "bank", **hit, "need_manual": False, "hash": h}
 
     try:
-        raw = llm.chat(build_messages(stem, qtype, options, context))
+        raw = llm.chat(build_messages(stem, qtype, options, context,
+                                      course=course, chapter=chapter,
+                                      extra_requirements=extra_requirements))
         parsed = parse_llm_json(raw)
     except (LLMError, ValueError, KeyError):
         return {"source": "manual", "answer": [], "confidence": 0.0,
@@ -150,7 +163,9 @@ def handle_quiz(quiz_cfg: dict[str, Any], conn: sqlite3.Connection, llm: LLMClie
     if not stem:
         return {"action": "manual", "reason": "题干解析失败"}
     result = solve(conn, llm, stem, payload.get("qtype") or "single",
-                   payload.get("options") or [], payload.get("context") or "")
+                   payload.get("options") or [], payload.get("context") or "",
+                   course=payload.get("course") or "", chapter=payload.get("chapter") or "",
+                   extra_requirements=payload.get("extra_requirements") or "")
     if result["need_manual"]:
         return {"action": "manual", **result}
     return {"action": "fill_submit" if quiz_cfg.get("mode") == "auto" else "fill", **result}

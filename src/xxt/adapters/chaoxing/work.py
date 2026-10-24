@@ -176,7 +176,8 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
     stats = {"total": len(questions), "filled": 0, "manual": 0, "status": "semi"}
     llm = LLMClient(settings.llm)
     for q in questions:
-        dec = handle_quiz(quiz_cfg, conn, llm, q)
+        dec = handle_quiz(quiz_cfg, conn, llm, {**q, "course": course_name,
+                                                "chapter": chapter_name})
         detail = (f"{chapter_name or course_name}｜{q['qtype_cn']}｜{(q['stem'])[:30]}…｜"
                   f"{dec.get('action')}｜置信{dec.get('confidence', 0):.2f}")
         conn.execute(

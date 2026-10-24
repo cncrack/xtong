@@ -280,6 +280,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <dialog id="workDlg"><h3>📝 作业参考答案 <span id="w_ch" class="muted" style="font-size:.85rem"></span>
   <button class="minibtn" style="margin-left:auto" onclick="doWork(WORK_ACC,WORK_CH,true)">🔄 重新生成</button></h3>
+  <div class="frow"><label>对 AI 的要求<small>可空；如"300字以内""结合大学生视角""分点作答"</small></label>
+    <input type="text" id="w_req" placeholder="无附加要求" style="flex:1"></div>
   <div id="w_body" class="log" style="max-height:52vh;overflow:auto;font-size:.86rem">加载中…</div>
   <div class="dlgbtns"><button class="primary" onclick="this.closest('dialog').close()">知道了</button></div>
 </dialog>
@@ -535,7 +537,8 @@ function doWork(id,chapter,force=false){
     document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
     document.getElementById('workDlg').showModal();
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({chapter:chapter,force:force})}).then(r=>r.json()).then(d=>{
+      body:JSON.stringify({chapter:chapter,force:force,
+        extra_requirements:(document.getElementById('w_req')?.value||'').trim()})}).then(r=>r.json()).then(d=>{
       const el=document.getElementById('w_body');
       if(!d.ok){el.textContent='失败：'+d.error;return;}
       if(d.action==='owner'){el.textContent=d.message;return;}
@@ -1271,13 +1274,16 @@ def create_app(settings: Settings) -> FastAPI:
                         return {"ok": False, "error": "该章节不是作业任务点"}
                     qs = parse_work_questions(wf.content(), dynamic_map=_page_font_map(wf))
                     llm = LLMClient(settings.llm)
-                    from ..ai.quiz import parse_llm_json, question_hash, bank_record
+                    from ..ai.quiz import parse_llm_json, question_hash, bank_record, build_messages
+                    extra = str(body.get("extra_requirements") or "").strip()
                     wconn = db()
                     for q in qs:
                         ans, err = "", None
                         try:
                             raw = llm.chat(build_messages(
-                                q["stem"], q["qtype"], q["options"]))
+                                q["stem"], q["qtype"], q["options"],
+                                course=course["name"], chapter=chapter,
+                                extra_requirements=extra))
                             try:
                                 parsed = parse_llm_json(raw)
                                 ans = "；".join(parsed["answer"])  # 解析出干净答案文本
