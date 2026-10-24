@@ -332,7 +332,7 @@ function renderAccounts(){
         : w.ai_answered ? badge('AI已答','b-info') : badge('未完成','b-warn');
       const btns = w.status==='done' ? '' :
         `<button class="minibtn" title="按该账号作业策略处理（✎管理可改：号主自理/参考答案/AI代答）"
-          onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">${a.work_mode==='ai'?'📝 AI代答':a.work_mode==='reference'?'📝 参考答案':'📝 去处理'}</button>`;
+          onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">${wm==='ai'?'📝 AI代答':wm==='reference'?'📝 参考答案':'📝 去处理'}</button>`;
       const review = w.ai_answered
         ? `<button class="minibtn" title="已提交？读回每题得分：答对转正题库、答错清空重学"
             onclick="doReview(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">✔ 读判分</button>` : '';
