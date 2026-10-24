@@ -16,9 +16,9 @@ DEFAULTS: dict[str, Any] = {
         "space_url": "https://i.chaoxing.com/",
     },
     "llm": {
-        "provider": "glm",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-        "model": "glm-4-flash",
+        "provider": "agnes",
+        "base_url": "https://api.agnes-ai.cn/v1",
+        "model": "agnes-2.5-flash",
         "api_key_env": "XXT_LLM_API_KEY",
     },
     "learn": {

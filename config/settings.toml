@@ -10,11 +10,11 @@ login_url = "https://passport2.chaoxing.com/login"
 space_url = "https://i.chaoxing.com/"
 
 [llm]
-# OpenAI 兼容接口，GLM / DeepSeek / Qwen / 本地模型均可，换厂商只改 base_url 和 model。
+# OpenAI 兼容接口，换厂商只改 base_url 和 model。
 # API Key 从环境变量 XXT_LLM_API_KEY 读取，不落盘。
-provider = "glm"
-base_url = "https://open.bigmodel.cn/api/paas/v4/"
-model = "glm-4-flash"
+provider = "agnes"
+base_url = "https://api.agnes-ai.cn/v1"
+model = "agnes-2.5-flash"
 
 [learn]
 # 播放倍速：不要超过 1.25，高倍速是平台风控重点（实际值在 [pace].speed_range 内随机）。
