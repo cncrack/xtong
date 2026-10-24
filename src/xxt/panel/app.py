@@ -1012,10 +1012,9 @@ def create_app(settings: Settings) -> FastAPI:
         # reference：只出参考答案（解析+AI，不填表单）
         try:
             from playwright.sync_api import sync_playwright
-            from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
-            from .adapters.chaoxing.work import parse_work_questions, _page_font_map
-            from .ai.llm import LLMClient
-            from ...ai.quiz import build_messages as _bm  # noqa: F401  (占位防误用)
+            from ..adapters.chaoxing.study import find_frame_with, open_chapter_frame
+            from ..adapters.chaoxing.work import parse_work_questions, _page_font_map
+            from ..ai.llm import LLMClient
             from ..ai.quiz import build_messages
 
             state = settings.data_dir / "accounts" / str(account_id) / "state.json"
