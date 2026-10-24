@@ -92,6 +92,7 @@ padding:.55rem 1rem;cursor:pointer;font-size:.9rem}
   <span class="pill">🎬 今日视频 <b id="today">-</b></span>
   <span class="spacer"></span>
   <input id="q" placeholder="🔍 搜索账号或课程名…">
+  <button class="btn" onclick="openAdd()">＋ 账号</button>
   <button class="btn" onclick="document.getElementById('dlg').showModal()">⚙ 设置</button>
 </div>
 <div class="toolbar">
@@ -113,6 +114,32 @@ padding:.55rem 1rem;cursor:pointer;font-size:.9rem}
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
+</dialog>
+
+<dialog id="addDlg"><h3>＋ 添加账号</h3>
+  <div class="frow"><label>备注名（唯一）</label><input type="text" id="a_label" style="width:180px"></div>
+  <div class="frow"><label>学习通账号/手机号</label><input type="text" id="a_user" style="width:180px"></div>
+  <div class="frow"><label>密码</label><input type="password" id="a_pw" style="width:180px"></div>
+  <div class="frow"><label>优先级（默认 1.0）</label><input type="number" step="0.5" id="a_pri" style="width:90px" value="1"></div>
+  <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
+    <button class="primary" onclick="doAdd()">加密录入</button></div>
+  <div class="hint">凭据 AES-GCM 加密存储，仅本机；添加后需为其登录一次</div>
+</dialog>
+
+<dialog id="editDlg"><h3>✎ 账号管理 <span id="e_title" class="muted" style="font-size:.85rem"></span></h3>
+  <div class="frow"><label>备注名</label><input type="text" id="e_label" style="width:170px"></div>
+  <div class="frow"><label>状态</label><select id="e_status"><option value="active">active</option><option value="paused">paused</option></select></div>
+  <div class="frow"><label>优先级</label><input type="number" step="0.5" id="e_pri" style="width:90px"></div>
+  <div class="frow"><label>学习窗口</label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
+  <div class="frow"><label>每日时长/任务额度（0 用全局）</label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
+  <div class="frow"><label>有效期至（空=永久）</label><input type="date" id="e_vu"></div>
+  <div class="frow"><label>备注</label><input type="text" id="e_note" style="width:190px"></div>
+  <div class="dlgbtns" style="justify-content:space-between">
+    <span><button class="ghost" style="color:var(--bad)" onclick="doDel()">删除账号</button>
+    <button class="ghost" onclick="doRenew()">续期 +30 天</button></span>
+    <span><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
+    <button class="primary" onclick="doSave()">保存</button></span></div>
+  <div class="hint" id="e_meta"></div>
 </dialog>
 
 <script>
@@ -137,17 +164,25 @@ function renderAccounts(){
     const status=a.status==='active'?'b-ok':'b-warn';
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
     const chips=[a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
-                 a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':''].filter(Boolean)
-                 .map(c=>`<span class="chip">${c}</span>`).join('');
+                 a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
+                 a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
+                 a.renew_count?`续期${a.renew_count}次`:'',
+                 a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' :]
+                 .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
     const courses=a.courses.map(c=>{
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
       return `<div class="course${hit}"><div class="t"><span>${esc(c.name)}</span><b>${c.done}/${c.total}</b></div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;}).join('')
       ||'<div class="muted" style="font-size:.8rem">暂无课程数据</div>';
-    return `<div class="card${hits.length?' hit':''}"><h3>
+    const bad=a.days_left!==null&&a.days_left<0;
+    return `<div class="card"><h3>
       <span class="who">${esc(a.platform_username||'—')}</span>
       <span class="muted" style="font-size:.75rem">#${a.id} ${esc(a.label)}</span>
-      ${badge(a.status,status)} ${sess}<span class="chip">优先级 ${a.priority}</span></h3>
+      ${badge(bad?'已过期':a.status,a.status==='active'&&!bad?'b-ok':'b-warn')} ${sess}
+      <span class="chip">优先级 ${a.priority}</span>
+      <button class="ghost" style="margin-left:auto;padding:.2rem .6rem;font-size:.78rem"
+        onclick="editAccount(${a.id})">✎ 管理</button></h3>
+      ${a.note?`<div class="muted" style="font-size:.78rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
       <div class="chips">${chips}</div>${courses}</div>`;
   }).join('')||'<div class="card muted">无匹配</div>';
   document.getElementById('pager').innerHTML=
@@ -182,6 +217,40 @@ fetch('/api/overview').then(r=>r.json()).then(d=>{
   document.getElementById('today').textContent=d.today_videos;
   ACCOUNTS=d.accounts;renderAccounts();
 });
+function reload(){fetch('/api/overview').then(r=>r.json()).then(d=>{
+  document.getElementById('today').textContent=d.today_videos;
+  ACCOUNTS=d.accounts;renderAccounts();});}
+function openAdd(){a_label.value=a_user.value=a_pw.value='';a_pri.value=1;
+  document.getElementById('addDlg').showModal();}
+function doAdd(){
+  fetch('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({label:a_label.value.trim(),username:a_user.value.trim(),
+      password:a_pw.value,priority:+a_pri.value||1})})
+  .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
+    if(d.ok){document.getElementById('addDlg').close();reload();}});}
+let EDIT=null;
+function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
+  e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
+  e_pri.value=EDIT.priority;e_ws.value=EDIT.window_start||'';e_we.value=EDIT.window_end||'';
+  e_min.value=EDIT.max_minutes??0;e_task.value=EDIT.max_tasks??0;e_vu.value=EDIT.valid_until||'';
+  e_note.value=EDIT.note||'';
+  e_meta.textContent=`续期 ${EDIT.renew_count||0} 次 · 上次失效 ${EDIT.last_expired_at||'—'}`;
+  document.getElementById('editDlg').showModal();}
+function doSave(){fetch('/api/accounts/'+EDIT.id,{method:'PUT',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    label:e_label.value.trim(),status:e_status.value,priority:+e_pri.value||1,
+    window_start:e_ws.value||null,window_end:e_we.value||null,
+    daily_max_minutes:+e_min.value||0,daily_max_tasks:+e_task.value||0,
+    valid_until:e_vu.value||null,note:e_note.value.trim()||null})})
+  .then(r=>r.json()).then(d=>{alert(d.ok?'已保存':'失败：'+d.error);
+    if(d.ok){document.getElementById('editDlg').close();reload();}});}
+function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
+  .then(r=>r.json()).then(d=>{alert(d.ok?'续期成功，剩余 '+d.days_left+' 天':'失败');
+    if(d.ok)reload();});}
+function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度数据保留'))return;
+  fetch('/api/accounts/'+EDIT.id,{method:'DELETE'}).then(r=>r.json()).then(d=>{
+    if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
 document.getElementById('q').addEventListener('input',()=>{PAGE=1;renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
 renderLogs();loadSettings();
@@ -209,6 +278,9 @@ def create_app(settings: Settings) -> FastAPI:
                 )
                 a["max_minutes"] = a.pop("daily_max_minutes", None)
                 a["max_tasks"] = a.pop("daily_max_tasks", None)
+                from ..core.accounts import days_left
+
+                a["days_left"] = days_left(a)
                 a["courses"] = [
                     dict(r)
                     for r in conn.execute(
@@ -323,6 +395,79 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
         return {"ok": True}
+
+    @app.post("/api/accounts")
+    def add_account_api(body: dict):
+        """添加账号（凭据只写不读；面板仅本机监听）。"""
+        from ..core import accounts as acc
+        from ..core.crypto import master_key
+
+        label, user, pw = body.get("label"), body.get("username"), body.get("password")
+        if not (label and user and pw):
+            return {"ok": False, "error": "备注/账号/密码均必填"}
+        conn = db()
+        try:
+            aid = acc.add_account(
+                conn, master_key(settings.data_dir), label, user, pw,
+                priority=float(body.get("priority") or 1.0),
+            )
+            return {"ok": True, "id": aid}
+        finally:
+            conn.close()
+
+    @app.put("/api/accounts/{account_id}")
+    def update_account_api(account_id: int, body: dict):
+        from ..core import accounts as acc
+
+        if not acc.find_account(conn := db(), str(account_id)):
+            conn.close()
+            return {"ok": False, "error": "账号不存在"}
+        try:
+            fields: dict = {}
+            for k in ("label", "note", "valid_until", "window_start", "window_end", "proxy"):
+                if k in body:
+                    fields[k] = body[k] or None
+            for k in ("daily_max_minutes", "daily_max_tasks"):
+                if k in body:
+                    v = body[k]
+                    if v is not None and (not isinstance(v, int) or v < 0):
+                        return {"ok": False, "error": f"{k} 需为非负整数"}
+                    fields[k] = v
+            if "priority" in body:
+                fields["priority"] = float(body["priority"] or 1.0)
+            if "status" in body:
+                if body["status"] not in ("active", "paused"):
+                    return {"ok": False, "error": "status 仅 active/paused"}
+                conn.execute("UPDATE accounts SET status=? WHERE id=?", (body["status"], account_id))
+            if fields:
+                acc.set_overrides(conn, str(account_id), **fields)
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    @app.delete("/api/accounts/{account_id}")
+    def delete_account_api(account_id: int):
+        from ..core import accounts as acc
+
+        conn = db()
+        try:
+            ok = acc.remove_account(conn, str(account_id))
+            return {"ok": ok} if ok else {"ok": False, "error": "账号不存在"}
+        finally:
+            conn.close()
+
+    @app.post("/api/accounts/{account_id}/renew")
+    def renew_account_api(account_id: int, body: dict):
+        from ..core import accounts as acc
+
+        conn = db()
+        try:
+            days = acc.renew_account(conn, str(account_id), days=int(body.get("days") or 30))
+            return ({"ok": True, "days_left": days} if days is not None
+                    else {"ok": False, "error": "账号不存在"})
+        finally:
+            conn.close()
 
     @app.get("/", response_class=HTMLResponse)
     def index():

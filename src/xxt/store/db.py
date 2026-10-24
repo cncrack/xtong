@@ -6,9 +6,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
-# v4：accounts.platform_username（平台昵称，探测时自动抓取）；run_logs.account_id（日志归属账号）
+# v6：账号生命周期——备注、有效期（租用账号场景）、续期计数、上次会话失效时间
 _ACCOUNT_COLS = {
     "username_enc": "BLOB",
     "password_enc": "BLOB",
@@ -20,6 +20,10 @@ _ACCOUNT_COLS = {
     "proxy": "TEXT",
     "priority": "REAL DEFAULT 1.0",
     "platform_username": "TEXT",
+    "note": "TEXT",
+    "valid_until": "TEXT",
+    "renew_count": "INTEGER DEFAULT 0",
+    "last_expired_at": "TEXT",
 }
 
 _SCHEMA = """

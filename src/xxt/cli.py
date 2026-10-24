@@ -55,6 +55,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         if platform_name:  # 抓到平台用户名即落库（面板"刷的是谁"）
             conn.execute("UPDATE accounts SET platform_username=? WHERE id=1", (platform_name,))
             conn.commit()
+        if state == "invalid":  # 会话失效打点（面板"上次失效时间"）
+            from .core.accounts import mark_expired
+
+            mark_expired(conn, 1)
     finally:
         conn.close()
     if state == "invalid":
@@ -334,6 +338,8 @@ def cmd_account(args: argparse.Namespace) -> int:
             put("window_end", args.window_end, str)
             put("start_at", args.start_at, str)
             put("proxy", args.proxy, str)
+            put("note", args.note, str)
+            put("valid_until", args.valid_until, str)
             put("daily_max_minutes", args.max_minutes, int)
             put("daily_max_tasks", args.max_tasks, int)
             put("priority", args.priority, float)
@@ -343,6 +349,12 @@ def cmd_account(args: argparse.Namespace) -> int:
             ok = acc.set_overrides(conn, args.account, **fields)
             print("[OK] 已更新" if ok else f"[FAIL] 未找到账号：{args.account}")
             return 0 if ok else 1
+        elif args.account_cmd == "renew":
+            days = acc.renew_account(conn, args.account, days=args.days)
+            if days is None:
+                print(f"[FAIL] 未找到账号：{args.account}")
+                return 1
+            print(f"[OK] 已续期 {args.days} 天，剩余有效期 {days} 天")
         else:
             print(f"[FAIL] 未知子命令：{args.account_cmd}")
             return 1
@@ -445,7 +457,12 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--max-minutes", default="", help="覆盖每日时长额度")
     p_set.add_argument("--max-tasks", default="", help="覆盖每日任务数额度")
     p_set.add_argument("--proxy", default="", help="绑定代理（none 清除）")
+    p_set.add_argument("--note", default="", help="备注（none 清除）")
+    p_set.add_argument("--valid-until", default="", help="有效期至（YYYY-MM-DD，none 清除=永久）")
     p_set.add_argument("--priority", default="", help="优先级")
+    p_renew = acc_sub.add_parser("renew", help="续期（valid_until 延长 N 天，次数自动累计）")
+    p_renew.add_argument("account", help="账号 id 或备注名")
+    p_renew.add_argument("--days", type=int, default=30, help="续期天数（默认 30）")
 
     p_ml = sub.add_parser("mlearn", help="多账号并发学习（async，M4 实验性）")
     p_ml.add_argument("course", help="课程名或 courseid")

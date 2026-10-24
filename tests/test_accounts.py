@@ -69,6 +69,27 @@ class TestAccounts(unittest.TestCase):
         self.assertTrue(acc.remove_account(self.conn, "C"))
         self.assertFalse(acc.remove_account(self.conn, "不存在"))
 
+    def test_lifecycle_renew_and_validity(self):
+        import datetime as dt
+
+        account_id = acc.add_account(self.conn, self.key, "D", "u", "p")
+        row = acc.find_account(self.conn, "D")
+        self.assertTrue(acc.is_valid(row))          # 无 valid_until = 永久
+        self.assertIsNone(acc.days_left(row))
+        future = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+        acc.set_overrides(self.conn, "D", valid_until=future)
+        row = acc.find_account(self.conn, "D")
+        self.assertEqual(acc.days_left(row), 3)
+        left = acc.renew_account(self.conn, "D", days=30)
+        self.assertEqual(left, 33)                  # 3 + 30
+        row = acc.find_account(self.conn, "D")
+        self.assertEqual(row["renew_count"], 1)
+        past = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+        acc.set_overrides(self.conn, "D", valid_until=past)
+        self.assertFalse(acc.is_valid(acc.find_account(self.conn, "D")))
+        acc.mark_expired(self.conn, account_id)
+        self.assertTrue(acc.find_account(self.conn, "D")["last_expired_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

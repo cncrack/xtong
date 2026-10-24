@@ -274,6 +274,12 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
     results: list[dict[str, Any]] = []
 
     async def supervise(row) -> None:
+        from ...core.accounts import is_valid
+
+        if not is_valid(row):
+            results.append({"account": row["label"], "videos": 0,
+                            "stop_reason": f"账号已过有效期（{row['valid_until']}）"})
+            return
         async with sem:
             # 错峰：各账号启动前随机等待（0~180s，账号间拉开）
             jitter = random.uniform(0, 180)
