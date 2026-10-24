@@ -513,9 +513,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     conn.execute(
                         "INSERT INTO app_config(key, value) VALUES('auto.plan', ?) "
                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                        (_json.dumps({"date": today,
-                                      "times": {k: v for k, v in planned.items()
-                                                if v != "done"}}),),
+                        (_json.dumps({"date": today, "times": planned}),),
                     )
                 conn.close()
             except Exception:
