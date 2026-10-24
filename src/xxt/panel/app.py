@@ -219,7 +219,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <span class="switch"><input type="checkbox" id="s_quiz"><i></i></span></div>
   <div class="frow"><label>学习窗口开始</label><input type="time" id="s_ws"></div>
   <div class="frow"><label>学习窗口结束</label><input type="time" id="s_we"></div>
-  <div class="frow"><label>每日时长额度（分钟，0 不限）</label><input type="number" id="s_min" style="width:90px"></div>
+  <div class="frow"><label>每日时长额度（分钟，0 不限）<small style="display:block;color:var(--muted);font-size:.72rem">按会话在场时长计（含拟人休息）——限制的是平台视角的总占用，更安全</small></label><input type="number" id="s_min" style="width:90px"></div>
   <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
