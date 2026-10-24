@@ -221,6 +221,73 @@ def cmd_progress(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_account(args: argparse.Namespace) -> int:
+    import getpass
+
+    from .core import accounts as acc
+    from .core.crypto import master_key
+    from .store.db import connect
+
+    s = _settings(args)
+    conn = connect(s.db_path)
+    try:
+        if args.account_cmd == "add":
+            key = master_key(s.data_dir)
+            password = getpass.getpass(f"请输入 {args.label} 的密码（输入不回显）：")
+            if not password:
+                print("[FAIL] 密码为空")
+                return 1
+            account_id = acc.add_account(
+                conn, key, args.label, args.user, password,
+                proxy=args.proxy, priority=args.priority or 1.0,
+            )
+            print(f"[OK] 账号已添加：#{account_id} {args.label}（凭据已加密存储）")
+        elif args.account_cmd == "list":
+            rows = acc.list_accounts(conn)
+            print(f"共 {len(rows)} 个账号：")
+            for r in rows:
+                over = []
+                if r["window_start"]:
+                    over.append(f"窗口{r['window_start']}-{r['window_end']}")
+                if r["daily_max_minutes"] is not None:
+                    over.append(f"{r['daily_max_minutes']}分钟")
+                if r["proxy"]:
+                    over.append("代理")
+                print(f"  #{r['id']} [{r['status']}] {r['label']} "
+                      f"优先级{r['priority']}" + (f"｜{'/'.join(over)}" if over else ""))
+        elif args.account_cmd == "rm":
+            ok = acc.remove_account(conn, args.account)
+            print("[OK] 已删除" if ok else f"[FAIL] 未找到账号：{args.account}")
+            return 0 if ok else 1
+        elif args.account_cmd == "set":
+            fields: dict[str, object] = {}
+
+            def put(name: str, val, cast) -> None:
+                if val == "" or val is None:
+                    return  # 未指定 = 不动
+                fields[name] = None if str(val).lower() == "none" else cast(val)  # none = 清除回落
+
+            put("window_start", args.window_start, str)
+            put("window_end", args.window_end, str)
+            put("start_at", args.start_at, str)
+            put("proxy", args.proxy, str)
+            put("daily_max_minutes", args.max_minutes, int)
+            put("daily_max_tasks", args.max_tasks, int)
+            put("priority", args.priority, float)
+            if not fields:
+                print("[..] 未指定任何修改项")
+                return 0
+            ok = acc.set_overrides(conn, args.account, **fields)
+            print("[OK] 已更新" if ok else f"[FAIL] 未找到账号：{args.account}")
+            return 0 if ok else 1
+        else:
+            print(f"[FAIL] 未知子命令：{args.account_cmd}")
+            return 1
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
@@ -243,6 +310,26 @@ def main(argv: list[str] | None = None) -> int:
     p_prog = sub.add_parser("progress", help="查看各课程完成进度与今日学习量")
     p_prog.add_argument("course", nargs="?", default=None, help="课程名或 courseid（可省略）")
 
+    p_acc = sub.add_parser("account", help="多账号池管理（增删/覆盖配置）")
+    acc_sub = p_acc.add_subparsers(dest="account_cmd", required=True)
+    p_add = acc_sub.add_parser("add", help="添加账号（凭据 AES-GCM 加密存储）")
+    p_add.add_argument("label", help="账号备注名（唯一）")
+    p_add.add_argument("--user", required=True, help="学习通账号/手机号")
+    p_add.add_argument("--proxy", default=None, help="绑定代理（P1 启用，P0 家宽留空）")
+    p_add.add_argument("--priority", type=float, default=None, help="课程调度优先级（默认 1.0）")
+    acc_sub.add_parser("list", help="列出账号（不显示凭据）")
+    p_rm = acc_sub.add_parser("rm", help="删除账号")
+    p_rm.add_argument("account", help="账号 id 或备注名")
+    p_set = acc_sub.add_parser("set", help="设置账号级覆盖（不设即回落全局默认，传 none 清除）")
+    p_set.add_argument("account", help="账号 id 或备注名")
+    p_set.add_argument("--window-start", default="", help="覆盖学习窗口开始（如 09:00；none 清除）")
+    p_set.add_argument("--window-end", default="", help="覆盖学习窗口结束（如 22:00；none 清除）")
+    p_set.add_argument("--start-at", default="", help="覆盖每日启动时刻（P1 调度用）")
+    p_set.add_argument("--max-minutes", default="", help="覆盖每日时长额度")
+    p_set.add_argument("--max-tasks", default="", help="覆盖每日任务数额度")
+    p_set.add_argument("--proxy", default="", help="绑定代理（none 清除）")
+    p_set.add_argument("--priority", default="", help="优先级")
+
     args = parser.parse_args(argv)
     handlers = {
         "init": cmd_init,
@@ -252,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         "chapters": cmd_chapters,
         "learn": cmd_learn,
         "progress": cmd_progress,
+        "account": cmd_account,
     }
     try:
         return handlers[args.command](args)
