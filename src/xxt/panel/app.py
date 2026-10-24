@@ -25,6 +25,41 @@ def _spawn(root_str: str, *cmd: str):
         cwd=root_str, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import ctypes
+
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not h:
+            return False
+        ctypes.windll.kernel32.CloseHandle(h)
+        return True
+    except Exception:
+        return True
+
+
+def _marker_jobs(settings: Settings) -> dict[int, dict]:
+    """扫 data/run/<id>.json 会话标记（跨面板重启仍可见的运行中会话）。"""
+    import json as _json
+
+    run_dir = settings.data_dir / "run"
+    out: dict[int, dict] = {}
+    if not run_dir.exists():
+        return out
+    for f in run_dir.glob("*.json"):
+        try:
+            info = _json.loads(f.read_text(encoding="utf-8"))
+            if _pid_alive(int(info["pid"])):
+                out[int(f.stem)] = {"course": info.get("course", "?"),
+                                    "since": info.get("since", ""), "pid": info["pid"],
+                                    "external": True}
+            else:
+                f.unlink(missing_ok=True)  # 进程已死，清标记
+        except Exception:
+            continue
+    return out
+
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>XXT 学习面板</title><style>
@@ -77,7 +112,7 @@ section{margin-top:1.6rem}section>h2{font-size:.92rem;color:var(--muted);margin:
 table{width:100%;border-collapse:collapse;font-size:.82rem;background:var(--card);
 border:1px solid var(--line);border-radius:14px;overflow:hidden}
 td{padding:.45rem .7rem;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:none}
-.ev{font-weight:600}.ev-good{color:var(--ok)}.ev-warn{color:var(--warn)}
+.ev{font-weight:600}.ev-good{color:var(--ok)}.ev-warn{color:var(--warn)}.ev-info{color:#4353d8}
 .mono{font-family:Consolas,monospace;color:var(--muted)}.muted{color:var(--muted)}
 dialog{border:none;border-radius:18px;padding:1.2rem 1.4rem;width:min(430px,92vw);
 box-shadow:0 20px 60px rgba(20,30,70,.3)}
@@ -224,7 +259,8 @@ function renderLogs(){
   const acc=document.getElementById('logAcc')?.value||'';
   fetch('/api/logs?n=50'+(acc?`&account=${acc}`:'')).then(r=>r.json()).then(d=>{
     document.getElementById('logs').innerHTML='<table>'+d.logs.map(l=>{
-      const cls=l.event==='video-done'?'ev-good':(l.level==='WARNING'?'ev-warn':'');
+      const cls=l.event==='video-done'?'ev-good':l.event==='session-start'?'ev-info':
+        (l.event==='session-stop'||l.level==='WARNING')?'ev-warn':'';
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
         <td class="mono">${esc(l.who)}</td><td class="ev ${cls}">${esc(l.event)}</td>
         <td>${esc(l.detail)}</td></tr>`;}).join('')+'</table>';});
@@ -314,7 +350,7 @@ function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度�
     if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
 document.getElementById('q').addEventListener('input',()=>{PAGE=1;renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
-renderLogs();loadSettings();
+renderLogs();loadSettings();syncRun();setInterval(syncRun,15000);
 </script></body></html>"""
 
 
@@ -550,6 +586,18 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
+    def _log_event(account_id: int, event: str, detail: str) -> None:
+        conn = db()
+        try:
+            conn.execute(
+                "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                " VALUES(?,?,?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO", event, detail, account_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     @app.post("/api/study/start")
     def study_start(body: dict):
         """为账号启动一门课的学习会话（子进程 xxt mlearn --accounts <id>）。"""
@@ -561,6 +609,8 @@ def create_app(settings: Settings) -> FastAPI:
         job = _JOBS.get(account_id)
         if job and job["proc"].poll() is None:
             return {"ok": False, "error": f"该账号已有进行中的会话（{job['course']}）"}
+        if account_id in _marker_jobs(settings):
+            return {"ok": False, "error": "该账号已有进行中的会话（定时/外部启动）"}
         conn = db()
         try:
             n = conn.execute(
@@ -573,18 +623,26 @@ def create_app(settings: Settings) -> FastAPI:
         root = pathlib.Path(settings.root)
         proc = _spawn(str(root), "mlearn", course, "--accounts", str(account_id))
         _JOBS[account_id] = {"proc": proc, "course": course, "since": time.strftime("%H:%M")}
+        _log_event(account_id, "session-start", f"{course}｜{body.get('source', '手动')}启动")
         return {"ok": True}
 
     @app.post("/api/study/stop")
     def study_stop(body: dict):
         account_id = body.get("account_id")
         job = _JOBS.get(account_id)
-        if not job or job["proc"].poll() is not None:
+        if job and job["proc"].poll() is None:
+            job["proc"].terminate()
             _JOBS.pop(account_id, None)
-            return {"ok": False, "error": "该账号没有进行中的会话"}
-        job["proc"].terminate()
-        _JOBS.pop(account_id, None)
-        return {"ok": True, "note": "已终止（当前视频进度保留，下次续播）"}
+            _log_event(account_id, "session-stop", f"{job['course']}｜手动停止（进度保留）")
+            return {"ok": True}
+        ext = _marker_jobs(settings).get(account_id)  # 定时/外部启动的会话
+        if ext:
+            subprocess.run(["taskkill", "/PID", str(ext["pid"]), "/F"],
+                           capture_output=True)
+            (settings.data_dir / "run" / f"{account_id}.json").unlink(missing_ok=True)
+            _log_event(account_id, "session-stop", f"{ext['course']}｜手动停止（进度保留）")
+            return {"ok": True}
+        return {"ok": False, "error": "该账号没有进行中的会话"}
 
     @app.post("/api/auto/start")
     def auto_start():
@@ -616,6 +674,9 @@ def create_app(settings: Settings) -> FastAPI:
                              "since": job["since"]}
             if not alive:
                 _JOBS.pop(aid, None)
+        for aid, info in _marker_jobs(settings).items():  # 定时/外部（含面板重启前的）
+            out.setdefault(str(aid), {"course": info["course"], "running": True,
+                                      "since": info["since"], "external": True})
         auto_running = bool(_AUTO and _AUTO["proc"].poll() is None)
         if not auto_running:
             globals()["_AUTO"] = None

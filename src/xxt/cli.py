@@ -365,6 +365,8 @@ def cmd_account(args: argparse.Namespace) -> int:
 
 def cmd_mlearn(args: argparse.Namespace) -> int:
     import asyncio
+    import json as _json
+    import os as _os
 
     from .adapters.chaoxing.astudy import run_accounts
     from .core import accounts as acc
@@ -390,14 +392,38 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
         if not rows:
             print("[FAIL] 无可用账号（xxt account add / list 查看）")
             return 1
+        # 会话标记文件：面板据此显示/停止本会话（跨面板重启仍可见）
+        run_dir = s.data_dir / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for row in rows:
+            (run_dir / f"{row['id']}.json").write_text(_json.dumps({
+                "pid": _os.getpid(), "course": course["name"],
+                "since": __import__("time").strftime("%H:%M"),
+            }), encoding="utf-8")
         results = asyncio.run(run_accounts(s, conn, rows, dict(course),
                                            limit=args.limit,
                                            max_concurrency=args.concurrency))
         for r in results:
             print(f"  [{r.get('account')}] 视频 {r.get('videos', 0)} 个；"
                   f"{r.get('stop_reason') or '完成'}")
+            try:  # 会话结束动态入日志（面板"最近日志"可见开始→进展→结束全过程）
+                conn.execute(
+                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                    " VALUES(?,?,?,?,?)",
+                    (__import__("time").strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
+                     "session-end",
+                     f"{course['name']}｜{r.get('stop_reason') or '完成'}｜视频 {r.get('videos', 0)} 个",
+                     r.get("account_id", 1)))
+                conn.commit()
+            except Exception:
+                pass
         return 0
     finally:
+        for row in rows:  # 清理本会话标记
+            try:
+                (s.data_dir / "run" / f"{row['id']}.json").unlink(missing_ok=True)
+            except Exception:
+                pass
         conn.close()
 
 

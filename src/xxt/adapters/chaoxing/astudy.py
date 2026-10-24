@@ -277,7 +277,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
         from ...core.accounts import is_valid
 
         if not is_valid(row):
-            results.append({"account": row["label"], "videos": 0,
+            results.append({"account": row["label"], "account_id": row["id"], "videos": 0,
                             "stop_reason": f"账号已过有效期（{row['valid_until']}）"})
             return
         async with sem:
@@ -288,7 +288,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
             state = settings.data_dir / "accounts" / str(row["id"]) / "state.json"
             if not state.exists():
                 log.warning("账号#%s 无会话（state.json 缺失），跳过——先为其登录", row["id"])
-                results.append({"account": row["label"], "videos": 0, "stop_reason": "未登录"})
+                results.append({"account": row["label"], "account_id": row["id"], "videos": 0, "stop_reason": "未登录"})
                 return
             # 关键：各账号用自己的课程入口（clazzid/cpi 因账号而异，不可共用 URL）
             course = conn.execute(
@@ -296,7 +296,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 (row["id"], course_row["platform_course_id"]),
             ).fetchone()
             if course is None:
-                results.append({"account": row["label"], "videos": 0, "stop_reason": "该账号无此课程"})
+                results.append({"account": row["label"], "account_id": row["id"], "videos": 0, "stop_reason": "该账号无此课程"})
                 return
             runner = AsyncStudyRunner(
                 settings, state, conn,
@@ -307,6 +307,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
             )
             stats = await runner.run(dict(course), limit=limit)
             stats["account"] = row["label"]
+            stats["account_id"] = row["id"]
             results.append(stats)
 
     async with asyncio.TaskGroup() as tg:
