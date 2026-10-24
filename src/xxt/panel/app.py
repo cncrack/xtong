@@ -125,6 +125,14 @@ border-radius:7px;padding:.12rem .5rem}
 .course .t .nm{flex:1;min-width:0;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .course .t .val{display:flex;gap:.5rem;align-items:center;flex:none;font-size:.8rem}
 .course .pct{color:var(--muted);font-size:.72rem;min-width:34px;text-align:right}
+.play{border:1px solid #bfe5d2;background:#eef9f3;color:var(--ok);border-radius:9px;
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
+.play:hover{background:var(--ok);color:#fff;border-color:var(--ok);
+box-shadow:0 3px 10px rgba(24,160,93,.35);transform:translateY(-1px)}
+.stopc{border:1px solid #bfe5d2;background:#e3f6ec;color:var(--ok);border-radius:9px;
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
+.stopc:hover{background:var(--bad);border-color:var(--bad);color:#fff;
+box-shadow:0 3px 10px rgba(214,69,69,.35);transform:translateY(-1px)}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:5px}
 .bar>i{display:block;height:100%;width:0;border-radius:4px;background:var(--grad);transition:width .6s ease}
 .pager{display:flex;align-items:center;gap:.55rem;justify-content:center;margin-top:1.1rem;font-size:.86rem}
@@ -266,9 +274,10 @@ function renderAccounts(){
       const run=RUNNING[a.id];
       const runningThis=run&&run.course===c.name;
       const ctl=runningThis
-        ?`<span class="badge b-ok pulse" title="自 ${run.since}">▶ 刷课中</span>`
-        :`<button class="minibtn" title="开始刷这门课"
-            data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷</button>`;
+        ?`<button class="stopc" title="正在刷这门课，点击停止（进度保留）"
+            onclick="stopGrind(${a.id})">▶ 刷课中 ${run.since} · 点击停止</button>`
+        :`<button class="play" title="开始刷这门课（从上次进度继续）"
+            data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
       return `<div class="course${hit}"><div class="t"><span class="nm">${esc(c.name)}</span>
       <span class="val"><span class="pct">${c.total?Math.round(c.done/c.total*100):0}%</span>
       <b>${c.done}/${c.total}</b>${ctl}</span></div>
