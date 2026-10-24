@@ -55,6 +55,8 @@ priorities = { "266339100" = 3.0 }
 enabled = false
 # semi = AI 只填入建议答案、人工确认后提交；auto = 全自动提交。P2 启用时先 semi 校准正确率。
 mode = "semi"
+# 章节作业自动作答（P2.5）：semi=只填不交；auto 慎用（同 mode 语义）
+work_enabled = false
 
 [stealth]
 # 刷课执行时是否无头。首次登录始终使用有头模式（需要人工操作）。
