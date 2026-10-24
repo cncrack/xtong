@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import os as _os
 import sqlite3
 import subprocess
 import sys
@@ -230,17 +232,18 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
   <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型（全局，所有账号共用）</h3>
-  <div class="chips" style="margin-bottom:.5rem">
-    <span class="chip" style="cursor:pointer" onclick="presetLLM('GLM','https://open.bigmodel.cn/api/paas/v4','glm-4-flash')">GLM</span>
-    <span class="chip" style="cursor:pointer" onclick="presetLLM('DeepSeek','https://api.deepseek.com/v1','deepseek-chat')">DeepSeek</span>
-    <span class="chip" style="cursor:pointer" onclick="presetLLM('Qwen','https://dashscope.aliyuncs.com/compatible-mode/v1','qwen-plus')">Qwen</span>
-    <span class="chip" style="cursor:pointer" onclick="presetLLM('Kimi','https://api.moonshot.cn/v1','moonshot-v1-8k')">Kimi</span>
-    <span class="chip" style="cursor:pointer" onclick="presetLLM('Agnès','https://api.agnes-ai.cn/v1','agnes-2.5-flash')">Agnès</span>
-  </div>
-  <div class="frow"><label>Base URL<small>OpenAI 兼容端点（点上方厂商快选自动填）</small></label><input type="text" id="s_lurl" style="width:250px"></div>
-  <div class="frow"><label>模型名称</label><input type="text" id="s_lmodel" style="width:180px"></div>
-  <div class="frow"><label>Key 环境变量名<small>Key 本体放系统环境变量（如 XXT_LLM_API_KEY），不落盘</small></label><input type="text" id="s_lkey" style="width:180px"></div>
-  <div class="hint" id="s_lhint"></div>
+  <div class="frow"><label>提供商列表<small>点选切换；⨯ 可删除自定义项（内置项不可删）</small></label>
+    <span id="provList" style="display:flex;gap:.3rem;flex-wrap:wrap"></span></div>
+  <div class="frow"><label>提供商名称<small>自定义时填写（保存进上方列表）</small></label><input type="text" id="s_lname" placeholder="如 MyProvider" style="width:150px"></div>
+  <div class="frow"><label>Base URL<small>OpenAI 兼容端点</small></label><input type="text" id="s_lurl" placeholder="https://api.example.com/v1" style="width:250px"></div>
+  <div class="frow"><label>模型名称</label><input type="text" id="s_lmodel" placeholder="如 deepseek-chat" style="width:180px"></div>
+  <div class="frow"><label>API Key<small>加密存本机 data/（方案B）；留空=不修改已存 Key</small></label><input type="password" id="s_lkeyv" placeholder="粘贴 Key（不回显）" style="width:220px"></div>
+  <div class="dlgbtns" style="justify-content:flex-start;margin-top:.4rem">
+    <button class="ghost" onclick="testLLM()">🔌 测试连通</button>
+    <button class="ghost" onclick="saveProvider()">💾 保存到厂商列表</button>
+    <button class="ghost" onclick="delProvider()">🗑 删除当前</button>
+    <span id="s_lhint" style="font-size:.78rem;align-self:center"></span></div>
+  <div class="hint" id="s_lhint2"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
@@ -409,18 +412,62 @@ function loadSettings(){
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
-    s_lkey.value=d.llm_api_key_env||'XXT_LLM_API_KEY';
-    s_lhint.textContent=d.llm_key_present?'✓ 已检测到 Key 环境变量':'⚠ 未检测到 Key——请在系统环境变量设置后重开终端/面板';
+    s_lkeyv.value='';
+    window.LLM_NAME=d.llm_provider_name||'Agnès';
+    const hint=d.llm_key_stored?'✓ Key 已加密存本机':(d.llm_key_env_set?'✓ Key 来自环境变量':'⚠ 未配置 Key——下方粘贴后点保存');
+    const h2=document.getElementById('s_lhint2'); if(h2)h2.textContent=hint;
+    renderProviders();
     window.QUIZ=d;});
 }
-function presetLLM(name,url,model){s_lurl.value=url;s_lmodel.value=model;
-  s_lhint.textContent=`已填入 ${name} 预设——确认后点保存`; window.QUIZ=window.QUIZ||{};}
+function presetLLM(name,url,model){s_lname.value=name;s_lurl.value=url;s_lmodel.value=model;
+  s_lhint.textContent=`已填入 ${name} 预设——点"保存到厂商列表"生效（可改模型名）`;}
+let PROV={builtin:[],custom:[],current:''};
+function renderProviders(){
+  const el=document.getElementById('provList'); if(!el)return;
+  const all=[...PROV.builtin,...PROV.custom];
+  el.innerHTML=all.map(p=>{
+    const cur=p.name===PROV.current?'border-color:var(--accent);color:var(--accent);font-weight:700':'';
+    const del=PROV.custom.some(c=>c.name===p.name)
+      ?`<a style="margin-left:3px;color:var(--bad);cursor:pointer" onclick="delProvider('${esc(p.name)}')">⨯</a>`:'';
+    return `<span class="chip" style="${cur};cursor:pointer"
+      onclick="useProvider('${esc(p.name)}')">${esc(p.name)}${del}</span>`;}).join('');
+  const s=document.getElementById('s_lhint2');
+  if(s)s.textContent=`当前使用：${PROV.current}`;
+}
+function useProvider(name){
+  const p=[...PROV.builtin,...PROV.custom].find(x=>x.name===name); if(!p)return;
+  s_lname.value=p.name;s_lurl.value=p.base_url;s_lmodel.value=p.model;
+  s_lhint.textContent=`已载入 ${name} 参数——改完点"保存到厂商列表"切换`;
+}
+function saveProvider(){
+  fetch('/api/llm/providers',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:s_lname.value.trim(),base_url:s_lurl.value.trim(),
+      model:s_lmodel.value.trim(),key:s_lkeyv.value.trim()})})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('保存失败：'+d.error);return;}
+    s_lkeyv.value='';alert('已保存并切换到 '+s_lname.value.trim()+'（Key 已加密存本机）');
+    loadSettings();loadProviders();});}
+function delProvider(name){
+  if(!confirm('删除自定义提供商 '+name+'？'))return;
+  fetch('/api/llm/providers/del',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name})}).then(r=>r.json()).then(d=>{
+    if(!d.ok)alert('失败：'+d.error); loadProviders();});}
+function loadProviders(){
+  fetch('/api/llm/providers').then(r=>r.json()).then(d=>{
+    if(d.ok){PROV=d;renderProviders();}});}
+function testLLM(){
+  const el=document.getElementById('s_lhint');
+  el.textContent='🔌 测试中…';
+  fetch('/api/llm/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({base_url:s_lurl.value.trim(),model:s_lmodel.value.trim(),
+      key:s_lkeyv.value.trim()})})
+  .then(r=>r.json()).then(d=>{el.textContent=d.ok
+    ?`✓ 连通成功，模型回复：${d.reply}`:'✗ 失败：'+d.error;});}
 function saveSettings(){
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({quiz_enabled:s_quiz.checked,window_start:s_ws.value,
       window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
-      work_mode_default:s_wm.value,llm_base_url:s_lurl.value,
-      llm_model:s_lmodel.value,llm_api_key_env:s_lkey.value})}
+      work_mode_default:s_wm.value})}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
     if(d.ok){window.QUIZ.work_mode_default=s_wm.value;document.getElementById('dlg').close();syncRun();}});
 }
@@ -569,6 +616,21 @@ def _startup_cleanup(settings: Settings) -> dict:
     return report
 
 
+def conn2_has_key(settings: Settings) -> bool:
+    """本机是否已存加密 Key（llm.key_enc）。"""
+    import sqlite3 as _s
+
+    try:
+        c = _s.connect(settings.db_path)
+        try:
+            return c.execute(
+                "SELECT 1 FROM app_config WHERE key='llm.key_enc'").fetchone() is not None
+        finally:
+            c.close()
+    except Exception:
+        return False
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="XXT 管理面板", docs_url="/api/docs")
 
@@ -711,6 +773,130 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
+    def _providers_load() -> dict:
+        """厂商列表（app_config: llm.providers JSON）+ 当前选中。内置五家作为基线。"""
+        builtin = [
+            {"name": "GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash"},
+            {"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
+            {"name": "Qwen", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
+            {"name": "Kimi", "base_url": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k"},
+            {"name": "Agnès", "base_url": "https://api.agnes-ai.cn/v1", "model": "agnes-2.5-flash"},
+        ]
+        fresh = Settings(root=settings.root)
+        saved = fresh.raw.get("llm", {}).get("providers") or []
+        current = fresh.llm.get("provider_name") or "Agnès"
+        names = {p["name"] for p in builtin}
+        custom = [p for p in saved if p.get("name") not in names]
+        return {"builtin": builtin, "custom": custom, "current": current}
+
+    @app.get("/api/llm/providers")
+    def providers_get():
+        return {"ok": True, **_providers_load()}
+
+    @app.post("/api/llm/providers")
+    def providers_save(body: dict):
+        """保存厂商（自定义项进列表；同名覆盖）并把该厂商设为当前——含加密 Key。"""
+        import json as _json
+
+        name = str(body.get("name") or "").strip()
+        base_url = str(body.get("base_url") or "").strip()
+        model = str(body.get("model") or "").strip()
+        key = str(body.get("key") or "").strip()
+        if not (name and base_url and model):
+            return {"ok": False, "error": "名称/BaseURL/模型 均必填"}
+        fresh = Settings(root=settings.root)
+        saved = list(fresh.raw.get("llm", {}).get("providers") or [])
+        names = {p["name"] for p in builtin_list}
+        entry = {"name": name, "base_url": base_url, "model": model}
+        saved = [p for p in saved if p["name"] != name]
+        if name not in {b["name"] for b in builtin_list}:
+            saved.append(entry)
+        conn = db()
+        try:
+            upsert = ("INSERT INTO app_config(key,value) VALUES(?,?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            conn.execute(upsert, ("llm.providers", _json.dumps(saved, ensure_ascii=False)))
+            conn.execute(upsert, ("llm.provider_name", name))
+            conn.execute(upsert, ("llm.base_url", base_url))
+            conn.execute(upsert, ("llm.model", model))
+            if key:  # 方案B：Key 加密落 data/（AES-GCM，主密钥同账号凭据体系）
+                from ..core.crypto import encrypt, master_key
+
+                conn.execute(upsert, ("llm.key_enc", base64.b64encode(
+                    encrypt(master_key(settings.data_dir), key)).decode()))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @app.post("/api/llm/test")
+    def llm_test(body: dict):
+        """连通性测试：真实发一条 1-token 请求。"""
+        import httpx as _httpx
+
+        fresh = Settings(root=settings.root)
+        base_url = str(body.get("base_url") or fresh.llm["base_url"]).rstrip("/")
+        model = str(body.get("model") or fresh.llm["model"])
+        key = str(body.get("key") or "").strip()
+        if not key:  # 未粘贴 → 用已存密钥
+            try:
+                from ..core.crypto import decrypt, master_key
+
+                conn = db()
+                try:
+                    row = conn.execute(
+                        "SELECT value FROM app_config WHERE key='llm.key_enc'").fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    key = decrypt(master_key(settings.data_dir), base64.b64decode(row[0]))
+            except Exception:
+                pass
+        if not key:
+            key = os.environ.get(fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"), "")
+        if not key:
+            return {"ok": False, "error": "未提供 Key 且本机无已存 Key"}
+        try:
+            r = _httpx.post(f"{base_url}/chat/completions",
+                            headers={"Authorization": f"Bearer {key}"},
+                            json={"model": model, "messages": [
+                                {"role": "user", "content": "回复：ok"}],
+                                "max_tokens": 5},
+                            timeout=30)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            return {"ok": True, "reply": text.strip()[:40]}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:180]}
+
+    builtin_list = [  # 供 providers_save 判断内置项
+        {"name": "GLM"}, {"name": "DeepSeek"}, {"name": "Qwen"},
+        {"name": "Kimi"}, {"name": "Agnès"},
+    ]
+
+    @app.post("/api/llm/providers/del")
+    def providers_del(body: dict):
+        import json as _json
+
+        name = str(body.get("name") or "").strip()
+        fresh = Settings(root=settings.root)
+        saved = [p for p in (fresh.raw.get("llm", {}).get("providers") or [])
+                 if p["name"] != name]
+        conn = db()
+        try:
+            conn.execute(
+                "INSERT INTO app_config(key,value) VALUES('llm.providers',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (_json.dumps(saved, ensure_ascii=False),))
+            if fresh.llm.get("provider_name") == name:
+                conn.execute(
+                    "INSERT INTO app_config(key,value) VALUES('llm.provider_name','Agnès') "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @app.get("/api/settings")
     def get_settings():
         fresh = Settings(root=settings.root)  # 重新加载（含 app_config 覆盖层）
@@ -724,7 +910,9 @@ def create_app(settings: Settings) -> FastAPI:
             "llm_base_url": fresh.llm["base_url"],
             "llm_model": fresh.llm["model"],
             "llm_api_key_env": fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"),
-            "llm_key_present": bool(__import__("os").environ.get(
+            "llm_provider_name": fresh.llm.get("provider_name", ""),
+            "llm_key_stored": conn2_has_key(settings),
+            "llm_key_env_set": bool(_os.environ.get(
                 fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"))),
         }
 
