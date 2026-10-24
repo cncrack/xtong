@@ -164,7 +164,8 @@ def _page_font_map(work_frame) -> dict[str, str]:
 
 
 def answer_work(work_frame, settings, conn: sqlite3.Connection,
-                account_id: int, course_name: str, submit: bool = False) -> dict[str, Any]:
+                account_id: int, course_name: str, submit: bool = False,
+                chapter_name: str = "") -> dict[str, Any]:
     """对当前已打开的作业页整卷作答。submit=False 为半自动（只填不交）。"""
     quiz_cfg = dict(settings.quiz)
     if not quiz_cfg.get("work_enabled"):
@@ -176,7 +177,7 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
     llm = LLMClient(settings.llm)
     for q in questions:
         dec = handle_quiz(quiz_cfg, conn, llm, q)
-        detail = (f"{course_name}｜{q['qtype_cn']}｜{(q['stem'])[:30]}…｜"
+        detail = (f"{chapter_name or course_name}｜{q['qtype_cn']}｜{(q['stem'])[:30]}…｜"
                   f"{dec.get('action')}｜置信{dec.get('confidence', 0):.2f}")
         conn.execute(
             "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,?)",

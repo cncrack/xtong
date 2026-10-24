@@ -564,11 +564,11 @@ def create_app(settings: Settings) -> FastAPI:
                             "SELECT name, status FROM chapters WHERE course_id=? "
                             "AND (name LIKE '%作业%' OR name LIKE '%测验%' OR name LIKE '%考试%') "
                             "ORDER BY idx", (cid,)):
-                        # AI 已答判定：该账号当日/历史 work-answer 日志数（作业级粒度足够）
+                        # AI 已答判定：work-answer 日志详情以章节名开头
                         ai_answered = bool(conn.execute(
                             "SELECT id FROM run_logs WHERE account_id=? AND event='work-answer' "
                             "AND detail LIKE ? LIMIT 1",
-                            (a["id"], f"%{h['name'][:10]}%")).fetchone())
+                            (a["id"], f"{h['name'][:14]}%")).fetchone())
                         works.append({"course": cname, "name": h["name"],
                                       "status": h["status"], "ai_answered": ai_answered})
                 a["works"] = works

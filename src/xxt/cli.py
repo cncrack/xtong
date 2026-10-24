@@ -621,7 +621,8 @@ def cmd_work(args: argparse.Namespace) -> int:
                     print("[FAIL] 未找到作业页（该章节可能不是作业任务点）")
                     return 1
                 stats = answer_work(work_frame, s, conn, account_id,
-                                    course["name"], submit=args.submit)
+                                    course["name"], submit=args.submit,
+                                    chapter_name=ch["name"])
                 print(f"作业作答：{stats}")
                 if stats.get("status") == "semi":
                     import threading
