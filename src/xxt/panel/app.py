@@ -357,7 +357,7 @@ function renderAccounts(){
         <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        <button class="minibtn" title="AI 作业：按该账号的作业策略处理（✎管理可改策略）"
+        <button class="minibtn" title="作业处理：按下方课程列表里作业任务的策略执行；策略在✎管理的'作业策略'里设置（号主自理/AI参考答案/AI代答）"
           onclick="doWork(${a.id},'2.12')">📝 作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
@@ -705,9 +705,12 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             fields: dict = {}
             for k in ("label", "note", "valid_until", "window_start", "window_end",
-                      "proxy", "start_at"):
+                      "proxy", "start_at", "work_mode"):
                 if k in body:
-                    fields[k] = body[k] or None
+                    v = body[k]
+                    if k == "work_mode" and v not in (None, "ai", "owner", "reference"):
+                        return {"ok": False, "error": "work_mode 仅 ai/owner/reference"}
+                    fields[k] = v or None
             for k in ("daily_max_minutes", "daily_max_tasks"):
                 if k in body:
                     v = body[k]
