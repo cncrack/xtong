@@ -327,13 +327,16 @@ function renderAccounts(){
     const works = a.works || [];
     const mkWork = w => {
       const st = w.status==='done' ? badge('已完成','b-ok')
-        : w.ai_answered ? badge('AI已答·待核对','b-info') : badge('未完成','b-warn');
-      const btn = w.status==='done' ? '' :
+        : w.ai_answered ? badge('AI已答','b-info') : badge('未完成','b-warn');
+      const btns = w.status==='done' ? '' :
         `<button class="minibtn" title="按该账号作业策略处理（✎管理可改：号主自理/参考答案/AI代答）"
           onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">${a.work_mode==='ai'?'📝 AI代答':a.work_mode==='reference'?'📝 参考答案':'📝 去处理'}</button>`;
+      const review = w.ai_answered
+        ? `<button class="minibtn" title="已提交？读回每题得分：答对转正题库、答错清空重学"
+            onclick="doReview(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">✔ 读判分</button>` : '';
       return `<div class="course" style="border:1px dashed var(--line);border-radius:11px">
         <div class="t2"><span class="nm">📄 ${hl(w.name,q)} <span class="muted" style="font-size:.7rem">作业任务</span></span>
-        <span class="val" style="display:flex;gap:.45rem;align-items:center">${st}${btn}</span></div></div>`;
+        <span class="val" style="display:flex;gap:.45rem;align-items:center">${st}${btns}${review}</span></div></div>`;
     };
     const workHtml = works.length
       ? works.map(mkWork).join('')
@@ -359,8 +362,8 @@ function renderAccounts(){
         <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        <button class="minibtn" title="作业批量处理：遍历该账号全部未完成作业按策略执行；策略在✎管理的'作业策略'里设置（全局默认在⚙设置）"
-          onclick="doWorkAll(${a.id})">📝 作业</button>
+        <button class="minibtn" title="批量作业：遍历该账号全部未完成作业按策略执行（单门作业在下方课程列表的作业行里单独处理）"
+          onclick="doWorkAll(${a.id})">📝 批量作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
@@ -397,7 +400,7 @@ function saveSettings(){
       window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
       work_mode_default:s_wm.value})}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
-    if(d.ok)document.getElementById('dlg').close();});
+    if(d.ok){window.QUIZ.work_mode_default=s_wm.value;document.getElementById('dlg').close();syncRun();}});
 }
 function reload(){fetch('/api/overview').then(r=>r.json()).then(d=>{
   document.getElementById('today').textContent=d.today_videos;
@@ -478,6 +481,14 @@ function doWork(id,chapter){
     const who = a.platform_username || a.label;
     alert(`该账号作业策略=号主自理（默认）：作业由 ${who} 自己完成，本工具只负责刷视频。如需 AI 辅助：✎ 管理 → 作业策略 → 改为"AI 参考答案"或"AI 代答"，或⚙设置里改全局默认。`);
   }
+}
+function doReview(id,chapter){
+  fetch(`/api/accounts/${id}/work/review`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({chapter:chapter})}).then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('读判分失败：'+d.error);return;}
+    const lines=(d.results||[]).map(r=>`[${r.status}] ${r.stem}（得分 ${r.score??'待批阅'}）`).join('\\n');
+    alert(`判分回读完成：\\n${lines}\\n\\n题库已自动更新（答对转正/答错清空）。`);
+    syncRun();});
 }
 async function doWorkAll(id){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
@@ -1016,6 +1027,50 @@ def create_app(settings: Settings) -> FastAPI:
                 finally:
                     browser.close()
             return {"ok": True, "action": "reference", "answers": answers}
+        except Exception as exc:
+            return {"ok": False, "error": repr(exc)}
+
+    @app.post("/api/accounts/{account_id}/work/review")
+    def work_review_api(account_id: int, body: dict):
+        """判题回读（面板化 --review）：读已提交作业的每题得分 → 题库转正/清空。"""
+        from playwright.sync_api import sync_playwright
+
+        from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
+        from .adapters.chaoxing.work import review_work
+        from .core.accounts import account_state_path
+
+        chapter = body.get("chapter") or "2.12"
+        state = account_state_path(settings, account_id)
+        if not state.exists():
+            return {"ok": False, "error": "该账号未登录"}
+        conn = db()
+        try:
+            course = conn.execute(
+                "SELECT * FROM courses WHERE account_id=? ORDER BY id LIMIT 1",
+                (account_id,)).fetchone()
+            ch = conn.execute(
+                "SELECT * FROM chapters WHERE course_id=? AND name LIKE ? LIMIT 1",
+                (course["id"], f"%{chapter}%")).fetchone() if course else None
+        finally:
+            conn.close()
+        if course is None or ch is None:
+            return {"ok": False, "error": "未找到课程/章节"}
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(storage_state=str(state))
+                page = context.new_page()
+                try:
+                    tree = open_chapter_frame(page, course["url"])
+                    tree.locator(f"#cur{ch['platform_chapter_id']}").first.click(timeout=15_000)
+                    wf = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+                    if wf is None:
+                        return {"ok": False, "error": "未找到作业页（可能尚未提交）"}
+                    results = review_work(wf, conn, account_id)
+                    context.storage_state(path=str(state))
+                finally:
+                    browser.close()
+            return {"ok": True, "results": results}
         except Exception as exc:
             return {"ok": False, "error": repr(exc)}
 
