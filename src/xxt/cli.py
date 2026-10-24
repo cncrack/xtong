@@ -288,6 +288,44 @@ def cmd_account(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mlearn(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from .adapters.chaoxing.astudy import run_accounts
+    from .core import accounts as acc
+    from .store.db import connect
+
+    s = _settings(args)
+    conn = connect(s.db_path)
+    try:
+        course = _pick_course(conn, args.course) if args.course else None
+        if course is None:
+            print("[FAIL] 未找到课程（mlearn 需显式指定课程）")
+            return 1
+        if args.accounts:
+            rows = []
+            for needle in args.accounts.split(","):
+                row = acc.find_account(conn, needle.strip())
+                if row is None:
+                    print(f"[FAIL] 未找到账号：{needle}")
+                    return 1
+                rows.append(row)
+        else:
+            rows = [r for r in acc.list_accounts(conn) if r["status"] == "active"]
+        if not rows:
+            print("[FAIL] 无可用账号（xxt account add / list 查看）")
+            return 1
+        results = asyncio.run(run_accounts(s, conn, rows, dict(course),
+                                           limit=args.limit,
+                                           max_concurrency=args.concurrency))
+        for r in results:
+            print(f"  [{r.get('account')}] 视频 {r.get('videos', 0)} 个；"
+                  f"{r.get('stop_reason') or '完成'}")
+        return 0
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
@@ -330,6 +368,12 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--proxy", default="", help="绑定代理（none 清除）")
     p_set.add_argument("--priority", default="", help="优先级")
 
+    p_ml = sub.add_parser("mlearn", help="多账号并发学习（async，M4 实验性）")
+    p_ml.add_argument("course", help="课程名或 courseid")
+    p_ml.add_argument("--accounts", default=None, help="账号（id/标签，逗号分隔；缺省=全部 active）")
+    p_ml.add_argument("--limit", type=int, default=None, help="每账号本次最多视频数")
+    p_ml.add_argument("--concurrency", type=int, default=2, help="全局同时学习账号数上限")
+
     args = parser.parse_args(argv)
     handlers = {
         "init": cmd_init,
@@ -340,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         "learn": cmd_learn,
         "progress": cmd_progress,
         "account": cmd_account,
+        "mlearn": cmd_mlearn,
     }
     try:
         return handlers[args.command](args)
