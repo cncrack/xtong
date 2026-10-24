@@ -54,8 +54,9 @@
 
 ## 当前状态速览（每次会话结束时维护）
 
-- 阶段：**P0~P3 + P2.5 全部完成（10-24 一日收官）**。P0：M0~M3 验收通过（单账号刷课全链）。P1：M4 多账号并发实机验收（林鑫阳+王泽轩错峰同刷）。P2：弹题 AI 链路（LLM/题库/置信度/watcher 检测）。P2.5：作业 AI（doHomeWorkNew 解析/**cxsecret 字体动态解码（位图余弦）**/半自动填入/留窗核对/判题回读 CLI+面板按钮/三层作业策略/Provider 管理中心/提示词含课程章节+附加要求框）。P3：PyArmor+PyInstaller exe 构建验收（BUILD.md）。面板：v5 视觉/搜索分页折叠/⚙全局设置（含 AI 模型中心）/✎账号管理/▶刷课控制/⏱定时调度/会话登记防孤儿/今日战果/自动刷新
-- 方案：v0.14（changelog 至 v0.14；P2.5 排期与状态诚实化）。关键实测锚点：双账号 15/70 与 6/70 起步、字体解码题干全读、三题 AI 答案带附加要求分点输出、Provider 测试连通实通
-- 环境：Windows + Python 3.11；venv `.venv/`；CLI 全家：init/login/status/courses/chapters/learn/progress/account/mlearn/panel/auto/work[--review/--submit]；面板 127.0.0.1:8300（no-store）；远端 origin=cncrack/xtong（102 提交全推送）；LLM=Agnès（Key 环境变量，Provider 中心可切换）
-- ⏳ **等用户**：① 任一账号人工提交 2.12 作业 → 面板"✔ 读判分"校准判题链路（首个真实样本）② 弹题实况校准（遇到含弹题视频时）③ 可选：Docker 化 / PyArmor 正式授权 / 一键代填提交开关
-- AI 下一步：以用户反馈驱动打磨（近期高频为面板交互与作业链路）；大项待用户点名
+- 阶段：**全功能交付，进入实测校准期**。P0 刷课/P1 多账号+面板/P2.5 作业 AI（Provider 中心/题目缓存 0.1s/回填+暂存持久化/单题重生/弹窗 v2）/P3 exe 构建全部完成。参考答案弹窗 v2 + 反检测（webdriver 隐藏+UA 正常化）已上线
+- 待验证（等用户）：① 作业全链路实测（参考答案→回填→平台核对→提交→读判分判分校准）② 弹题选择器实况（等含弹题视频）③ 反检测效果观察（是否仍有登录提醒）④ M4 ≥3 账号（需更多小号）
+- 可选未做（按需点名）：Docker 化（M4.5）/ PyArmor 正式授权（对外分发时）/ 一键代填提交开关（等判分样本验证 AI 正确率后开）/ 章节级选点（v0.10 设计在案，需跳章三项核实）/ Windows 挂机电源自启配置
+- 环境：Windows + Python 3.11；venv `.venv/`；CLI：init/login/status/courses/chapters/learn/progress/account/mlearn/panel/auto/work[--review/--submit/--force]；面板 127.0.0.1:8300；LLM=Agnès（Key 已加密存本机，Provider 中心可切换）；远端 102+ 提交全推送
+- ⏳ **等用户**：明天实测作业链路（点参考答案→题目秒出→答案→回填→1 分钟后平台核对草稿→满意提交→点"✔ 读判分"）
+- AI 下一步：用户反馈驱动；首个判分样本到达后校准 review 解析
