@@ -414,8 +414,9 @@ function loadSettings(){
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
-    s_lkeyv.value='';
+    s_lkeyv.value='';s_lkeyv.dataset.hasKey=window.LLM_KEY_STORED?'1':'0';
     window.LLM_NAME=d.llm_provider_name||'Agnès';
+    window.LLM_KEY_STORED=!!d.llm_key_stored;
     const hint=d.llm_key_stored?'✓ Key 已加密存本机':(d.llm_key_env_set?'✓ Key 来自环境变量':'⚠ 未配置 Key——下方粘贴后点保存');
     const h2=document.getElementById('s_lhint2'); if(h2)h2.textContent=hint;
     renderProviders();
@@ -434,7 +435,15 @@ function renderProviders(){
     return `<span class="chip" style="${cur};cursor:pointer"
       onclick="useProvider('${esc(p.name)}')">${esc(p.name)}${del}</span>`;}).join('');
   const s=document.getElementById('s_lhint2');
-  if(s)s.textContent=`当前使用：${PROV.current}`;
+  const cur=[...PROV.builtin,...PROV.custom].find(p=>p.name===PROV.current);
+  if(s){
+    const keyStat=document.getElementById('s_lkeyv').dataset.hasKey==='1'
+      ?'✓ Key 已加密保存，可直接使用':'⚠ 尚无可用 Key——粘贴 Key 后点保存';
+    s.innerHTML=`当前使用：<b style="color:var(--accent)">${esc(PROV.current)}</b>`+
+      (cur?`（${esc(cur.base_url)} / ${esc(cur.model)}）`:'')+`<br>${keyStat}`+
+      (PROV.current===document.getElementById('s_lname').value.trim()
+        ?'　<span style="color:var(--ok)">= 正在编辑的就是当前厂商</span>':'');
+  }
 }
 function useProvider(name){
   const p=[...PROV.builtin,...PROV.custom].find(x=>x.name===name); if(!p)return;
@@ -447,7 +456,8 @@ function saveProvider(){
       model:s_lmodel.value.trim(),key:s_lkeyv.value.trim()})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){alert('保存失败：'+d.error);return;}
-    s_lkeyv.value='';alert('已保存并切换到 '+s_lname.value.trim()+'（Key 已加密存本机）');
+    s_lkeyv.value='';s_lkeyv.dataset.hasKey='1';
+    s_lhint.textContent='✓ 已保存并切换到 '+s_lname.value.trim()+'（Key 已加密存本机，可点测试连通验证）';
     loadSettings();loadProviders();});}
 function delProvider(name){
   if(!confirm('删除自定义提供商 '+name+'？'))return;
