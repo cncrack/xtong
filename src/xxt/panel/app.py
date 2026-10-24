@@ -167,7 +167,7 @@ function renderAccounts(){
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
                  a.renew_count?`续期${a.renew_count}次`:'',
-                 a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' :]
+                 a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' ]
                  .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
     const courses=a.courses.map(c=>{
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
