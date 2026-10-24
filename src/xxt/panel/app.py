@@ -196,9 +196,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   </div>
   <span class="spacer"></span>
   <input id="q" placeholder="🔍 搜索账号或课程名…">
-  <button class="btn" onclick="openAdd()">＋ 账号</button>
-  <button class="btn" id="autoBtn" onclick="toggleAuto()">⏱ 定时调度</button>
-  <button class="btn" onclick="document.getElementById('dlg').showModal()">⚙ 设置</button>
+  <button class="btn" title="添加一个学习通账号（凭据加密存储）" onclick="openAdd()">＋ 账号</button>
+  <button class="btn" id="autoBtn" title="定时调度：各账号每天在设定/随机的时刻自动开刷（额度内自停）" onclick="toggleAuto()">⏱ 定时调度</button>
+  <button class="btn" title="全局设置：弹题开关/学习窗口/每日双额度（账号可在✎管理里单独覆盖）" onclick="document.getElementById('dlg').showModal()">⚙ 设置</button>
 </div>
 <div class="toolbar">
   <select id="psize"><option value="10">每页 10 张</option><option value="20" selected>每页 20 张</option><option value="50">每页 50 张</option></select>
@@ -308,7 +308,7 @@ function renderAccounts(){
     const courses = (mainCourse ? mainHtml : '<div class="muted" style="font-size:.8rem">暂无课程数据</div>')
       + (others.length ? `<button class="morebtn" onclick="toggleMore(${a.id})">${open?'▾':'▸'} 其他 ${others.length} 门课 · 已完成 ${doneSum} 个知识点</button>
         <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
-    const stopBtn=run?`<button class="minibtn danger pulse" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
+    const stopBtn=run?`<button class="minibtn danger pulse" title="停止该账号正在刷的课：已完成视频全部保留，下次点▶从断点续播" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
     const bad=a.days_left!==null&&a.days_left<0;
     const avatar=(a.platform_username||'?').trim().charAt(0);
     return `<div class="card${run?' running':''}${hits.length?' hit':''}">
@@ -318,7 +318,7 @@ function renderAccounts(){
         <div class="sub">#${a.id} ${esc(a.label)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        <button class="minibtn" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
+        <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
     <div class="chips">${chips}</div>${courses}</div>`;
