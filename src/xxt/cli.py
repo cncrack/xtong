@@ -433,7 +433,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
     from .store.db import connect
 
     s = _settings(args)
-    planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM 或 "done"
+    planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM（全天保留供面板显示）
+    fired: set[int] = set()        # 今日已触发（含手动已开）
+    skipped: set[int] = set()      # 今日跳过（未登录/无课程）
     plan_date = _time.strftime("%Y-%m-%d")
     panel_port = int(s.raw.get("panel", {}).get("port", 8300))
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
@@ -452,7 +454,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 conn.close()
             for row in rows:
                 aid = row["id"]
-                if planned.get(aid) == "done":
+                if aid in fired or aid in skipped:
                     continue
                 if aid not in planned:
                     if row["start_at"]:
@@ -470,7 +472,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     continue
                 state = s.data_dir / "accounts" / str(aid) / "state.json"
                 if not state.exists():
-                    planned[aid] = "done"
+                    skipped.add(aid)
                     print(f"[auto] 账号#{aid} 未登录，今日跳过")
                     continue
                 conn = connect(s.db_path)
@@ -480,7 +482,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 finally:
                     conn.close()
                 if not picks:
-                    planned[aid] = "done"
+                    skipped.add(aid)
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
                     continue
                 course_name = picks[0]["name"]
@@ -497,10 +499,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 except Exception:
                     ok, reason = False, "面板未响应（保持面板运行）"
                 if ok:
-                    planned[aid] = "done"
+                    fired.add(aid)
                     print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》")
                 elif "已有进行中的会话" in str(reason):
-                    planned[aid] = "done"  # 手动已开（面板▶），视为今日已学
+                    fired.add(aid)  # 手动已开（面板▶），视为今日已学
                     print(f"[auto] 账号#{aid} 已有会话（手动开的），今日不再触发")
                 else:
                     print(f"[auto] 账号#{aid} 触发失败：{reason}（30 秒后重试）")
