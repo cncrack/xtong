@@ -284,6 +284,14 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 log.warning("账号#%s 无会话（state.json 缺失），跳过——先为其登录", row["id"])
                 results.append({"account": row["label"], "videos": 0, "stop_reason": "未登录"})
                 return
+            # 关键：各账号用自己的课程入口（clazzid/cpi 因账号而异，不可共用 URL）
+            course = conn.execute(
+                "SELECT * FROM courses WHERE account_id = ? AND platform_course_id = ? LIMIT 1",
+                (row["id"], course_row["platform_course_id"]),
+            ).fetchone()
+            if course is None:
+                results.append({"account": row["label"], "videos": 0, "stop_reason": "该账号无此课程"})
+                return
             runner = AsyncStudyRunner(
                 settings, state, conn,
                 pace=effective_pace(settings, row),
@@ -291,7 +299,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 proxy=row["proxy"],
                 account_id=row["id"],
             )
-            stats = await runner.run(course_row, limit=limit)
+            stats = await runner.run(dict(course), limit=limit)
             stats["account"] = row["label"]
             results.append(stats)
 
