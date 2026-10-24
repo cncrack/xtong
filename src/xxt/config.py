@@ -78,6 +78,26 @@ class Settings:
         if path.exists():
             with open(path, "rb") as f:
                 _deep_merge(data, tomllib.load(f))
+        # DB 全局覆盖层（app_config 表，面板"设置"写入，v0.6 三层配置的第 2 层）
+        # 无库/无表时静默跳过——CLI 首次 init 前也能用
+        try:
+            import json
+            import sqlite3
+
+            db_file = (self.root / data["app"]["data_dir"] / "xxt.db").resolve()
+            if db_file.exists():
+                _conn = sqlite3.connect(db_file)
+                try:
+                    for k, v in _conn.execute("SELECT key, value FROM app_config"):
+                        node: dict[str, Any] = data
+                        parts = k.split(".")
+                        for p in parts[:-1]:
+                            node = node.setdefault(p, {})
+                        node[parts[-1]] = json.loads(v)
+                finally:
+                    _conn.close()
+        except Exception:
+            pass
         self.raw = data
         self.data_dir = (self.root / data["app"]["data_dir"]).resolve()
         self.db_path = self.data_dir / "xxt.db"

@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # v4：accounts.platform_username（平台昵称，探测时自动抓取）；run_logs.account_id（日志归属账号）
 _ACCOUNT_COLS = {
@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS questions (
     correct_count INTEGER NOT NULL DEFAULT 0,
     wrong_count   INTEGER NOT NULL DEFAULT 0,
     updated_at    TEXT
+);
+CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,   -- 点分键，如 quiz.enabled / pace.daily_window
+    value TEXT NOT NULL       -- JSON 值
 );
 CREATE TABLE IF NOT EXISTS run_logs (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,

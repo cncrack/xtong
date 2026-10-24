@@ -48,6 +48,23 @@ class TestPanel(unittest.TestCase):
         self.assertFalse(acc["has_session"])  # 临时目录无 state.json
         self.assertEqual(acc["courses"][0]["total"], 2)
 
+    def test_settings_roundtrip(self):
+        r = self.client.put("/api/settings", json={
+            "quiz_enabled": True, "window_start": "09:30", "window_end": "22:30",
+            "daily_minutes": 120, "daily_tasks": 30,
+        })
+        self.assertEqual(r.json(), {"ok": True})
+        s = self.client.get("/api/settings").json()
+        self.assertTrue(s["quiz_enabled"])
+        self.assertEqual((s["window_start"], s["window_end"]), ("09:30", "22:30"))
+        self.assertEqual(s["daily_minutes"], 120)
+
+    def test_settings_rejects_bad_values(self):
+        r = self.client.put("/api/settings", json={"daily_minutes": -5})
+        self.assertFalse(r.json()["ok"])
+        r2 = self.client.put("/api/settings", json={"window_start": "9:30", "window_end": "22:00"})
+        self.assertFalse(r2.json()["ok"])
+
     def test_progress_shape(self):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)
