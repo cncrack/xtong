@@ -161,6 +161,7 @@ tr:hover td{background:#f7f9fd}
 .ev{font-weight:700}.ev-good{color:var(--ok)}.ev-warn{color:var(--warn)}.ev-info{color:#4353d8}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:1px}
 .mono{font-family:Consolas,monospace;color:var(--muted);font-size:.76rem}.muted{color:var(--muted)}
+mark{background:#ffe17d;border-radius:3px;padding:0 2px;color:inherit}
 footer{margin-top:2.2rem;text-align:center;font-size:.74rem;color:#a5acbf}
 dialog{border:none;border-radius:20px;padding:1.25rem 1.45rem;width:min(460px,92vw);
 box-shadow:0 24px 70px rgba(20,30,70,.35)}
@@ -256,6 +257,12 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 <script>
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const badge=(t,c)=>`<span class="badge ${c}">${esc(t)}</span>`;
+const hl=(text,q)=>{ // 转义后对命中关键词加黄底高亮
+  const safe=esc(text);
+  if(!q)return safe;
+  const i=safe.toLowerCase().indexOf(q.toLowerCase());
+  return i<0?safe:safe.slice(0,i)+'<mark>'+safe.slice(i,i+q.length)+'</mark>'+safe.slice(i+q.length);
+};
 let ACCOUNTS=[],PAGE=1;
 function matchCourses(a,q){return a.courses.filter(c=>String(c.name).toLowerCase().includes(q));}
 function filtered(){
@@ -291,7 +298,8 @@ function renderAccounts(){
             onclick="stopGrind(${a.id})">▶ 刷课中 ${run.since} · 点击停止</button>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
-      return `<div class="course${hit}"><span class="nm">${esc(c.name)}</span>
+      const q=document.getElementById('q').value.trim();
+    return `<div class="course${hit}"><span class="nm">${hl(c.name,q)}</span>
       <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b></span>${ctl}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
@@ -300,7 +308,8 @@ function renderAccounts(){
       || a.courses.find(c=>c.done>0) || a.courses[0];
     const others = a.courses.filter(c=>!mainCourse || c.name!==mainCourse.name);
     const searching = document.getElementById('q').value.trim()!=='';
-    const autoOpen = searching || others.some(c=>hits.some(h=>h.name===c.name));
+    // 仅当"课程名"命中才自动展开；搜人名/备注时保持折叠（找人不找课）
+    const autoOpen = others.some(c=>hits.some(h=>h.name===c.name));
     const open = autoOpen || !!EXPANDED[a.id];
     const mainHtml = mainCourse ? mkCourse(mainCourse) : '';
     const othersHtml = others.map(mkCourse).join('');
@@ -314,8 +323,8 @@ function renderAccounts(){
     return `<div class="card${run?' running':''}${hits.length?' hit':''}">
     <div class="head">
       <div class="avatar">${esc(avatar)}</div>
-      <div class="names"><div class="who">${esc(a.platform_username||'—')}</div>
-        <div class="sub">#${a.id} ${esc(a.label)} · 优先级 ${a.priority}</div></div>
+      <div class="names"><div class="who">${hl(a.platform_username||'—',q)}</div>
+        <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
