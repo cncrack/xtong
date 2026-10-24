@@ -273,6 +273,7 @@ function filtered(){
       v=>String(v??'').toLowerCase().includes(q)));
 }
 function renderAccounts(){
+  const q=document.getElementById('q').value.trim();  // 高亮用原始大小写（hl 内部不区分）
   const ps=+document.getElementById('psize').value, list=filtered();
   const pages=Math.max(1,Math.ceil(list.length/ps)); PAGE=Math.min(PAGE,pages);
   const slice=list.slice((PAGE-1)*ps,PAGE*ps);
