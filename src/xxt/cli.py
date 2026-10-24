@@ -495,6 +495,22 @@ def cmd_auto(args: argparse.Namespace) -> int:
                      "--accounts", str(aid)],
                     cwd=str(s.root), stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
                 )
+            # 计划落库：面板"今日定时"显示（auto 分配的时间对用户可见）
+            try:
+                import json as _json
+
+                conn = connect(s.db_path)
+                with conn:
+                    conn.execute(
+                        "INSERT INTO app_config(key, value) VALUES('auto.plan', ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (_json.dumps({"date": today,
+                                      "times": {k: v for k, v in planned.items()
+                                                if v != "done"}}),),
+                    )
+                conn.close()
+            except Exception:
+                pass
             _time.sleep(30)
         except KeyboardInterrupt:
             print("\n[auto] 守护退出（学习进程继续自行运行至额度停机）")

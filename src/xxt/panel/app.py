@@ -138,6 +138,7 @@ padding:.55rem 1rem;cursor:pointer;font-size:.9rem}
   <div class="frm"><label>备注名<small>面板显示的名字，如"同学的号"</small></label><input type="text" id="e_label"></div>
   <div class="frm"><label>状态<small>paused=暂停调度（不自动学）</small></label><select id="e_status"><option value="active">active（启用）</option><option value="paused">paused（暂停）</option></select></div>
   <div class="frm"><label>优先级<small>课程轮换权重，越大越优先学</small></label><input type="number" step="0.5" id="e_pri"></div>
+  <div class="frm"><label>定时开刷时刻<small>auto 守护的启动时间；空=系统在学习窗口开始后 0~120 分钟随机分配（面板与日志会显示分配结果）</small></label><input type="time" id="e_sa"></div>
   <div class="frm"><label>学习窗口<small>该账号允许学习的时段（空=用全局 08:00–23:00）</small></label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
   <div class="frm"><label>每日额度<small>时长(分)/任务(个)，0=用全局默认</small></label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
   <div class="frm"><label>有效期至<small>租用账号的到期日；过期自动停刷，空=永久</small></label><input type="date" id="e_vu"></div>
@@ -174,6 +175,7 @@ function renderAccounts(){
     const chips=[a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
+                 a.start_at?`定时 ${a.start_at}`:(AUTOPLAN.times[a.id]?`今日定时 ${AUTOPLAN.times[a.id]}`:'定时未设'),
                  a.renew_count?`续期${a.renew_count}次`:'',
                  a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' ]
                  .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
@@ -246,7 +248,7 @@ function doAdd(){
       password:a_pw.value,priority:+a_pri.value||1})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
-let EDIT=null,RUNNING={};
+let EDIT=null,RUNNING={},AUTOPLAN={times:{}};
 function startGrind(id,course){
   fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,course:course})})
@@ -258,6 +260,7 @@ function stopGrind(id){
     body:JSON.stringify({account_id:id})}).then(r=>r.json()).then(()=>syncRun());}
 async function syncRun(){
   try{RUNNING=(await (await fetch('/api/study/status')).json()).jobs||{};}catch(e){RUNNING={};}
+  try{AUTOPLAN=await (await fetch('/api/autoplan')).json();}catch(e){AUTOPLAN={times:{}};}
   renderAccounts();}
 function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
@@ -269,6 +272,7 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
 function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
   e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
   e_pri.value=EDIT.priority;e_ws.value=EDIT.window_start||'';e_we.value=EDIT.window_end||'';
+  e_sa.value=EDIT.start_at||'';
   e_min.value=EDIT.max_minutes??0;e_task.value=EDIT.max_tasks??0;e_vu.value=EDIT.valid_until||'';
   e_note.value=EDIT.note||'';
   e_meta.textContent=`续期 ${EDIT.renew_count||0} 次 · 上次失效 ${EDIT.last_expired_at||'—'}`;
@@ -276,6 +280,7 @@ function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
 function doSave(){fetch('/api/accounts/'+EDIT.id,{method:'PUT',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({
     label:e_label.value.trim(),status:e_status.value,priority:+e_pri.value||1,
+    start_at:e_sa.value||null,
     window_start:e_ws.value||null,window_end:e_we.value||null,
     daily_max_minutes:+e_min.value||0,daily_max_tasks:+e_task.value||0,
     valid_until:e_vu.value||null,note:e_note.value.trim()||null})})
@@ -461,7 +466,8 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "error": "账号不存在"}
         try:
             fields: dict = {}
-            for k in ("label", "note", "valid_until", "window_start", "window_end", "proxy"):
+            for k in ("label", "note", "valid_until", "window_start", "window_end",
+                      "proxy", "start_at"):
                 if k in body:
                     fields[k] = body[k] or None
             for k in ("daily_max_minutes", "daily_max_tasks"):
@@ -503,6 +509,25 @@ def create_app(settings: Settings) -> FastAPI:
             days = acc.renew_account(conn, str(account_id), days=int(body.get("days") or 30))
             return ({"ok": True, "days_left": days} if days is not None
                     else {"ok": False, "error": "账号不存在"})
+        finally:
+            conn.close()
+
+    @app.get("/api/autoplan")
+    def autoplan():
+        """auto 守护的今日计划（守护分配时写入 app_config；未运行时为空）。"""
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key='auto.plan'"
+            ).fetchone()
+            if not row:
+                return {"date": None, "times": {}}
+            import json as _json
+
+            plan = _json.loads(row[0])
+            if plan.get("date") != time.strftime("%Y-%m-%d"):
+                return {"date": None, "times": {}}
+            return plan
         finally:
             conn.close()
 
@@ -559,6 +584,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return _PAGE
+        # no-store：面板迭代频繁，避免浏览器缓存旧 HTML 导致"按钮消失"类困惑
+        return HTMLResponse(_PAGE, headers={"Cache-Control": "no-store"})
 
     return app
