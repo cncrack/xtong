@@ -93,5 +93,5 @@ class Settings:
 
     @property
     def default_state_path(self) -> Path:
-        """默认账号（单用户阶段）的浏览器会话文件。"""
-        return self.data_dir / "accounts" / "default" / "state.json"
+        """默认账号（id=1）的浏览器会话文件（与 accounts/<id>/ 约定统一）。"""
+        return self.data_dir / "accounts" / "1" / "state.json"

@@ -39,6 +39,15 @@ class TestPanel(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_overview_account_cards(self):
+        r = self.client.get("/api/overview")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        acc = data["accounts"][0]
+        self.assertIn("has_session", acc)
+        self.assertFalse(acc["has_session"])  # 临时目录无 state.json
+        self.assertEqual(acc["courses"][0]["total"], 2)
+
     def test_progress_shape(self):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)
