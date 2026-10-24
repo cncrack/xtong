@@ -414,8 +414,7 @@ function loadSettings(){
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
-    s_lkeyv.value='';s_lkeyv.dataset.hasKey=window.LLM_KEY_STORED?'1':'0';
-    window.LLM_NAME=d.llm_provider_name||'Agnès';
+    s_lkeyv.value='';s_lkeyv.dataset.hasKey=(window.LLM_KEY_STORED||d.llm_key_env_set)?'1':'0';    window.LLM_NAME=d.llm_provider_name||'Agnès';
     window.LLM_KEY_STORED=!!d.llm_key_stored;
     const hint=d.llm_key_stored?'✓ Key 已加密存本机':(d.llm_key_env_set?'✓ Key 来自环境变量':'⚠ 未配置 Key——下方粘贴后点保存');
     const h2=document.getElementById('s_lhint2'); if(h2)h2.textContent=hint;
@@ -437,8 +436,9 @@ function renderProviders(){
   const s=document.getElementById('s_lhint2');
   const cur=[...PROV.builtin,...PROV.custom].find(p=>p.name===PROV.current);
   if(s){
-    const keyStat=document.getElementById('s_lkeyv').dataset.hasKey==='1'
-      ?'✓ Key 已加密保存，可直接使用':'⚠ 尚无可用 Key——粘贴 Key 后点保存';
+    const keyStat=window.LLM_KEY_STORED
+      ?'✓ Key 已加密保存，可直接使用'
+      :(d.llm_key_env_set?'✓ Key 来自环境变量，可直接使用':'⚠ 尚无可用 Key——粘贴 Key 后点保存');
     s.innerHTML=`当前使用：<b style="color:var(--accent)">${esc(PROV.current)}</b>`+
       (cur?`（${esc(cur.base_url)} / ${esc(cur.model)}）`:'')+`<br>${keyStat}`+
       (PROV.current===document.getElementById('s_lname').value.trim()
@@ -469,12 +469,15 @@ function loadProviders(){
     if(d.ok){PROV=d;renderProviders();}});}
 function testLLM(){
   const el=document.getElementById('s_lhint');
-  el.textContent='🔌 测试中…';
+  el.textContent='🔌 测试中…（约 10 秒）';
+  const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),15000);
   fetch('/api/llm/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    signal:ctl.signal,
     body:JSON.stringify({base_url:s_lurl.value.trim(),model:s_lmodel.value.trim(),
       key:s_lkeyv.value.trim()})})
-  .then(r=>r.json()).then(d=>{el.textContent=d.ok
-    ?`✓ 连通成功，模型回复：${d.reply}`:'✗ 失败：'+d.error;});}
+  .then(r=>r.json()).then(d=>{clearTimeout(t);el.textContent=d.ok
+    ?`✓ 连通成功，模型回复：${d.reply}`:'✗ 失败：'+d.error;})
+  .catch(e=>{clearTimeout(t);el.textContent='✗ 测试失败：'+(e.name==='AbortError'?'超时（15秒）':e);});}
 function saveSettings(){
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({quiz_enabled:s_quiz.checked,window_start:s_ws.value,
@@ -866,7 +869,7 @@ def create_app(settings: Settings) -> FastAPI:
             except Exception:
                 pass
         if not key:
-            key = os.environ.get(fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"), "")
+            key = _os.environ.get(fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"), "")
         if not key:
             return {"ok": False, "error": "未提供 Key 且本机无已存 Key"}
         try:
