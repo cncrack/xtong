@@ -25,6 +25,17 @@ log = get_logger("chaoxing.work")
 QTYPE_MAP = {"单选题": "single", "多选题": "multi", "判断题": "judge",
              "填空题": "fill", "简答题": "fill"}
 
+# 学习通 font-cxsecret 字体加密的经验对照（密文字符→明文）。
+# 来源：实况样本上下文推断，逐步扩充；正规方案（fontTools 字形比对）列入后续。
+CIPHER_MAP = {
+    "実": "学", "宯": "业", "宬": "就", "宲": "竞", "宱": "争", "宎": "高",
+    "宔": "本", "宥": "先", "宩": "自", "宍": "干", "宨": "校",
+}
+
+
+def decode_cxsecret(text: str) -> str:
+    return "".join(CIPHER_MAP.get(ch, ch) for ch in text)
+
 
 def parse_work_questions(html: str) -> list[dict[str, Any]]:
     """解析作业页 → [{qid, qtype, qtype_cn, stem, options}]（按页面顺序）。"""
@@ -45,8 +56,8 @@ def parse_work_questions(html: str) -> list[dict[str, Any]]:
             "qid": q.get("id", ""),
             "qtype": QTYPE_MAP.get(qtype_cn, "fill"),
             "qtype_cn": qtype_cn,
-            "stem": stem[:400],
-            "options": options,
+            "stem": decode_cxsecret(stem)[:400],
+            "options": [decode_cxsecret(o) for o in options],
         })
     return out
 
@@ -90,6 +101,8 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
     quiz_cfg = dict(settings.quiz)
     if not quiz_cfg.get("work_enabled"):
         return {"status": "disabled", "detail": "作业作答未启用（[quiz].work_enabled）"}
+    # 作业开关已开即视为作答启用（handle_quiz 的 enabled 门是弹题总开关语义）
+    quiz_cfg["enabled"] = True
     questions = parse_work_questions(work_frame.content())
     stats = {"total": len(questions), "filled": 0, "manual": 0, "status": "semi"}
     llm = LLMClient(settings.llm)

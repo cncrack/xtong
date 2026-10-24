@@ -555,6 +555,60 @@ def cmd_auto(args: argparse.Namespace) -> int:
             return 0
 
 
+def cmd_work(args: argparse.Namespace) -> int:
+    """P2.5：进入指定账号的章节作业页并作答（默认半自动：只填不交）。"""
+    from playwright.sync_api import sync_playwright
+
+    from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
+    from .adapters.chaoxing.work import answer_work
+    from .core import accounts as acc
+    from .core.accounts import account_state_path
+    from .store.db import connect
+
+    s = _settings(args)
+    conn = connect(s.db_path)
+    try:
+        account_id = _account_id_of(conn, args.account)
+        state = account_state_path(s, account_id)
+        if not state.exists():
+            print("[FAIL] 该账号未登录")
+            return 1
+        course = _pick_course(conn, args.course or "知行合一", account_id)
+        if course is None:
+            print(f"[FAIL] 未找到课程：{args.course}")
+            return 1
+        ch = conn.execute(
+            "SELECT * FROM chapters WHERE course_id=? AND (name LIKE ? OR idx=?) LIMIT 1",
+            (course["id"], f"%{args.chapter}%",
+             int(args.chapter) if args.chapter.isdigit() else -1)).fetchone()
+        if ch is None:
+            print(f"[FAIL] 未找到章节：{args.chapter}")
+            return 1
+        print(f"目标：《{course['name']}》{ch['name']}（kid={ch['platform_chapter_id']}）")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(storage_state=str(state))
+            page = context.new_page()
+            try:
+                tree = open_chapter_frame(page, course["url"])
+                tree.locator(f"#cur{ch['platform_chapter_id']}").first.click(timeout=15_000)
+                work_frame = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+                if work_frame is None:
+                    print("[FAIL] 未找到作业页（该章节可能不是作业任务点）")
+                    return 1
+                stats = answer_work(work_frame, s, conn, account_id,
+                                    course["name"], submit=args.submit)
+                print(f"作业作答：{stats}")
+                if stats.get("status") == "semi":
+                    print("（半自动模式：答案已填入未提交——请人工到作业页核对后自行提交）")
+                context.storage_state(path=str(state))  # 滚动续期
+            finally:
+                browser.close()
+        return 0
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
@@ -613,6 +667,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("panel", help="启动 Web 管理面板（浏览器查看进度/账号/日志）")
     sub.add_parser("auto", help="常驻调度守护：各账号定时自动刷课（start_at/窗口内随机，额度停机）")
 
+    p_wk = sub.add_parser("work", help="章节作业 AI 作答（P2.5，默认半自动只填不交）")
+    p_wk.add_argument("account", help="账号 id/标签")
+    p_wk.add_argument("chapter", help="章节关键词（如 2.12）")
+    p_wk.add_argument("--course", default="知行合一", help="课程名（缺省知行合一）")
+    p_wk.add_argument("--submit", action="store_true",
+                      help="自动提交（默认只填不交，人工核对后自提）")
+
     args = parser.parse_args(argv)
     handlers = {
         "init": cmd_init,
@@ -626,6 +687,7 @@ def main(argv: list[str] | None = None) -> int:
         "mlearn": cmd_mlearn,
         "panel": cmd_panel,
         "auto": cmd_auto,
+        "work": cmd_work,
     }
     try:
         return handlers[args.command](args)
