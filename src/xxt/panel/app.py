@@ -589,7 +589,7 @@ function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度�
     if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
 document.getElementById('q').addEventListener('input',()=>{PAGE=1;renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
-renderLogs();loadSettings();syncRun();setInterval(syncRun,15000);
+renderLogs();loadSettings();loadProviders();syncRun();setInterval(syncRun,15000);
 </script></body></html>"""
 
 
