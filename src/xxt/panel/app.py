@@ -320,6 +320,22 @@ function renderAccounts(){
     const mainCourse = (run && a.courses.find(c=>c.name===run.course))
       || a.courses.find(c=>c.done>0) || a.courses[0];
     const others = a.courses.filter(c=>!mainCourse || c.name!==mainCourse.name);
+    // 作业任务点（名称含"作业/测验/考试"）：挂课程行下展示真实状态
+    const workRe = /作业|测验|考试/;
+    const works = a.works || [];
+    const mkWork = w => {
+      const st = w.status==='done' ? badge('已完成','b-ok')
+        : w.ai_answered ? badge('AI已答·待核对','b-info') : badge('未完成','b-warn');
+      const btn = w.status==='done' ? '' :
+        `<button class="minibtn" title="按该账号作业策略处理（✎管理可改：号主自理/参考答案/AI代答）"
+          onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">📝 ${a.work_mode==='ai'?'AI代答':a.work_mode==='reference'?'参考答案':'去处理'}</button>`;
+      return `<div class="course" style="border:1px dashed var(--line);border-radius:11px">
+        <div class="t2"><span class="nm">📄 ${hl(w.name,q)} <span class="muted" style="font-size:.7rem">作业任务</span></span>
+        <span class="val" style="display:flex;gap:.45rem;align-items:center">${st}${btn}</span></div></div>`;
+    };
+    const workHtml = works.length
+      ? works.map(mkWork).join('')
+      : (mainCourse && workRe.test(mainCourse.name) ? '' : '');
     const searching = document.getElementById('q').value.trim()!=='';
     // 仅当"课程名"命中才自动展开；搜人名/备注时保持折叠（找人不找课）
     const autoOpen = others.some(c=>hits.some(h=>h.name===c.name));
@@ -328,6 +344,7 @@ function renderAccounts(){
     const othersHtml = others.map(mkCourse).join('');
     const doneSum = others.reduce((s,c)=>s+c.done,0);
     const courses = (mainCourse ? mainHtml : '<div class="muted" style="font-size:.8rem">暂无课程数据</div>')
+      + workHtml
       + (others.length ? `<button class="morebtn" onclick="toggleMore(${a.id})">${open?'▾':'▸'} 其他 ${others.length} 门课 · 已完成 ${doneSum} 个知识点</button>
         <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
     const stopBtn=run?`<button class="minibtn danger pulse" title="停止该账号正在刷的课：已完成视频全部保留，下次点▶从断点续播" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
@@ -537,6 +554,24 @@ def create_app(settings: Settings) -> FastAPI:
                         (a["id"],),
                     )
                 ]
+                # 作业任务点挂课程（名称含作业/测验/考试；状态=章节状态；AI 已答标记）
+                cids = [c2["id"] for c2 in conn.execute(
+                    "SELECT id FROM courses WHERE account_id=?", (a["id"],))]
+                works = []
+                for cid in cids:
+                    cname = conn.execute("SELECT name FROM courses WHERE id=?", (cid,)).fetchone()["name"]
+                    for h in conn.execute(
+                            "SELECT name, status FROM chapters WHERE course_id=? "
+                            "AND (name LIKE '%作业%' OR name LIKE '%测验%' OR name LIKE '%考试%') "
+                            "ORDER BY idx", (cid,)):
+                        # AI 已答判定：该账号当日/历史 work-answer 日志数（作业级粒度足够）
+                        ai_answered = bool(conn.execute(
+                            "SELECT id FROM run_logs WHERE account_id=? AND event='work-answer' "
+                            "AND detail LIKE ? LIMIT 1",
+                            (a["id"], f"%{h['name'][:10]}%")).fetchone())
+                        works.append({"course": cname, "name": h["name"],
+                                      "status": h["status"], "ai_answered": ai_answered})
+                a["works"] = works
             today = time.strftime("%Y-%m-%d")
             n = conn.execute(
                 "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
