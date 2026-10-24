@@ -267,7 +267,8 @@ function renderAccounts(){
   document.getElementById('accounts').innerHTML=slice.map(({a,hits})=>{
     const status=a.status==='active'?'b-ok':'b-warn';
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
-    const chips=[a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
+    const chips=[`今日 ${a.today_videos??0} 个`,a.today_min?`今日 ${a.today_min} 分钟`:'',
+                 a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
                  a.start_at?`定时 ${a.start_at}`:(AUTOPLAN.times[a.id]?`今日定时 ${AUTOPLAN.times[a.id]}`:'定时未设'),
@@ -433,13 +434,36 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/overview")
     def overview():
-        """多账号总览：每账号的登录状态、覆盖配置与各自课程进度。"""
+        """多账号总览：每账号的登录状态、覆盖配置、课程进度与当日战果。"""
+        from datetime import datetime as _dt
+
+        def today_stats(conn: sqlite3.Connection, account_id: int, today: str) -> dict:
+            videos = conn.execute(
+                "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' "
+                "AND account_id=? AND ts LIKE ?", (account_id, f"{today}%"),
+            ).fetchone()["c"]
+            events = conn.execute(
+                "SELECT ts, event FROM run_logs WHERE account_id=? AND ts LIKE ? "
+                "AND event LIKE 'session-%' ORDER BY id", (account_id, f"{today}%"),
+            ).fetchall()
+            seconds, start = 0.0, None
+            for ev in events:  # 会话开始→结束配对累计时长（含拟人间隔，≈学习时长）
+                ts = _dt.fromisoformat(ev["ts"])
+                if ev["event"] == "session-start":
+                    start = ts
+                elif ev["event"] in ("session-end", "session-stop") and start:
+                    seconds += (ts - start).total_seconds()
+                    start = None
+            return {"today_videos": videos, "today_min": int(seconds // 60)}
+
         conn = db()
         try:
+            today = time.strftime("%Y-%m-%d")
             accounts = [dict(r) for r in list_accounts(conn)]
             for a in accounts:
                 state = settings.data_dir / "accounts" / str(a["id"]) / "state.json"
                 a["has_session"] = state.exists()
+                a.update(today_stats(conn, a["id"], today))
                 a["window"] = (
                     f"{a['window_start']}–{a['window_end']}"
                     if a["window_start"] and a["window_end"] else None
