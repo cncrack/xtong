@@ -295,8 +295,9 @@ function renderAccounts(){
   document.getElementById('accounts').innerHTML=slice.map(({a,hits})=>{
     const status=a.status==='active'?'b-ok':'b-warn';
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
+    const wm=a.work_effective||'owner';
     const chips=[`今日 ${a.today_videos??0} 个`,a.today_min?`今日 ${a.today_min} 分钟`:'',
-                 a.work_mode==='ai'?'作业=AI代答':a.work_mode==='reference'?'作业=参考答案':'作业=号主自理',
+                 `作业=${a.work_mode==='ai'?'AI代答':a.work_mode==='reference'?'参考答案':'号主自理'}${a.work_from_global?'(全局)':''}→生效:${wm==='ai'?'AI代答':wm==='reference'?'参考答案':'号主自理'}`,
                  a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
@@ -553,9 +554,15 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             today = time.strftime("%Y-%m-%d")
             accounts = [dict(r) for r in list_accounts(conn)]
+            global_default = Settings(root=settings.root).quiz.get(
+                "work_mode_default", "owner")  # 生效策略计算用（账号显式优先）
             for a in accounts:
                 state = settings.data_dir / "accounts" / str(a["id"]) / "state.json"
                 a["has_session"] = state.exists()
+                # 生效策略 = 账号显式 > 全局默认（卡片显示"实际生效值"并标注来源）
+                eff = a.get("work_mode") or global_default
+                a["work_effective"] = eff
+                a["work_from_global"] = not a.get("work_mode")
                 a.update(today_stats(conn, a["id"], today))
                 a["window"] = (
                     f"{a['window_start']}–{a['window_end']}"
