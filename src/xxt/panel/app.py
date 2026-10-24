@@ -1,8 +1,10 @@
-"""FastAPI 应用工厂：所有接口只读，凭据永不出现在任何响应中。"""
+"""FastAPI 应用工厂：只读视图 + 学习会话控制；凭据永不出现在任何响应中。"""
 
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 import time
 
 from fastapi import FastAPI
@@ -11,6 +13,9 @@ from fastapi.responses import HTMLResponse
 from ..config import Settings
 from ..core.accounts import list_accounts
 from ..store.db import connect
+
+# 学习会话进程表：account_id → {proc, course}（面板重启后进程仍活但失联，属已知限制）
+_JOBS: dict[int, dict] = {}
 
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -80,6 +85,9 @@ background:#fff;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,
 .switch input:checked+i{background:var(--ok)}
 .switch input:checked+i:before{transform:translateX(19px)}
 .dlgbtns{display:flex;gap:.6rem;justify-content:flex-end;margin-top:1.1rem}
+.frm{display:grid;grid-template-columns:150px 1fr;gap:.15rem .9rem;align-items:center;margin:.55rem 0}
+.frm label{font-size:.88rem}
+.frm small{display:block;color:var(--muted);font-size:.72rem;margin-top:.1rem}
 .primary{background:linear-gradient(120deg,#4756d7,#7a5bff);color:#fff;border:none;
 border-radius:11px;padding:.55rem 1.2rem;cursor:pointer;font-size:.9rem}
 .ghost{background:var(--bg);border:1px solid var(--line);border-radius:11px;
@@ -127,13 +135,13 @@ padding:.55rem 1rem;cursor:pointer;font-size:.9rem}
 </dialog>
 
 <dialog id="editDlg"><h3>✎ 账号管理 <span id="e_title" class="muted" style="font-size:.85rem"></span></h3>
-  <div class="frow"><label>备注名</label><input type="text" id="e_label" style="width:170px"></div>
-  <div class="frow"><label>状态</label><select id="e_status"><option value="active">active</option><option value="paused">paused</option></select></div>
-  <div class="frow"><label>优先级</label><input type="number" step="0.5" id="e_pri" style="width:90px"></div>
-  <div class="frow"><label>学习窗口</label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
-  <div class="frow"><label>每日时长/任务额度（0 用全局）</label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
-  <div class="frow"><label>有效期至（空=永久）</label><input type="date" id="e_vu"></div>
-  <div class="frow"><label>备注</label><input type="text" id="e_note" style="width:190px"></div>
+  <div class="frm"><label>备注名<small>面板显示的名字，如"同学的号"</small></label><input type="text" id="e_label"></div>
+  <div class="frm"><label>状态<small>paused=暂停调度（不自动学）</small></label><select id="e_status"><option value="active">active（启用）</option><option value="paused">paused（暂停）</option></select></div>
+  <div class="frm"><label>优先级<small>课程轮换权重，越大越优先学</small></label><input type="number" step="0.5" id="e_pri"></div>
+  <div class="frm"><label>学习窗口<small>该账号允许学习的时段（空=用全局 08:00–23:00）</small></label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
+  <div class="frm"><label>每日额度<small>时长(分)/任务(个)，0=用全局默认</small></label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
+  <div class="frm"><label>有效期至<small>租用账号的到期日；过期自动停刷，空=永久</small></label><input type="date" id="e_vu"></div>
+  <div class="frm"><label>备注<small>自由文本，如归还日期/号主</small></label><input type="text" id="e_note"></div>
   <div class="dlgbtns" style="justify-content:space-between">
     <span><button class="ghost" style="color:var(--bad)" onclick="doDel()">删除账号</button>
     <button class="ghost" onclick="doRenew()">续期 +30 天</button></span>
@@ -171,9 +179,19 @@ function renderAccounts(){
                  .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
     const courses=a.courses.map(c=>{
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
-      return `<div class="course${hit}"><div class="t"><span>${esc(c.name)}</span><b>${c.done}/${c.total}</b></div>
+      const run=RUNNING[a.id];
+      const runningThis=run&&run.course===c.name;
+      const ctl=runningThis
+        ?`<span class="badge b-ok" title="自 ${run.since}">刷课中</span>`
+        :`<button class="ghost" style="padding:.05rem .5rem;font-size:.72rem" title="开始刷这门课"
+            data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷</button>`;
+      return `<div class="course${hit}"><div class="t"><span>${esc(c.name)}</span>
+      <span style="display:flex;gap:.45rem;align-items:center;flex:none"><b>${c.done}/${c.total}</b>${ctl}</span></div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;}).join('')
       ||'<div class="muted" style="font-size:.8rem">暂无课程数据</div>';
+    const run=RUNNING[a.id];
+    const stopBtn=run?`<button class="ghost" style="color:var(--bad);padding:.2rem .6rem;font-size:.78rem"
+      onclick="stopGrind(${a.id})">■ 停止</button>`:'';
     const bad=a.days_left!==null&&a.days_left<0;
     return `<div class="card"><h3>
       <span class="who">${esc(a.platform_username||'—')}</span>
@@ -181,7 +199,7 @@ function renderAccounts(){
       ${badge(bad?'已过期':a.status,a.status==='active'&&!bad?'b-ok':'b-warn')} ${sess}
       <span class="chip">优先级 ${a.priority}</span>
       <button class="ghost" style="margin-left:auto;padding:.2rem .6rem;font-size:.78rem"
-        onclick="editAccount(${a.id})">✎ 管理</button></h3>
+        onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</h3>
       ${a.note?`<div class="muted" style="font-size:.78rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
       <div class="chips">${chips}</div>${courses}</div>`;
   }).join('')||'<div class="card muted">无匹配</div>';
@@ -228,7 +246,26 @@ function doAdd(){
       password:a_pw.value,priority:+a_pri.value||1})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
-let EDIT=null;
+let EDIT=null,RUNNING={};
+function startGrind(id,course){
+  fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({account_id:id,course:course})})
+  .then(r=>r.json()).then(d=>{alert(d.ok?'已开始刷《'+course+'》（拟人节奏，额度内自动停）':'失败：'+d.error);
+    syncRun();});}
+function stopGrind(id){
+  if(!confirm('停止该账号当前刷课会话？（已完成视频保留）'))return;
+  fetch('/api/study/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({account_id:id})}).then(r=>r.json()).then(()=>syncRun());}
+async function syncRun(){
+  try{RUNNING=(await (await fetch('/api/study/status')).json()).jobs||{};}catch(e){RUNNING={};}
+  renderAccounts();}
+function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
+  .then(r=>r.json()).then(d=>{if(!d.ok){alert('失败');return;}
+    const until=new Date(Date.now()+d.days_left*864e5).toISOString().slice(0,10);
+    e_vu.value=until;  // 弹窗内即时刷新有效期
+    e_meta.textContent=`已续期，剩余 ${d.days_left} 天（至 ${until}）`;
+    reload();});}
 function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
   e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
   e_pri.value=EDIT.priority;e_ws.value=EDIT.window_start||'';e_we.value=EDIT.window_end||'';
@@ -468,6 +505,57 @@ def create_app(settings: Settings) -> FastAPI:
                     else {"ok": False, "error": "账号不存在"})
         finally:
             conn.close()
+
+    @app.post("/api/study/start")
+    def study_start(body: dict):
+        """为账号启动一门课的学习会话（子进程 xxt mlearn --accounts <id>）。"""
+        import pathlib
+
+        account_id, course = body.get("account_id"), body.get("course")
+        if not (account_id and course):
+            return {"ok": False, "error": "缺少 account_id / course"}
+        job = _JOBS.get(account_id)
+        if job and job["proc"].poll() is None:
+            return {"ok": False, "error": f"该账号已有进行中的会话（{job['course']}）"}
+        conn = db()
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) AS c FROM courses WHERE account_id=?", (account_id,)
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        if not n:
+            return {"ok": False, "error": "该账号还没有课程数据，先为其抓取课程（xxt courses --account）"}
+        root = pathlib.Path(settings.root)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "xxt.cli", "mlearn", course,
+             "--accounts", str(account_id)],
+            cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _JOBS[account_id] = {"proc": proc, "course": course, "since": time.strftime("%H:%M")}
+        return {"ok": True}
+
+    @app.post("/api/study/stop")
+    def study_stop(body: dict):
+        account_id = body.get("account_id")
+        job = _JOBS.get(account_id)
+        if not job or job["proc"].poll() is not None:
+            _JOBS.pop(account_id, None)
+            return {"ok": False, "error": "该账号没有进行中的会话"}
+        job["proc"].terminate()
+        _JOBS.pop(account_id, None)
+        return {"ok": True, "note": "已终止（当前视频进度保留，下次续播）"}
+
+    @app.get("/api/study/status")
+    def study_status():
+        out = {}
+        for aid, job in _JOBS.items():
+            alive = job["proc"].poll() is None
+            out[str(aid)] = {"course": job["course"], "running": alive,
+                             "since": job["since"]}
+            if not alive:
+                _JOBS.pop(aid, None)
+        return {"jobs": out}
 
     @app.get("/", response_class=HTMLResponse)
     def index():

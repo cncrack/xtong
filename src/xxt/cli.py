@@ -415,6 +415,92 @@ def cmd_panel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto(args: argparse.Namespace) -> int:
+    """常驻调度：各账号在计划时刻（start_at 或窗口内随机）自动开始当日学习会话。
+
+    生效约束：账号 active 且在有效期内、已登录、全局/账号窗口、每日额度（会话自然停机）。
+    每账号每天只自动启动一次；Ctrl+C 退出守护（已启动的学习进程自行跑到额度停机）。
+    """
+    import random as _random
+    import subprocess as _sp
+    import sys as _sys
+    import time as _time
+    from pathlib import Path as _Path
+
+    from .core import accounts as acc
+    from .core.accounts import is_valid
+    from .core.rotation import pick_courses
+
+    s = _settings(args)
+    planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM 或 "done"
+    running: dict[int, _sp.Popen] = {}
+    plan_date = _time.strftime("%Y-%m-%d")
+    get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
+    print("[auto] 守护启动。各账号计划时刻：见日志/下方输出；Ctrl+C 退出。")
+
+    while True:
+        try:
+            today = _time.strftime("%Y-%m-%d")
+            if today != plan_date:  # 跨日重置
+                planned, plan_date = {}, today
+            conn = connect(s.db_path)
+            try:
+                rows = [r for r in acc.list_accounts(conn)
+                        if r["status"] == "active" and is_valid(r)]
+            finally:
+                conn.close()
+            for row in rows:
+                aid = row["id"]
+                proc = running.get(aid)
+                if proc is not None:
+                    if proc.poll() is None:
+                        continue
+                    running.pop(aid)
+                    planned[aid] = "done"  # 会话结束=当日完成（额度内自然停）
+                if planned.get(aid) == "done":
+                    continue
+                if aid not in planned:
+                    if row["start_at"]:
+                        planned[aid] = row["start_at"]
+                    else:
+                        ws = row["window_start"] or s.pace["daily_window"][0]
+                        try:
+                            h, m = map(int, ws.split(":"))
+                            off = _random.randint(0, 120)
+                            planned[aid] = f"{(h * 60 + m + off) // 60:02d}:{(h * 60 + m + off) % 60:02d}"
+                        except Exception:
+                            planned[aid] = "09:00"
+                    print(f"[auto] 账号#{aid} {row['label']} 今日计划 {planned[aid]} 开刷")
+                if _time.strftime("%H:%M") < planned[aid]:
+                    continue
+                state = s.data_dir / "accounts" / str(aid) / "state.json"
+                if not state.exists():
+                    planned[aid] = "done"
+                    print(f"[auto] 账号#{aid} 未登录，今日跳过")
+                    continue
+                conn = connect(s.db_path)
+                try:
+                    picks = pick_courses(conn, _random.Random(), s.rotation,
+                                         account_id=aid, count=1)
+                finally:
+                    conn.close()
+                if not picks:
+                    planned[aid] = "done"
+                    print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
+                    continue
+                course_name = picks[0]["name"]
+                print(f"[auto] 启动 账号#{aid} {row['label']} →《{course_name}》")
+                running[aid] = _sp.Popen(
+                    [_sys.executable, "-m", "xxt.cli", "mlearn", course_name,
+                     "--accounts", str(aid)],
+                    cwd=str(s.root), stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                )
+            _time.sleep(30)
+        except KeyboardInterrupt:
+            print("\n[auto] 守护退出（学习进程继续自行运行至额度停机）")
+            return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
@@ -471,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ml.add_argument("--concurrency", type=int, default=2, help="全局同时学习账号数上限")
 
     sub.add_parser("panel", help="启动 Web 管理面板（浏览器查看进度/账号/日志）")
+    sub.add_parser("auto", help="常驻调度守护：各账号定时自动刷课（start_at/窗口内随机，额度停机）")
 
     args = parser.parse_args(argv)
     handlers = {
@@ -484,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         "account": cmd_account,
         "mlearn": cmd_mlearn,
         "panel": cmd_panel,
+        "auto": cmd_auto,
     }
     try:
         return handlers[args.command](args)
