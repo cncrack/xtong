@@ -88,6 +88,11 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .btn:hover{background:rgba(255,255,255,.34);transform:translateY(-1px)}
 .toolbar{display:flex;align-items:center;gap:.7rem;margin:1.05rem 0 .85rem;flex-wrap:wrap}
 .toolbar .muted{font-size:.85rem}
+#synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
+.flash{animation:flash 1.2s ease}
+@keyframes flash{0%{color:#fff;text-shadow:0 0 14px #7dffb0}100%{}}
+#today.flash{animation:flashg 1.6s ease}
+@keyframes flashg{0%,40%{text-shadow:0 0 16px #9fffc6;transform:scale(1.25)}100%{transform:scale(1)}}
 select,input[type=time],input[type=number],input[type=text],input[type=password],input[type=date]
 {border:1px solid var(--line);border-radius:10px;padding:.42rem .6rem;font-size:.86rem;
 background:var(--card);color:var(--ink);outline:none;transition:.15s}
@@ -197,6 +202,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 <div class="toolbar">
   <select id="psize"><option value="10">每页 10 张</option><option value="20" selected>每页 20 张</option><option value="50">每页 50 张</option></select>
   <span class="muted" id="accInfo"></span>
+  <span id="synced">自动刷新中…</span>
 </div>
 <div class="grid" id="accounts"><div class="card muted">加载中…</div></div>
 <div class="pager" id="pager"></div>
@@ -347,10 +353,6 @@ function saveSettings(){
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
     if(d.ok)document.getElementById('dlg').close();});
 }
-fetch('/api/overview').then(r=>r.json()).then(d=>{
-  document.getElementById('today').textContent=d.today_videos;
-  ACCOUNTS=d.accounts;renderAccounts();
-});
 function reload(){fetch('/api/overview').then(r=>r.json()).then(d=>{
   document.getElementById('today').textContent=d.today_videos;
   ACCOUNTS=d.accounts;renderAccounts();});}
@@ -376,13 +378,21 @@ function stopGrind(id){
 async function syncRun(){
   try{const d=await (await fetch('/api/study/status')).json();
     RUNNING=d.jobs||{};AUTOSTATE=d.auto||{};}catch(e){RUNNING={};AUTOSTATE={};}
+  try{AUTOPLAN=await (await fetch('/api/autoplan')).json();}catch(e){AUTOPLAN={times:{}};}
+  try{const d=await (await fetch('/api/overview')).json();
+    const prev=document.getElementById('today').textContent;
+    document.getElementById('today').textContent=d.today_videos;
+    if(prev!=='-'&&prev!==String(d.today_videos)){  // 有新战果→指标闪烁
+      const m=document.getElementById('today');m.classList.remove('flash');void m.offsetWidth;m.classList.add('flash');}
+    ACCOUNTS=d.accounts;}catch(e){}
   const btn=document.getElementById('autoBtn');
   const runN=Object.values(RUNNING).filter(j=>j.running).length;
   const el=document.getElementById('runN'); if(el)el.textContent=runN;
   if(AUTOSTATE.running){btn.textContent=`⏱ 调度运行中（${AUTOSTATE.since}）`;
     btn.style.background='rgba(34,160,93,.5)';}
   else{btn.textContent='⏱ 定时调度：点击启动';btn.style.background='';}
-  try{AUTOPLAN=await (await fetch('/api/autoplan')).json();}catch(e){AUTOPLAN={times:{}};}
+  const sync=document.getElementById('synced');
+  if(sync)sync.textContent='自动刷新中 · 更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   renderAccounts();renderLogs();}
 function toggleAuto(){
   const on=AUTOSTATE.running;
