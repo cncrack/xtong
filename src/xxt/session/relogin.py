@@ -20,14 +20,14 @@ log = get_logger("session.relogin")
 
 LOGIN_BUDGET_PER_DAY = 2  # 安全底线，硬编码不上配置
 
-# 2026-10-24 匿名实况核对（无账号 cookie 的公开页访问）：#phone/#pwd/#loginBtn 已验证；
-# 验证码容器仅在提交后才可能出现，保持通行猜测并标注
+# 2026-10-24 两次实况核对（匿名公开页）：#phone/#pwd/#loginBtn 已验证；
+# 验证码容器为常驻空 div#captcha（有子元素=验证码出现）；错误提示是无样式 <p> 文本"…密码错误"
 _FORM = {
     "username": "input#phone",
     "password": "input#pwd",
     "submit": "#loginBtn",
-    "captcha": ".geetest_widget, .yidun_modal, #code",  # 滑块/验证码出现即转人工（待实测）
-    "error": ".error-tips, #msg",                        # 错误提示文本（待实测）
+    "captcha_has_content": "#captcha *",      # 容器非空 → 验证码出现，转人工
+    "error_text": "密码错误",                   # 平台明文错误文案（wrong-password 判定）
 }
 
 
@@ -86,11 +86,10 @@ def auto_relogin(conn: sqlite3.Connection, key: bytes, login_url: str, state_pat
                 if any(c["name"] in ("uid", "_uid", "vc3") and c["value"] for c in cookies):
                     outcome = "ok"
                     break
-                if page.locator(_FORM["captcha"]).count() > 0:
+                if page.locator(_FORM["captcha_has_content"]).count() > 0:
                     outcome = "captcha"
                     break
-                err = page.locator(_FORM["error"]).first
-                if err.count() and err.inner_text(timeout=1_000).strip():
+                if page.locator(f"text={_FORM['error_text']}").count() > 0:
                     outcome = "wrong-password"
                     break
                 page.wait_for_timeout(1_000)

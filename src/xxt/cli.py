@@ -96,69 +96,94 @@ def _save_username(conn, adapter, account_id: int = 1) -> None:
 
 def cmd_courses(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
+    from .core.accounts import account_state_path
     from .store.db import connect, utcnow
 
     s = _settings(args)
     adapter = get_adapter(s)
+    conn = connect(s.db_path)
+    account_id = _account_id_of(conn, getattr(args, "account", None))
+    state_path = account_state_path(s, account_id)
+    if not state_path.exists():
+        print(f"[FAIL] 账号#{account_id} 尚未登录（无会话文件），先登录再抓课程")
+        return 1
     try:
-        courses = adapter.fetch_courses(s.default_state_path)
+        courses = adapter.fetch_courses(state_path)
     except RuntimeError as exc:
         print(f"[FAIL] {exc}")
         return 1
-    conn = connect(s.db_path)
     try:
         for c in courses:
             conn.execute(
                 """
                 INSERT INTO courses(account_id, platform_course_id, clazz_id, name, url)
-                VALUES(1, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?)
                 ON CONFLICT(account_id, platform_course_id)
                 DO UPDATE SET clazz_id=excluded.clazz_id,
                               name=excluded.name,
                               url=excluded.url
                 """,
-                (c["platform_course_id"], c["clazz_id"], c["name"], c["url"]),
+                (account_id, c["platform_course_id"], c["clazz_id"], c["name"], c["url"]),
             )
-        _save_username(conn, adapter)
+        _save_username(conn, adapter, account_id)
         conn.commit()
+        who = conn.execute(
+            "SELECT platform_username FROM accounts WHERE id=?", (account_id,)
+        ).fetchone()[0] or ""
         rows = conn.execute(
-            "SELECT platform_course_id, clazz_id, name FROM courses WHERE account_id=1 ORDER BY id"
+            "SELECT platform_course_id, clazz_id, name FROM courses WHERE account_id=? ORDER BY id",
+            (account_id,),
         ).fetchall()
     finally:
         conn.close()
-    print(f"共 {len(rows)} 门课程（已入库，时间 {utcnow()}）：")
+    print(f"账号#{account_id} {who}：共 {len(rows)} 门课程（已入库，时间 {utcnow()}）：")
     for r in rows:
         print(f"  [{r['platform_course_id']}] {r['name']}")
     return 0
 
 
-def _pick_course(conn, needle: str):
-    """按课程名模糊或 courseid 精确找课程行。"""
+def _pick_course(conn, needle: str, account_id: int = 1):
+    """按课程名模糊或 courseid 精确找课程行（限定账号）。"""
     row = conn.execute(
-        "SELECT * FROM courses WHERE platform_course_id = ? OR name LIKE ? ORDER BY id LIMIT 1",
-        (needle, f"%{needle}%"),
+        "SELECT * FROM courses WHERE account_id = ? AND (platform_course_id = ? OR name LIKE ?) "
+        "ORDER BY id LIMIT 1",
+        (account_id, needle, f"%{needle}%"),
     ).fetchone()
     return row
 
 
+def _account_id_of(conn, needle: str | None) -> int:
+    """解析 --account 参数（id/标签，缺省 1=default）。"""
+    if not needle:
+        return 1
+    from .core import accounts as acc
+
+    row = acc.find_account(conn, needle)
+    if row is None:
+        raise SystemExit(f"[FAIL] 未找到账号：{needle}")
+    return row["id"]
+
+
 def cmd_chapters(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
+    from .core.accounts import account_state_path
     from .store.db import connect
 
     s = _settings(args)
     conn = connect(s.db_path)
     try:
-        course = _pick_course(conn, args.course)
+        account_id = _account_id_of(conn, getattr(args, "account", None))
+        course = _pick_course(conn, args.course, account_id)
         if course is None:
-            print(f"[FAIL] 未找到课程：{args.course}（先跑 xxt courses）")
+            print(f"[FAIL] 未找到课程：{args.course}（账号#{account_id}，先跑 xxt courses --account）")
             return 1
         adapter = get_adapter(s)
         try:
-            chapters = adapter.fetch_chapters(dict(course), s.default_state_path)
+            chapters = adapter.fetch_chapters(dict(course), account_state_path(s, account_id))
         except RuntimeError as exc:
             print(f"[FAIL] {exc}")
             return 1
-        _save_username(conn, adapter)
+        _save_username(conn, adapter, account_id)
         for ch in chapters:
             conn.execute(
                 """
@@ -386,10 +411,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("init", help="初始化数据目录与数据库")
     sub.add_parser("login", help="打开浏览器人工登录学习通，保存会话")
     sub.add_parser("status", help="检查已保存会话是否有效")
-    sub.add_parser("courses", help="抓取课程列表并入库（复用页面自身接口）")
+    p_cs = sub.add_parser("courses", help="抓取课程列表并入库（复用页面自身接口）")
+    p_cs.add_argument("--account", default=None, help="账号 id/标签（缺省 default）")
 
     p_ch = sub.add_parser("chapters", help="抓取指定课程的章节树并入库")
     p_ch.add_argument("course", help="课程名（支持模糊）或 courseid")
+    p_ch.add_argument("--account", default=None, help="账号 id/标签（缺省 default）")
 
     p_learn = sub.add_parser("learn", help="自动学习（不带课程名则按轮换策略自动选课）")
     p_learn.add_argument("course", nargs="?", default=None, help="课程名（支持模糊）或 courseid，可省略")
