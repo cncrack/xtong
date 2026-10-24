@@ -358,7 +358,10 @@ function renderAccounts(){
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
       const q=document.getElementById('q').value.trim();
-    return `<div class="course${hit}"><span class="nm">${hl(c.name,q)}</span>
+      const now=runningThis?` style="border-left:3px solid var(--ok);padding-left:.5rem"`:'';
+      const nowTag=runningThis?` <span class="badge b-ok pulse" style="margin-left:.3rem">当前正在学</span>`:'';
+      const bold=runningThis?'font-weight:800;':'';
+    return `<div class="course${hit}"${now}><span class="nm" style="${bold}">${hl(c.name,q)}${nowTag}</span>
       <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b> · 已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</span>${ctl}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
@@ -381,8 +384,9 @@ function renderAccounts(){
         ? `<button class="minibtn" title="已提交？读回每题得分：答对转正题库、答错清空重学"
             onclick="doReview(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">✔ 读判分</button>` : '';
       return `<div class="course" style="border:1px dashed var(--line);border-radius:11px">
-        <div class="t2"><span class="nm">📄 ${hl(w.name,q)} <span class="muted" style="font-size:.7rem">作业任务</span></span>
-        <span class="val" style="display:flex;gap:.45rem;align-items:center">${st}${btns}${review}</span></div></div>`;
+        <div class="t2" style="margin-bottom:.3rem"><span class="nm">📄 ${hl(w.name,q)}</span>${st}</div>
+        ${btns||review?`<div style="display:flex;gap:.45rem;justify-content:flex-end">${btns}${review}</div>`:''}
+      </div>`;
     };
     const workHtml = works.length
       ? works.map(mkWork).join('')
