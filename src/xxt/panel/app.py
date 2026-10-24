@@ -296,8 +296,9 @@ function renderAccounts(){
     const status=a.status==='active'?'b-ok':'b-warn';
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
     const wm=a.work_effective||'owner';
+    const wmName={ai:'AI代答',reference:'参考答案',owner:'号主自理'};
     const chips=[`今日 ${a.today_videos??0} 个`,a.today_min?`今日 ${a.today_min} 分钟`:'',
-                 `作业=${a.work_mode==='ai'?'AI代答':a.work_mode==='reference'?'参考答案':'号主自理'}${a.work_from_global?'(全局)':''}→生效:${wm==='ai'?'AI代答':wm==='reference'?'参考答案':'号主自理'}`,
+                 `作业=${wmName[wm]||'号主自理'}${a.work_from_global?'（跟随全局）':'（账号单独设置）'}`,
                  a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
