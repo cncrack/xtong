@@ -24,7 +24,7 @@ _ACCOUNT_COLS = {
     "valid_until": "TEXT",
     "renew_count": "INTEGER DEFAULT 0",
     "last_expired_at": "TEXT",
-    "work_mode": "TEXT DEFAULT 'owner'",  # ai | owner | reference
+    "work_mode": "TEXT",  # ai | owner | reference；NULL=跟随全局默认（v0.6 三层模型）
 }
 
 _SCHEMA = """
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     valid_until  TEXT,
     renew_count  INTEGER DEFAULT 0,
     last_expired_at TEXT,
-    work_mode    TEXT DEFAULT 'owner'
+    work_mode    TEXT
 );
 CREATE TABLE IF NOT EXISTS courses (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -68,9 +68,11 @@ def set_overrides(conn: sqlite3.Connection, needle: str, **fields: Any) -> bool:
             sets.append(f"{name} = ?")
             v = fields[name]
             vals.append(int(v) if v is not None else None)
-    if "priority" in fields:
-        sets.append("priority = ?")
-        vals.append(float(fields["priority"]) if fields["priority"] is not None else 1.0)
+            if "priority" in fields:
+                sets.append("priority = ?")
+                vals.append(float(fields["priority"]) if fields["priority"] is not None else 1.0)
+            if not sets:
+                return False
     if not sets:
         return True
     vals.append(row["id"])

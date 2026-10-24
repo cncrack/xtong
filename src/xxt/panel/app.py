@@ -523,8 +523,37 @@ renderLogs();loadSettings();syncRun();setInterval(syncRun,15000);
 </script></body></html>"""
 
 
+def _startup_cleanup(settings: Settings) -> dict:
+    """面板启动自检（用户要求"改后重启即干净"）：清孤儿运行标记、归空旧默认残留。
+
+    只清理可再生成的状态（run 标记、显式 owner 残留），绝不动数据（库/会话/题库）。
+    """
+    report: dict[str, int] = {"run_markers": 0, "owner_residue": 0}
+    run_dir = settings.data_dir / "run"
+    if run_dir.exists():
+        for f in run_dir.glob("*.json"):
+            f.unlink(missing_ok=True)
+            report["run_markers"] += 1
+    try:
+        conn = sqlite3.connect(settings.db_path)
+        cur = conn.execute(
+            "UPDATE accounts SET work_mode=NULL WHERE work_mode='owner'")
+        report["owner_residue"] = cur.rowcount
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return report
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="XXT 管理面板", docs_url="/api/docs")
+
+    cleanup = _startup_cleanup(settings)  # 启动即清（FastAPI 单实例语义）
+    if any(cleanup.values()):
+        from ..log import get_logger
+
+        get_logger("panel").info("启动自检清理：%s", cleanup)
 
     def db() -> sqlite3.Connection:
         return connect(settings.db_path)
