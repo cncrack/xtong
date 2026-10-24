@@ -371,7 +371,9 @@ function renderAccounts(){
     const works = a.works || [];
     const mkWork = w => {
       const st = w.status==='done' ? badge('已完成','b-ok')
-        : w.ai_answered ? badge('AI已答','b-info') : badge('未完成','b-warn');
+        : w.ai_filled ? badge('AI已填入·未提交','b-info')
+        : w.ai_answered ? badge('AI参考已出·未填写','b-info')
+        : badge('未完成','b-warn');
       const btns = w.status==='done' ? '' :
         `<button class="minibtn" title="按该账号作业策略处理（✎管理可改：号主自理/参考答案/AI代答）"
           onclick="doWork(${a.id},'${esc(w.name).replace(/'/g,'&#39;')}')">${wm==='ai'?'📝 AI代答':wm==='reference'?'📝 参考答案':'📝 去处理'}</button>`;
@@ -791,13 +793,18 @@ def create_app(settings: Settings) -> FastAPI:
                             "SELECT name, status FROM chapters WHERE course_id=? "
                             "AND (name LIKE '%作业%' OR name LIKE '%测验%' OR name LIKE '%考试%') "
                             "ORDER BY idx", (cid,)):
-                        # AI 已答判定：work-answer 日志详情以章节名开头
-                        ai_answered = bool(conn.execute(
-                            "SELECT id FROM run_logs WHERE account_id=? AND event='work-answer' "
-                            "AND detail LIKE ? LIMIT 1",
-                            (a["id"], f"{h['name'][:14]}%")).fetchone())
+                        # AI 处理判定：work-answer 日志以章节名开头；
+                        # 状态区分——含"参考答案"=仅出答案未填，否则=真实填入（均未提交）
+                        row2 = conn.execute(
+                            "SELECT detail FROM run_logs WHERE account_id=? AND event='work-answer' "
+                            "AND detail LIKE ? ORDER BY id DESC LIMIT 1",
+                            (a["id"], f"{h['name'][:14]}%")).fetchone()
+                        ai_answered = bool(row2)
+                        ai_filled = bool(row2) and "参考答案" not in (row2["detail"] or "")
                         works.append({"course": cname, "name": h["name"],
-                                      "status": h["status"], "ai_answered": ai_answered})
+                                      "status": h["status"],
+                                      "ai_answered": ai_answered,
+                                      "ai_filled": ai_filled})
                 a["works"] = works
             today = time.strftime("%Y-%m-%d")
             n = conn.execute(
