@@ -322,9 +322,10 @@ function renderAccounts(){
      <button ${PAGE>=pages?'disabled':''} onclick="go(${PAGE+1})">下一页 ›</button>`;
 }
 function go(p){PAGE=p;renderAccounts();}
-function renderLogs(n=20){
+let LOGN=20;
+function renderLogs(n){if(n)LOGN=n;
   const acc=document.getElementById('logAcc')?.value||'';
-  fetch('/api/logs?n=50'+(acc?`&account=${acc}`:'')).then(r=>r.json()).then(d=>{
+  fetch('/api/logs?n='+LOGN+(acc?`&account=${acc}`:'')).then(r=>r.json()).then(d=>{
     document.getElementById('logs').innerHTML='<table>'+d.logs.map(l=>{
       const cls=l.event==='video-done'?'ev-good':l.event==='session-start'?'ev-info':
         (l.event==='session-stop'||l.level==='WARNING')?'ev-warn':'';
@@ -381,7 +382,7 @@ async function syncRun(){
     btn.style.background='rgba(34,160,93,.5)';}
   else{btn.textContent='⏱ 定时调度：点击启动';btn.style.background='';}
   try{AUTOPLAN=await (await fetch('/api/autoplan')).json();}catch(e){AUTOPLAN={times:{}};}
-  renderAccounts();}
+  renderAccounts();renderLogs();}
 function toggleAuto(){
   const on=AUTOSTATE.running;
   if(on&&!confirm('停止定时调度？（已开的学习会话会自行跑到当日额度停机）'))return;
