@@ -246,6 +246,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frm"><label>状态<small>paused=暂停调度（不自动学）</small></label><select id="e_status"><option value="active">active（启用）</option><option value="paused">paused（暂停）</option></select></div>
   <div class="frm"><label>优先级<small>课程轮换权重，越大越优先学</small></label><input type="number" step="0.5" id="e_pri"></div>
   <div class="frm"><label>定时开刷时刻<small>auto 守护的启动时间；空=系统在学习窗口开始后 0~120 分钟随机分配（面板与日志会显示分配结果）</small></label><input type="time" id="e_sa"></div>
+  <div class="frm"><label>作业策略<small>owner=号主自理（默认，只刷视频）；reference=AI出参考答案给你抄；ai=AI代答semi填入</small></label>
+    <select id="e_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div class="frm"><label>学习窗口<small>该账号允许学习的时段（空=用全局 08:00–23:00）</small></label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
   <div class="frm"><label>每日额度<small>时长(分)/任务(个)，0=用全局默认</small></label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
   <div class="frm"><label>有效期至<small>租用账号的到期日；过期自动停刷，空=永久</small></label><input type="date" id="e_vu"></div>
@@ -256,6 +258,11 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <span><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="doSave()">保存</button></span></div>
   <div class="hint" id="e_meta"></div>
+</dialog>
+
+<dialog id="workDlg"><h3>📝 作业参考答案 <span id="w_ch" class="muted" style="font-size:.85rem"></span></h3>
+  <div id="w_body" class="log" style="max-height:52vh;overflow:auto;font-size:.86rem">加载中…</div>
+  <div class="dlgbtns"><button class="primary" onclick="this.closest('dialog').close()">知道了</button></div>
 </dialog>
 
 <script>
@@ -287,6 +294,7 @@ function renderAccounts(){
     const status=a.status==='active'?'b-ok':'b-warn';
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
     const chips=[`今日 ${a.today_videos??0} 个`,a.today_min?`今日 ${a.today_min} 分钟`:'',
+                 a.work_mode==='ai'?'作业=AI代答':a.work_mode==='reference'?'作业=参考答案':'作业=号主自理',
                  a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
                  a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
@@ -332,6 +340,8 @@ function renderAccounts(){
         <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div></div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
+        <button class="minibtn" title="AI 作业：按该账号的作业策略处理（✎管理可改策略）"
+          onclick="doWork(${a.id},'2.12')">📝 作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
@@ -420,10 +430,36 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
     e_vu.value=until;  // 弹窗内即时刷新有效期
     e_meta.textContent=`已续期，剩余 ${d.days_left} 天（至 ${until}）`;
     reload();});}
+function doWork(id,chapter){
+  const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
+  const mode=a.work_mode||'owner';
+  if(mode==='reference'){
+    document.getElementById('w_ch').textContent=`#${id} ${a.platform_username||a.label}｜${chapter}`;
+    document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
+    document.getElementById('workDlg').showModal();
+    fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({chapter:chapter})}).then(r=>r.json()).then(d=>{
+      const el=document.getElementById('w_body');
+      if(!d.ok){el.textContent='失败：'+d.error;return;}
+      if(d.action==='owner'){el.textContent=d.message;return;}
+      el.innerHTML=(d.answers||[]).map((x,i)=>
+        `<div style="margin:.6rem 0"><b>第 ${i+1} 题</b>（${esc(x.stem)}…）<br>
+         <span style="color:var(--ok)">参考答案：</span>${esc(x.answer)}</div>`).join('')
+        +'<div class="hint">请登录该账号作业页抄写并提交（计分作业建议用自己的语言改写）</div>';});
+  } else if(mode==='ai'){
+    if(!confirm('AI 代答模式：后台填入该账号作业（semi 不提交）。完成后需到平台作业页核对并提交。继续？'))return;
+    fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({chapter:chapter})}).then(r=>r.json()).then(d=>{
+      alert(d.ok?d.message:'失败：'+d.error); if(d.ok)syncRun();});
+  } else {
+    const who = a.platform_username || a.label;
+    alert(`该账号作业策略=号主自理（默认）：作业由 ${who} 自己完成，本工具只负责刷视频。如需 AI 辅助：✎ 管理 → 作业策略 → 改为"AI 参考答案"或"AI 代答"。`);
+  }
+}
 function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
   e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
   e_pri.value=EDIT.priority;e_ws.value=EDIT.window_start||'';e_we.value=EDIT.window_end||'';
-  e_sa.value=EDIT.start_at||'';
+  e_sa.value=EDIT.start_at||'';e_wm.value=EDIT.work_mode||'owner';
   e_min.value=EDIT.max_minutes??0;e_task.value=EDIT.max_tasks??0;e_vu.value=EDIT.valid_until||'';
   e_note.value=EDIT.note||'';
   e_meta.textContent=`续期 ${EDIT.renew_count||0} 次 · 上次失效 ${EDIT.last_expired_at||'—'}`;
@@ -431,16 +467,12 @@ function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
 function doSave(){fetch('/api/accounts/'+EDIT.id,{method:'PUT',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({
     label:e_label.value.trim(),status:e_status.value,priority:+e_pri.value||1,
-    start_at:e_sa.value||null,
+    start_at:e_sa.value||null,work_mode:e_wm.value,
     window_start:e_ws.value||null,window_end:e_we.value||null,
     daily_max_minutes:+e_min.value||0,daily_max_tasks:+e_task.value||0,
     valid_until:e_vu.value||null,note:e_note.value.trim()||null})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已保存':'失败：'+d.error);
     if(d.ok){document.getElementById('editDlg').close();reload();}});}
-function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
-  .then(r=>r.json()).then(d=>{alert(d.ok?'续期成功，剩余 '+d.days_left+' 天':'失败');
-    if(d.ok)reload();});}
 function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度数据保留'))return;
   fetch('/api/accounts/'+EDIT.id,{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
@@ -840,6 +872,95 @@ def create_app(settings: Settings) -> FastAPI:
         if not auto_running:
             globals()["_AUTO"] = None
         return {"jobs": out, "auto": {"running": auto_running, "since": auto_since}}
+
+    @app.post("/api/accounts/{account_id}/work")
+    def work_api(account_id: int, body: dict):
+        """作业作答（面板入口，按账号 work_mode 分流）：
+        ai → 后台执行 xxt work（headless 填入，结果看日志）；
+        reference → 返回 AI 参考答案（只解析题目+AI 作答，不碰作业页表单）；
+        owner → 仅返回操作指引（号主自理）。"""
+        import json as _json
+
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT work_mode, label FROM accounts WHERE id=?", (account_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return {"ok": False, "error": "账号不存在"}
+        mode = row["work_mode"] or "owner"
+        chapter = body.get("chapter") or "2.12"
+        if mode == "owner":
+            return {"ok": True, "action": "owner",
+                    "message": f"该账号作业策略=号主自理：请通知 {row['label']} 自己完成作业；"
+                               f"如需 AI 参考答案，可在✎管理中把作业策略改为 reference"}
+        if mode == "ai":
+            if account_id in _JOBS and _JOBS[account_id]["proc"].poll() is None:
+                return {"ok": False, "error": "该账号已有进行中的会话/作业"}
+            proc = _spawn(str(settings.root), "work", str(account_id), chapter)
+            _JOBS[account_id] = {"proc": proc, "course": f"作业{chapter}", "since": time.strftime("%H:%M")}
+            _log_event(account_id, "work-start", f"{chapter}｜AI 代答（headless，semi）")
+            return {"ok": True, "action": "ai",
+                    "message": "AI 已开始作答（headless 填入，semi 不提交）——完成后请到平台作业页核对提交"}
+        # reference：只出参考答案（解析+AI，不填表单）
+        try:
+            from playwright.sync_api import sync_playwright
+            from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
+            from .adapters.chaoxing.work import parse_work_questions, _page_font_map
+            from .ai.llm import LLMClient
+            from ...ai.quiz import build_messages as _bm  # noqa: F401  (占位防误用)
+            from ..ai.quiz import build_messages
+
+            state = settings.data_dir / "accounts" / str(account_id) / "state.json"
+            conn2 = db()
+            try:
+                course = conn2.execute(
+                    "SELECT * FROM courses WHERE account_id=? ORDER BY id LIMIT 1",
+                    (account_id,)).fetchone()
+            finally:
+                conn2.close()
+            if course is None:
+                return {"ok": False, "error": "账号无课程数据"}
+            answers = []
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(storage_state=str(state))
+                page = context.new_page()
+                try:
+                    tree = open_chapter_frame(page, course["url"])
+                    kid = conn2_id = None
+                    c2 = db()
+                    try:
+                        kid_row = c2.execute(
+                            "SELECT platform_chapter_id FROM chapters WHERE course_id=? "
+                            "AND name LIKE ? LIMIT 1", (course["id"], f"%{chapter}%")).fetchone()
+                        kid = kid_row["platform_chapter_id"] if kid_row else None
+                    finally:
+                        c2.close()
+                    if kid is None:
+                        return {"ok": False, "error": f"未找到章节 {chapter}"}
+                    tree.locator(f"#cur{kid}").first.click(timeout=15_000)
+                    wf = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+                    if wf is None:
+                        return {"ok": False, "error": "该章节不是作业任务点"}
+                    qs = parse_work_questions(wf.content(), dynamic_map=_page_font_map(wf))
+                    llm = LLMClient(settings.llm)
+                    for q in qs:
+                        try:
+                            raw = llm.chat(build_messages(
+                                q["stem"], q["qtype"], q["options"]))
+                            ans = raw.strip()[:500]
+                        except Exception as exc:
+                            ans = f"（AI 调用失败：{exc}）"
+                        answers.append({"stem": q["stem"][:80], "answer": ans})
+                    context.storage_state(path=str(state))
+                finally:
+                    browser.close()
+            return {"ok": True, "action": "reference", "answers": answers}
+        except Exception as exc:
+            return {"ok": False, "error": repr(exc)}
 
     @app.get("/", response_class=HTMLResponse)
     def index():

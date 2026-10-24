@@ -6,9 +6,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
-# v6：账号生命周期——备注、有效期（租用账号场景）、续期计数、上次会话失效时间
+# v7：账号作业策略——ai（AI代答semi）/ owner（号主自理，默认）/ reference（面板出参考答案人工填）
 _ACCOUNT_COLS = {
     "username_enc": "BLOB",
     "password_enc": "BLOB",
@@ -24,6 +24,7 @@ _ACCOUNT_COLS = {
     "valid_until": "TEXT",
     "renew_count": "INTEGER DEFAULT 0",
     "last_expired_at": "TEXT",
+    "work_mode": "TEXT DEFAULT 'owner'",  # ai | owner | reference
 }
 
 _SCHEMA = """
@@ -45,7 +46,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     daily_max_tasks  INTEGER,
     proxy        TEXT,
     priority     REAL DEFAULT 1.0,
-    platform_username TEXT
+    platform_username TEXT,
+    note         TEXT,
+    valid_until  TEXT,
+    renew_count  INTEGER DEFAULT 0,
+    last_expired_at TEXT,
+    work_mode    TEXT DEFAULT 'owner'
 );
 CREATE TABLE IF NOT EXISTS courses (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,

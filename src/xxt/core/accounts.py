@@ -16,7 +16,7 @@ from .crypto import decrypt, encrypt
 _ACCOUNT_PUBLIC_COLS = (
     "id, label, status, created_at, window_start, window_end, start_at, "
     "daily_max_minutes, daily_max_tasks, proxy, priority, platform_username, "
-    "note, valid_until, renew_count, last_expired_at"
+    "note, valid_until, renew_count, last_expired_at, work_mode"
 )
 
 
@@ -59,7 +59,7 @@ def set_overrides(conn: sqlite3.Connection, needle: str, **fields: Any) -> bool:
         return False
     sets, vals = [], []
     for name in ("window_start", "window_end", "start_at", "proxy", "note",
-                 "valid_until", "label"):
+                 "valid_until", "label", "work_mode"):
         if name in fields:
             sets.append(f"{name} = ?")
             vals.append(fields[name])
