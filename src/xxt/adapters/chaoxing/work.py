@@ -80,15 +80,16 @@ def _fill_answer(work_frame, qid: str, answer: list[str], qtype: str) -> str:
     ([qid, text, qtype]) => {
       const q = document.getElementById(qid);
       if (!q) return 'no-input';
-      const ed = q.querySelector('.edui-editor iframe');       // UEditor 富文本（简答/填空）
-      if (ed && ed.contentWindow && ed.contentWindow.document.body) {
-        const body = ed.contentWindow.document.body;
-        body.innerText = text;
-        body.dispatchEvent(new Event('input', {bubbles: true}));
-        return 'ok';
+      // UEditor 官方 API（key=answer+题号）——setContent 进入编辑器内部模型，暂存/提交才能读到
+      const num = qid.replace('question', '');
+      const ed = window.UE && UE.getEditor('answer' + num);
+      if (ed && ed.setContent) { ed.setContent(text); return 'ok'; }
+      const ifr = q.querySelector('.edui-editor iframe');      // 兜底：直接改 DOM（仅当次会话可见）
+      if (ifr && ifr.contentWindow && ifr.contentWindow.document.body) {
+        ifr.contentWindow.document.body.innerText = text; return 'ok-dom';
       }
-      const ta = q.querySelector('textarea');                   // 普通文本框兜底
-      if (ta) { ta.value = text; ta.dispatchEvent(new Event('input', {bubbles: true})); return 'ok'; }
+      const ta = q.querySelector('textarea');
+      if (ta) { ta.value = text; return 'ok-dom'; }
       return 'no-input';
     }
     """
@@ -197,7 +198,7 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
         conn.commit()
         if dec["action"] in ("fill", "fill_submit") and dec.get("answer"):
             r = _fill_answer(work_frame, q["qid"], dec["answer"], q["qtype"])
-            if r == "ok":
+            if r in ("ok", "ok-dom"):
                 stats["filled"] += 1
                 log.info("作业填写：[%s] %s…", q["qtype_cn"], q["stem"][:24])
             else:
