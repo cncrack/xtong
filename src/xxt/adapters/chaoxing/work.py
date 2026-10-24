@@ -104,6 +104,49 @@ def _fill_answer(work_frame, qid: str, answer: list[str], qtype: str) -> str:
     return work_frame.evaluate(js, [qid, " ".join(answer), qtype])
 
 
+def review_work(work_frame, conn: sqlite3.Connection,
+                account_id: int) -> list[dict[str, Any]]:
+    """判题回读：解析已提交作业页的每题得分，回写题库（verified/wrong）。
+
+    得分标记按通用文本规则解析（"得分：X"/"X分"/"待批阅"），⚠️ 选择器待提交样本校准；
+    题库匹配用题干片段 LIKE（字体解码差异容忍）。
+    """
+    import re as _re
+
+    from ...ai.quiz import bank_record, bank_record_wrong
+
+    soup = BeautifulSoup(work_frame.content(), "html.parser")
+    results: list[dict[str, Any]] = []
+    for q in soup.select("div.singleQuesId"):
+        text = q.get_text(" ", strip=True)
+        stem = _re.sub(r"^[\d\s]+", "", text)[:40]
+        score = None
+        m = _re.search(r"得分[：:]\s*([\d.]+)", text) or _re.search(r"([\d.]+)\s*分", text)
+        if m:
+            score = float(m.group(1))
+        status = "pending" if "待批阅" in text else (
+            "correct" if (score is not None and score > 0) else "wrong")
+        results.append({"stem": stem, "score": score, "status": status})
+        row = conn.execute(
+            "SELECT question_hash FROM questions WHERE stem LIKE ? LIMIT 1",
+            (f"%{stem[:14]}%",)).fetchone()
+        if row is None:
+            continue
+        h = row["question_hash"]
+        if status == "correct":
+            bank_record(conn, h, stem, "fill", [], answer=None, verified=True)
+            log.info("判题回读：答对转正 %s…", stem[:16])
+        elif status == "wrong":
+            bank_record_wrong(conn, h)
+            log.info("判题回读：答错清空 %s…", stem[:16])
+    conn.execute(
+        "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,?)",
+        (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO", "work-review",
+         f"回读 {len(results)} 题：" + "/".join(r["status"] for r in results), account_id))
+    conn.commit()
+    return results
+
+
 def _page_font_map(work_frame) -> dict[str, str]:
     """提取本页内嵌密文字体并生成动态解码映射（失败返回空表，静态表兜底）。"""
     from .font_cipher import build_dynamic_map, extract_cipher_font

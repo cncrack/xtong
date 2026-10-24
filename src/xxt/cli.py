@@ -585,14 +585,38 @@ def cmd_work(args: argparse.Namespace) -> int:
             print(f"[FAIL] 未找到章节：{args.chapter}")
             return 1
         print(f"目标：《{course['name']}》{ch['name']}（kid={ch['platform_chapter_id']}）")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+
+        def _open_work_page(browser):
             context = browser.new_context(storage_state=str(state))
             page = context.new_page()
+            tree = open_chapter_frame(page, course["url"])
+            tree.locator(f"#cur{ch['platform_chapter_id']}").first.click(timeout=15_000)
+            work_frame = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+            return context, page, work_frame
+
+        with sync_playwright() as p:
+            if args.review:  # 判题回读：已提交的作业页读每题得分 → 题库转正/清空
+                from .adapters.chaoxing.work import review_work
+
+                browser = p.chromium.launch(headless=True)
+                try:
+                    context, page, work_frame = _open_work_page(browser)
+                    if work_frame is None:
+                        print("[FAIL] 未找到作业页")
+                        return 1
+                    results = review_work(work_frame, conn, account_id)
+                    for r in results:
+                        print(f"  [{r['status']}] {r['stem'][:36]}（得分 {r['score']}）")
+                    context.storage_state(path=str(state))
+                finally:
+                    browser.close()
+                return 0
+
+            # 作答：半自动=有头留窗核对；自动提交=无头
+            headed = not args.submit
+            browser = p.chromium.launch(headless=headed)
             try:
-                tree = open_chapter_frame(page, course["url"])
-                tree.locator(f"#cur{ch['platform_chapter_id']}").first.click(timeout=15_000)
-                work_frame = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+                context, page, work_frame = _open_work_page(browser)
                 if work_frame is None:
                     print("[FAIL] 未找到作业页（该章节可能不是作业任务点）")
                     return 1
@@ -600,7 +624,18 @@ def cmd_work(args: argparse.Namespace) -> int:
                                     course["name"], submit=args.submit)
                 print(f"作业作答：{stats}")
                 if stats.get("status") == "semi":
-                    print("（半自动模式：答案已填入未提交——请人工到作业页核对后自行提交）")
+                    import threading
+
+                    print(">> 浏览器已保留：请核对已填答案——满意可直接在该窗口点提交，"
+                          "完成后【关闭浏览器窗口】结束本命令。")
+                    closed = threading.Event()
+                    context.on("close", closed.set)
+                    while not closed.is_set() and browser.is_connected():
+                        try:
+                            page.wait_for_timeout(1500)
+                        except Exception:
+                            break
+                    print(">> 窗口已关闭。若刚提交过：稍后跑 xxt work 账号 章节 --review 回读判题结果。")
                 context.storage_state(path=str(state))  # 滚动续期
             finally:
                 browser.close()
@@ -673,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
     p_wk.add_argument("--course", default="知行合一", help="课程名（缺省知行合一）")
     p_wk.add_argument("--submit", action="store_true",
                       help="自动提交（默认只填不交，人工核对后自提）")
+    p_wk.add_argument("--review", action="store_true",
+                      help="判题回读：读已提交作业的每题得分，回写题库（答对转正/答错清空）")
 
     args = parser.parse_args(argv)
     handlers = {
