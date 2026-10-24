@@ -248,8 +248,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frm"><label>状态<small>paused=暂停调度（不自动学）</small></label><select id="e_status"><option value="active">active（启用）</option><option value="paused">paused（暂停）</option></select></div>
   <div class="frm"><label>优先级<small>课程轮换权重，越大越优先学</small></label><input type="number" step="0.5" id="e_pri"></div>
   <div class="frm"><label>定时开刷时刻<small>auto 守护的启动时间；空=系统在学习窗口开始后 0~120 分钟随机分配（面板与日志会显示分配结果）</small></label><input type="time" id="e_sa"></div>
-  <div class="frm"><label>作业策略<small>owner=号主自理（默认，只刷视频）；reference=AI出参考答案给你抄；ai=AI代答semi填入</small></label>
-    <select id="e_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
+  <div class="frm"><label>作业策略<small>空=跟随⚙全局默认（当前全局见⚙设置）；显式设置优先于全局。生效值以卡片"作业="标签为准</small></label>
+    <select id="e_wm"><option value="">跟随全局默认（⚙设置）</option><option value="owner">号主自理（显式）</option><option value="reference">AI 参考答案（显式）</option><option value="ai">AI 代答 semi（显式）</option></select></div>
   <div class="frm"><label>学习窗口<small>该账号允许学习的时段（空=用全局 08:00–23:00）</small></label><span><input type="time" id="e_ws"> – <input type="time" id="e_we"></span></div>
   <div class="frm"><label>每日额度<small>时长(分)/任务(个)，0=用全局默认</small></label><span><input type="number" id="e_min" style="width:70px"> 分 / <input type="number" id="e_task" style="width:60px"> 个</span></div>
   <div class="frm"><label>有效期至<small>租用账号的到期日；过期自动停刷，空=永久</small></label><input type="date" id="e_vu"></div>
@@ -501,7 +501,7 @@ async function doWorkAll(id){
 function editAccount(id){EDIT=ACCOUNTS.find(a=>a.id===id);if(!EDIT)return;
   e_title.textContent=`#${EDIT.id}`;e_label.value=EDIT.label;e_status.value=EDIT.status;
   e_pri.value=EDIT.priority;e_ws.value=EDIT.window_start||'';e_we.value=EDIT.window_end||'';
-  e_sa.value=EDIT.start_at||'';e_wm.value=EDIT.work_mode||'owner';
+  e_sa.value=EDIT.start_at||'';e_wm.value=EDIT.work_mode||'';  // 空=跟随全局
   e_min.value=EDIT.max_minutes??0;e_task.value=EDIT.max_tasks??0;e_vu.value=EDIT.valid_until||'';
   e_note.value=EDIT.note||'';
   e_meta.textContent=`续期 ${EDIT.renew_count||0} 次 · 上次失效 ${EDIT.last_expired_at||'—'}`;
