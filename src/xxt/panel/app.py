@@ -191,6 +191,11 @@ background:#fff;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,
 .llmgrid label{display:flex;flex-direction:column;gap:.25rem;font-size:.78rem;color:var(--muted)}
 .llmgrid .span2{grid-column:span 2}
 .llmgrid input{width:100%;font-size:.86rem}
+.tabs{display:flex;gap:.4rem;margin:.6rem 0 .8rem;border-bottom:1px solid var(--line);padding-bottom:.55rem}
+.tab{border:none;background:none;padding:.35rem .8rem;font-size:.85rem;cursor:pointer;
+color:var(--muted);border-radius:9px;transition:.15s}
+.tab:hover{color:var(--accent)}
+.tab.active{background:#e8edff;color:#4353d8;font-weight:700}
 .primary{background:var(--grad);color:#fff;border:none;border-radius:12px;
 padding:.58rem 1.25rem;cursor:pointer;font-size:.9rem;transition:.15s}
 .primary:hover{transform:translateY(-1px);box-shadow:0 5px 14px rgba(70,80,220,.35)}
@@ -227,6 +232,11 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 </div>
 
 <dialog id="dlg"><h3>⚙ 全局设置</h3>
+<div class="tabs">
+  <button class="tab active" onclick="switchTab(0,this)">📚 学习与作业</button>
+  <button class="tab" onclick="switchTab(1,this)">🤖 AI 模型</button>
+</div>
+<div id="tab0">
   <div class="frow"><label>弹题 AI 作答（P2 功能，计分项）</label>
     <span class="switch"><input type="checkbox" id="s_quiz"><i></i></span></div>
   <div class="frow"><label>学习窗口开始</label><input type="time" id="s_ws"></div>
@@ -236,7 +246,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
-  <h3 style="margin:.4rem 0 .5rem;font-size:.92rem">🤖 AI 模型 <span class="muted" style="font-size:.75rem;font-weight:400">全局，所有账号共用</span></h3>
+</div>
+<div id="tab1" style="display:none">
+  <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型 <span class="muted" style="font-size:.75rem;font-weight:400">全局，所有账号共用</span></h3>
   <div class="llmbox">
     <div style="margin-bottom:.5rem"><span class="muted" style="font-size:.75rem">提供商（点选载入；自定义项⨯删除）</span>
       <div id="provList" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.3rem"></div></div>
@@ -253,6 +265,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
       <span id="s_lhint" style="font-size:.76rem;color:var(--muted);flex:1;min-width:140px"></span></div>
     <div class="hint" id="s_lhint2" style="margin-top:.45rem"></div>
   </div>
+</div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
@@ -432,6 +445,11 @@ function loadSettings(){
     renderProviders();
     window.QUIZ=d;});
 }
+function switchTab(i,btn){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab0').style.display=i===0?'':'none';
+  document.getElementById('tab1').style.display=i===1?'':'none';}
 function presetLLM(name,url,model){s_lname.value=name;s_lurl.value=url;s_lmodel.value=model;
   s_lhint.textContent=`已填入 ${name} 预设——点"保存到厂商列表"生效（可改模型名）`;}
 let PROV={builtin:[],custom:[],current:''};
@@ -1315,7 +1333,8 @@ def create_app(settings: Settings) -> FastAPI:
             answers = []
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=str(state))
+                from ..core.stealth import hardened_context
+                context = hardened_context(browser, storage_state=str(state))
                 page = context.new_page()
                 try:
                     tree = open_chapter_frame(page, course["url"])
@@ -1394,7 +1413,8 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=str(state))
+                from ..core.stealth import hardened_context
+                context = hardened_context(browser, storage_state=str(state))
                 page = context.new_page()
                 try:
                     tree = open_chapter_frame(page, course["url"])

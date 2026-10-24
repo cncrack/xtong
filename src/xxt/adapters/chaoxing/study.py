@@ -243,7 +243,8 @@ class StudyRunner:
             return stats
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(storage_state=str(self.state_path))
+            from ...core.stealth import hardened_context
+            context = hardened_context(browser, storage_state=str(self.state_path))
             context.expose_binding("__xxtEvent", self._on_event)
             page = context.new_page()
             try:

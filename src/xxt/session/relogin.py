@@ -71,7 +71,8 @@ def auto_relogin(conn: sqlite3.Connection, key: bytes, login_url: str, state_pat
     password = decrypt(key, password_enc)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(locale="zh-CN")
+        from ..core.stealth import hardened_context
+        context = hardened_context(browser)
         page = context.new_page()
         outcome = "unknown"
         try:

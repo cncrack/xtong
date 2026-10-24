@@ -587,7 +587,8 @@ def cmd_work(args: argparse.Namespace) -> int:
         print(f"目标：《{course['name']}》{ch['name']}（kid={ch['platform_chapter_id']}）")
 
         def _open_work_page(browser):
-            context = browser.new_context(storage_state=str(state))
+            from .core.stealth import hardened_context
+            context = hardened_context(browser, storage_state=str(state))
             page = context.new_page()
             tree = open_chapter_frame(page, course["url"])
             tree.locator(f"#cur{ch['platform_chapter_id']}").first.click(timeout=15_000)

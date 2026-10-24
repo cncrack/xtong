@@ -63,7 +63,8 @@ class ChaoxingAdapter(PlatformAdapter):
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(storage_state=str(state_path))
+            from ...core.stealth import hardened_context
+            context = hardened_context(browser, storage_state=str(state_path))
             page = context.new_page()
             page.on("response", on_response)
             try:
@@ -95,7 +96,8 @@ class ChaoxingAdapter(PlatformAdapter):
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(storage_state=str(state_path))
+            from ...core.stealth import hardened_context
+            context = hardened_context(browser, storage_state=str(state_path))
             page = context.new_page()
             try:
                 tree_frame = open_chapter_frame(page, course_row["url"])

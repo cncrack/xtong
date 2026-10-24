@@ -186,10 +186,14 @@ class AsyncStudyRunner:
         async with async_playwright() as p:
             launch_kw: dict[str, Any] = {"headless": True}
             browser = await p.chromium.launch(**launch_kw)
-            context_kw: dict[str, Any] = {"storage_state": str(self.state_path)}
+            from ...core.stealth import CHROME_UA, STEALTH_JS
+
+            context_kw: dict[str, Any] = {"storage_state": str(self.state_path),
+                                          "user_agent": CHROME_UA, "locale": "zh-CN"}
             if self.proxy:
                 context_kw["proxy"] = {"server": self.proxy}
             context = await browser.new_context(**context_kw)
+            await context.add_init_script(STEALTH_JS)
             await context.expose_binding("__xxtEvent", self._on_event)
             page = await context.new_page()
             try:
