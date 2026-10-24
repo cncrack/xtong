@@ -16,6 +16,14 @@ from ..store.db import connect
 
 # 学习会话进程表：account_id → {proc, course}（面板重启后进程仍活但失联，属已知限制）
 _JOBS: dict[int, dict] = {}
+_AUTO: dict | None = None  # 定时调度守护进程（面板一键开关）
+
+
+def _spawn(root_str: str, *cmd: str):
+    return subprocess.Popen(
+        [sys.executable, "-m", "xxt.cli", *cmd],
+        cwd=root_str, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -101,6 +109,7 @@ padding:.55rem 1rem;cursor:pointer;font-size:.9rem}
   <span class="spacer"></span>
   <input id="q" placeholder="🔍 搜索账号或课程名…">
   <button class="btn" onclick="openAdd()">＋ 账号</button>
+  <button class="btn" id="autoBtn" onclick="toggleAuto()">⏱ 定时调度</button>
   <button class="btn" onclick="document.getElementById('dlg').showModal()">⚙ 设置</button>
 </div>
 <div class="toolbar">
@@ -248,7 +257,7 @@ function doAdd(){
       password:a_pw.value,priority:+a_pri.value||1})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
-let EDIT=null,RUNNING={},AUTOPLAN={times:{}};
+let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={};
 function startGrind(id,course){
   fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,course:course})})
@@ -259,9 +268,19 @@ function stopGrind(id){
   fetch('/api/study/stop',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id})}).then(r=>r.json()).then(()=>syncRun());}
 async function syncRun(){
-  try{RUNNING=(await (await fetch('/api/study/status')).json()).jobs||{};}catch(e){RUNNING={};}
+  try{const d=await (await fetch('/api/study/status')).json();
+    RUNNING=d.jobs||{};AUTOSTATE=d.auto||{};}catch(e){RUNNING={};AUTOSTATE={};}
+  const btn=document.getElementById('autoBtn');
+  if(AUTOSTATE.running){btn.textContent=`⏱ 定时调度运行中（${AUTOSTATE.since} 起）`;
+    btn.style.background='rgba(34,160,93,.45)';}
+  else{btn.textContent='⏱ 定时调度：点击启动';btn.style.background='';}
   try{AUTOPLAN=await (await fetch('/api/autoplan')).json();}catch(e){AUTOPLAN={times:{}};}
   renderAccounts();}
+function toggleAuto(){
+  const on=AUTOSTATE.running;
+  if(on&&!confirm('停止定时调度？（已开的学习会话会自行跑到当日额度停机）'))return;
+  fetch('/api/auto/'+(on?'stop':'start'),{method:'POST'})
+    .then(r=>r.json()).then(d=>{if(!d.ok)alert(d.error);syncRun();});}
 function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
   .then(r=>r.json()).then(d=>{if(!d.ok){alert('失败');return;}
@@ -552,11 +571,7 @@ def create_app(settings: Settings) -> FastAPI:
         if not n:
             return {"ok": False, "error": "该账号还没有课程数据，先为其抓取课程（xxt courses --account）"}
         root = pathlib.Path(settings.root)
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "xxt.cli", "mlearn", course,
-             "--accounts", str(account_id)],
-            cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        proc = _spawn(str(root), "mlearn", course, "--accounts", str(account_id))
         _JOBS[account_id] = {"proc": proc, "course": course, "since": time.strftime("%H:%M")}
         return {"ok": True}
 
@@ -571,6 +586,27 @@ def create_app(settings: Settings) -> FastAPI:
         _JOBS.pop(account_id, None)
         return {"ok": True, "note": "已终止（当前视频进度保留，下次续播）"}
 
+    @app.post("/api/auto/start")
+    def auto_start():
+        """启动定时调度守护（面板化管理 xxt auto，无需开命令行）。"""
+        global _AUTO
+        if _AUTO and _AUTO["proc"].poll() is None:
+            return {"ok": False, "error": "定时调度已在运行"}
+        proc = _spawn(str(settings.root), "auto")
+        _AUTO = {"proc": proc, "since": time.strftime("%H:%M")}
+        return {"ok": True}
+
+    @app.post("/api/auto/stop")
+    def auto_stop():
+        """停止定时调度（已启动的学习会话继续自行跑到额度停机）。"""
+        global _AUTO
+        if not _AUTO or _AUTO["proc"].poll() is not None:
+            _AUTO = None
+            return {"ok": False, "error": "定时调度未在运行"}
+        _AUTO["proc"].terminate()
+        _AUTO = None
+        return {"ok": True}
+
     @app.get("/api/study/status")
     def study_status():
         out = {}
@@ -580,7 +616,11 @@ def create_app(settings: Settings) -> FastAPI:
                              "since": job["since"]}
             if not alive:
                 _JOBS.pop(aid, None)
-        return {"jobs": out}
+        auto_running = bool(_AUTO and _AUTO["proc"].poll() is None)
+        if not auto_running:
+            globals()["_AUTO"] = None
+        return {"jobs": out, "auto": {"running": auto_running,
+                                      "since": (_AUTO or {}).get("since")}}
 
     @app.get("/", response_class=HTMLResponse)
     def index():

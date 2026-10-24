@@ -430,13 +430,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
     from .core import accounts as acc
     from .core.accounts import is_valid
     from .core.rotation import pick_courses
+    from .store.db import connect
 
     s = _settings(args)
     planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM 或 "done"
-    running: dict[int, _sp.Popen] = {}
     plan_date = _time.strftime("%Y-%m-%d")
+    panel_port = int(s.raw.get("panel", {}).get("port", 8300))
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
-    print("[auto] 守护启动。各账号计划时刻：见日志/下方输出；Ctrl+C 退出。")
+    print("[auto] 守护启动。到点后经面板启动学习会话（面板可见、可 ■ 停止）。Ctrl+C 退出。")
 
     while True:
         try:
@@ -451,12 +452,6 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 conn.close()
             for row in rows:
                 aid = row["id"]
-                proc = running.get(aid)
-                if proc is not None:
-                    if proc.poll() is None:
-                        continue
-                    running.pop(aid)
-                    planned[aid] = "done"  # 会话结束=当日完成（额度内自然停）
                 if planned.get(aid) == "done":
                     continue
                 if aid not in planned:
@@ -489,12 +484,26 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
                     continue
                 course_name = picks[0]["name"]
-                print(f"[auto] 启动 账号#{aid} {row['label']} →《{course_name}》")
-                running[aid] = _sp.Popen(
-                    [_sys.executable, "-m", "xxt.cli", "mlearn", course_name,
-                     "--accounts", str(aid)],
-                    cwd=str(s.root), stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-                )
+                # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试
+                try:
+                    import httpx as _httpx
+
+                    r = _httpx.post(
+                        f"http://127.0.0.1:{panel_port}/api/study/start",
+                        json={"account_id": aid, "course": course_name}, timeout=10,
+                    )
+                    ok = bool(r.json().get("ok"))
+                    reason = r.json().get("error", "")
+                except Exception:
+                    ok, reason = False, "面板未响应（保持面板运行）"
+                if ok:
+                    planned[aid] = "done"
+                    print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》")
+                elif "已有进行中的会话" in str(reason):
+                    planned[aid] = "done"  # 手动已开（面板▶），视为今日已学
+                    print(f"[auto] 账号#{aid} 已有会话（手动开的），今日不再触发")
+                else:
+                    print(f"[auto] 账号#{aid} 触发失败：{reason}（30 秒后重试）")
             # 计划落库：面板"今日定时"显示（auto 分配的时间对用户可见）
             try:
                 import json as _json
