@@ -99,14 +99,14 @@ box-shadow:0 1px 4px rgba(25,35,70,.05);transition:.2s;position:relative;overflo
 .card.running{border-color:#9fe3c0}
 .card.running:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--ok)}
 .card.hit{outline:2px solid var(--accent);outline-offset:1px}
-.card .head{display:flex;align-items:center;gap:.65rem;margin-bottom:.5rem}
-.avatar{width:40px;height:40px;border-radius:13px;background:var(--grad);color:#fff;
-display:flex;align-items:center;justify-content:center;font-size:1.15rem;font-weight:700;flex:none;
+.card .head{display:flex;align-items:flex-start;gap:.65rem;margin-bottom:.45rem;flex-wrap:wrap}
+.avatar{width:38px;height:38px;border-radius:12px;background:var(--grad);color:#fff;
+display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:700;flex:none;
 box-shadow:0 3px 8px rgba(70,80,220,.3)}
-.head .names{min-width:0;flex:1}
-.who{font-size:1.08rem;font-weight:800;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sub{font-size:.72rem;color:var(--muted)}
-.head .ops{display:flex;gap:.35rem;flex:none;align-items:center}
+.head .names{min-width:0;flex:1 1 150px}
+.who{font-size:1.05rem;font-weight:800;line-height:1.25;word-break:break-all}
+.sub{font-size:.72rem;color:var(--muted);margin-top:.1rem}
+.head .ops{display:flex;gap:.35rem;flex:none;align-items:center;flex-wrap:wrap;margin-left:auto}
 .minibtn{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:.22rem .6rem;
 font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink)}
 .minibtn:hover{border-color:var(--accent);color:var(--accent)}
@@ -122,7 +122,7 @@ border-radius:7px;padding:.12rem .5rem}
 .course:hover{background:var(--bg)}
 .course.hit{background:#f0f3ff;border-color:#cdd8ff}
 .course .t{display:flex;justify-content:space-between;align-items:center;font-size:.84rem;gap:.5rem}
-.course .t .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.course .t .nm{flex:1;min-width:0;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .course .t .val{display:flex;gap:.5rem;align-items:center;flex:none;font-size:.8rem}
 .course .pct{color:var(--muted);font-size:.72rem;min-width:34px;text-align:right}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:5px}
@@ -187,7 +187,10 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 </div>
 <div class="grid" id="accounts"><div class="card muted">加载中…</div></div>
 <div class="pager" id="pager"></div>
-<section><h2>最近日志</h2><div id="logs" class="muted">加载中…</div></section>
+<section><h2>最近日志 <span class="muted" style="font-weight:400;font-size:.75rem">（全部动态已存档于 data/logs/xxt.log 与数据库）</span></h2>
+<div id="logs" class="muted">加载中…</div>
+<div style="text-align:center;margin-top:.6rem">
+<button class="ghost" id="moreLogs" onclick="renderLogs(100);this.style.display='none'">展开更多（最近 100 条）</button></div></section>
 <footer>XXT · 多账号网课助手 · 本地面板（127.0.0.1）· 设置三层：全局 ⚙ &gt; 账号 ✎ &gt; 文件默认</footer>
 </div>
 
@@ -293,7 +296,7 @@ function renderAccounts(){
      <button ${PAGE>=pages?'disabled':''} onclick="go(${PAGE+1})">下一页 ›</button>`;
 }
 function go(p){PAGE=p;renderAccounts();}
-function renderLogs(){
+function renderLogs(n=20){
   const acc=document.getElementById('logAcc')?.value||'';
   fetch('/api/logs?n=50'+(acc?`&account=${acc}`:'')).then(r=>r.json()).then(d=>{
     document.getElementById('logs').innerHTML='<table>'+d.logs.map(l=>{
@@ -627,6 +630,9 @@ def create_app(settings: Settings) -> FastAPI:
             conn.close()
 
     def _log_event(account_id: int, event: str, detail: str) -> None:
+        from ..log import get_logger
+
+        get_logger("panel").info("[账号#%s] %s｜%s", account_id, event, detail)
         conn = db()
         try:
             conn.execute(

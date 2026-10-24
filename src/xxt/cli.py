@@ -407,6 +407,8 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
             print(f"  [{r.get('account')}] 视频 {r.get('videos', 0)} 个；"
                   f"{r.get('stop_reason') or '完成'}")
             try:  # 会话结束动态入日志（面板"最近日志"可见开始→进展→结束全过程）
+                log.info("[账号#%s] session-end｜%s", r.get("account_id", 1),
+                         f"{course['name']}｜{r.get('stop_reason') or '完成'}｜视频 {r.get('videos', 0)} 个")
                 conn.execute(
                     "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                     " VALUES(?,?,?,?,?)",
