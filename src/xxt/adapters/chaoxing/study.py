@@ -17,10 +17,18 @@ from typing import Any
 from ...core.pace import FocusTimer, sample_gap, sample_speed, within_daily_window
 from ...core.quota import sample_daily_budget
 from ...log import get_logger
+from .selectors import QUIZ_SELECTORS
 
 log = get_logger("chaoxing.study")
 
 WATCHER_JS = (Path(__file__).parent / "watcher.js").read_text(encoding="utf-8")
+
+
+def build_watcher_js(rate: float) -> str:
+    """按当前倍速与弹题选择器生成注入脚本。"""
+    return (WATCHER_JS
+            .replace("__XXT_RATE__", str(rate))
+            .replace("__XXT_QUIZ__", json.dumps(QUIZ_SELECTORS, ensure_ascii=False)))
 
 
 def find_frame_with(page, selector: str, timeout_s: int = 30):
@@ -138,10 +146,38 @@ class StudyRunner:
 
     # ---------- 单视频播放 ----------
 
+    def _handle_quiz(self, video_frame, ev: dict[str, Any]) -> None:
+        """弹题决策入口：管线作答 → 日志落库 → 半自动只填/全自动填交（§5.4）。"""
+        from ...ai.llm import LLMClient
+        from ...ai.quiz import handle_quiz
+
+        try:
+            dec = handle_quiz(self.settings.quiz, self.conn, LLMClient(self.settings.llm), ev)
+        except Exception as exc:  # 决策异常不干扰播放
+            dec = {"action": "manual", "reason": repr(exc)}
+        log.info("弹题：%s → %s", (ev.get("stem") or "")[:30], dec.get("action"))
+        self.conn.execute(
+            "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,?)",
+            (time.strftime("%Y-%m-%dT%H:%M:%S"),
+             "WARNING" if dec["action"] == "manual" else "INFO",
+             "quiz-" + str(dec.get("action")),
+             f"{(ev.get('stem') or '')[:40]}｜{dec.get('source', '-')}｜"
+             f"置信{dec.get('confidence', 0):.2f}｜{dec.get('answer', [])}",
+             self.account_id))
+        self.conn.commit()
+        if dec.get("action") in ("fill", "fill_submit"):
+            try:
+                r = video_frame.evaluate(
+                    "([ans, sub]) => window.__xxtQuizFill && window.__xxtQuizFill(ans, sub)",
+                    [dec.get("answer", []), dec.get("action") == "fill_submit"])
+                log.info("弹题回填结果：%s", r)
+            except Exception as exc:
+                log.warning("弹题回填失败（选择器待核对）：%r", exc)
+
     def _play_video(self, page, video_frame, knowledge_label: str) -> bool:
         """注入 watcher 并等待播放结束。返回是否完整播完。"""
         rate = sample_speed(self.rng, self.pace)
-        js = WATCHER_JS.replace("__XXT_RATE__", str(rate))
+        js = build_watcher_js(rate)
         ret = video_frame.evaluate(js)
         if ret != "ok":
             log.warning("[%s] watcher 注入返回 %s（跳过该视频）", knowledge_label, ret)
@@ -158,6 +194,8 @@ class StudyRunner:
                 t = ev.get("type")
                 if t == "ended":
                     ended = True
+                elif t == "quiz-popup":
+                    self._handle_quiz(video_frame, ev)
                 elif t in ("error", "play-blocked"):
                     log.warning("[%s] 播放异常事件：%s", knowledge_label, t)
                 elif t == "tick" and ev.get("dur"):

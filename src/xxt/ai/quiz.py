@@ -135,3 +135,22 @@ def solve(conn: sqlite3.Connection, llm: LLMClient | Any, stem: str, qtype: str,
     if parsed["confidence"] < MIN_CONFIDENCE or not parsed["answer"]:
         return {"source": "manual", **parsed, "need_manual": True, "hash": h}
     return {"source": "llm", **parsed, "need_manual": False, "hash": h}
+
+
+def handle_quiz(quiz_cfg: dict[str, Any], conn: sqlite3.Connection, llm: LLMClient | Any,
+                payload: dict[str, Any]) -> dict[str, Any]:
+    """弹题事件的决策入口（watcher 上报 quiz-popup 后由运行器调用）。
+
+    返回 action ∈ ignore（未启用，不干扰平台默认行为）/ manual（转人工）/ fill（半自动：只填不交）/
+    fill_submit（全自动：填并提交——仅在 mode=auto 且高置信度时）。
+    """
+    if not quiz_cfg.get("enabled"):
+        return {"action": "ignore"}
+    stem = str(payload.get("stem") or "").strip()
+    if not stem:
+        return {"action": "manual", "reason": "题干解析失败"}
+    result = solve(conn, llm, stem, payload.get("qtype") or "single",
+                   payload.get("options") or [], payload.get("context") or "")
+    if result["need_manual"]:
+        return {"action": "manual", **result}
+    return {"action": "fill_submit" if quiz_cfg.get("mode") == "auto" else "fill", **result}
