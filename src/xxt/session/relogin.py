@@ -20,13 +20,14 @@ log = get_logger("session.relogin")
 
 LOGIN_BUDGET_PER_DAY = 2  # 安全底线，硬编码不上配置
 
-# 待核对（passport2.chaoxing.com/login 长期结构）
+# 2026-10-24 匿名实况核对（无账号 cookie 的公开页访问）：#phone/#pwd/#loginBtn 已验证；
+# 验证码容器仅在提交后才可能出现，保持通行猜测并标注
 _FORM = {
     "username": "input#phone",
     "password": "input#pwd",
-    "submit": "#loginbtn",
-    "captcha": ".geetest_widget, .yidun_modal, #code",  # 滑块/验证码出现即转人工
-    "error": ".error-tips, #msg",                        # 错误提示文本
+    "submit": "#loginBtn",
+    "captcha": ".geetest_widget, .yidun_modal, #code",  # 滑块/验证码出现即转人工（待实测）
+    "error": ".error-tips, #msg",                        # 错误提示文本（待实测）
 }
 
 

@@ -344,6 +344,20 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_panel(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .panel.app import create_app
+
+    s = _settings(args)
+    app = create_app(s)
+    host = s.raw.get("panel", {}).get("host", "127.0.0.1")
+    port = int(s.raw.get("panel", {}).get("port", 8300))
+    print(f"[OK] 面板启动：http://{host}:{port}（Ctrl+C 停止）")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
@@ -392,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ml.add_argument("--limit", type=int, default=None, help="每账号本次最多视频数")
     p_ml.add_argument("--concurrency", type=int, default=2, help="全局同时学习账号数上限")
 
+    sub.add_parser("panel", help="启动 Web 管理面板（浏览器查看进度/账号/日志）")
+
     args = parser.parse_args(argv)
     handlers = {
         "init": cmd_init,
@@ -403,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         "progress": cmd_progress,
         "account": cmd_account,
         "mlearn": cmd_mlearn,
+        "panel": cmd_panel,
     }
     try:
         return handlers[args.command](args)
