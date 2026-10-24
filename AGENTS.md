@@ -54,8 +54,8 @@
 
 ## 当前状态速览（每次会话结束时维护）
 
-- 阶段：**P0 全部完成（M0~M3 验收通过）/ M4 进行中**。M3 实跑验收：38 分钟 5 视频全 ended、断点/切节/同步/拟人间隔/额度全实证（devlog 21）。M4 已完成：账号地基（加密+表 v3+CLI，b479835）、async 移植与多账号驱动（979d859）、自动重登预算制（76be9bb）。M4 剩余：passport2 表单核对 → 面板 → 多账号实跑验收（需小号）
-- 方案：v0.13——v0.11 课程轮换落地；v0.12 代理分层（小规模家宽直连不引代理；4G 卡优选；同 IP 密度 3~8；禁按流量计费）；**v0.13 并发模型定稿（翻转 v0.12）：M4 一步到位 asyncio + async Playwright**（结构化并发/Semaphore 并发上限/单浏览器 N Context+context 级代理/移植与 M4 验收同批实跑；多进程=逃生舱；同步 StudyRunner 保留至 async 验收通过后删除）（见 §5.6）
-- 环境：Windows + Python 3.11；venv `.venv/`；CLI：`xxt init / login / status / courses / chapters <课> / learn [课] [--limit N] [--ignore-window] / progress [课]`；远端 origin=cncrack/xtong（推送前 `scripts/push_check.py` 全绿）；每日学习时段 08:00–23:00 自动生效（凌晨已实测拦截，且已前置到零访问即拒绝）
-- ⏳ **等用户**：无（定时提醒已删——用户 10-24 确认手动模式，"开始学习"即跑）；多账号实跑验收时需用户提供小号
-- AI 下一步：① M3 验收结果落账（devlog 19）② M4 async 移植（astudy.py，同步版保留至过验收）→ 调度器 → 面板（**弹题是 P2 的事，勿提前实现**）
+- 阶段：**P0~P3 + P2.5 全部完成（10-24 一日收官）**。P0：M0~M3 验收通过（单账号刷课全链）。P1：M4 多账号并发实机验收（林鑫阳+王泽轩错峰同刷）。P2：弹题 AI 链路（LLM/题库/置信度/watcher 检测）。P2.5：作业 AI（doHomeWorkNew 解析/**cxsecret 字体动态解码（位图余弦）**/半自动填入/留窗核对/判题回读 CLI+面板按钮/三层作业策略/Provider 管理中心/提示词含课程章节+附加要求框）。P3：PyArmor+PyInstaller exe 构建验收（BUILD.md）。面板：v5 视觉/搜索分页折叠/⚙全局设置（含 AI 模型中心）/✎账号管理/▶刷课控制/⏱定时调度/会话登记防孤儿/今日战果/自动刷新
+- 方案：v0.14（changelog 至 v0.14；P2.5 排期与状态诚实化）。关键实测锚点：双账号 15/70 与 6/70 起步、字体解码题干全读、三题 AI 答案带附加要求分点输出、Provider 测试连通实通
+- 环境：Windows + Python 3.11；venv `.venv/`；CLI 全家：init/login/status/courses/chapters/learn/progress/account/mlearn/panel/auto/work[--review/--submit]；面板 127.0.0.1:8300（no-store）；远端 origin=cncrack/xtong（102 提交全推送）；LLM=Agnès（Key 环境变量，Provider 中心可切换）
+- ⏳ **等用户**：① 任一账号人工提交 2.12 作业 → 面板"✔ 读判分"校准判题链路（首个真实样本）② 弹题实况校准（遇到含弹题视频时）③ 可选：Docker 化 / PyArmor 正式授权 / 一键代填提交开关
+- AI 下一步：以用户反馈驱动打磨（近期高频为面板交互与作业链路）；大项待用户点名
