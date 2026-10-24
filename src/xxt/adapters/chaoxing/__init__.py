@@ -104,8 +104,21 @@ class ChaoxingAdapter(PlatformAdapter):
                 )
                 if "passport2.chaoxing.com" in page.url:
                     raise RuntimeError("会话已失效，请先执行 xxt login")
+                # 昵称抓取双通道：新版页等 stu-base-info 异步返回；旧版页读顶部 div.name
+                page.wait_for_timeout(2500)
                 holder = getattr(page, "_xxt_name_holder", {})
                 name = holder.get("name")
+                if not (isinstance(name, str) and name):
+                    for fr in page.frames:
+                        if "/stu" in (fr.url or ""):
+                            try:
+                                el = fr.locator("div.name").first
+                                if el.count():
+                                    name = el.inner_text(timeout=2_000).strip()
+                                    if name:
+                                        break
+                            except Exception:
+                                continue
                 self.last_username = name if isinstance(name, str) and name else None
                 context.storage_state(path=str(state_path))  # 滚动续期
             finally:

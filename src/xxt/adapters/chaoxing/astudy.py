@@ -36,15 +36,34 @@ async def _find_frame_with(page, selector: str, timeout_s: int = 30):
 
 
 async def _open_chapter_frame(page, course_url: str):
+    """双版本兼容的章节树定位（与同步版 open_chapter_frame 逻辑一致）。"""
+    from .study import username_sniffer
+
+    sniffer, holder = username_sniffer()
+    page.on("response", sniffer)
+    page._xxt_name_holder = holder
     await page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
     await page.wait_for_timeout(4_000)
-    top = next((f for f in page.frames if "fanyav3/stu" in f.url), None)
-    if top is None:
-        raise RuntimeError("未找到课程主页面（可能课程入口改版）")
-    await top.locator("text=章节").first.click(timeout=15_000)
-    tree_frame = await _find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=30)
+
+    tree_frame = await _find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=8)
+    if tree_frame is not None:
+        return tree_frame
+
+    for fr in page.frames:
+        url = fr.url or ""
+        if "/stu?" not in url and not url.rstrip("/").endswith("/stu"):
+            continue
+        try:
+            loc = fr.locator("text=章节").first
+            if await loc.count():
+                await loc.click(timeout=10_000)
+                break
+        except Exception:
+            continue
+
+    tree_frame = await _find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=25)
     if tree_frame is None:
-        raise RuntimeError("章节树未加载")
+        raise RuntimeError("未找到课程主页面（可能课程入口改版）")
     return tree_frame
 
 

@@ -52,19 +52,36 @@ def username_sniffer():
 
 
 def open_chapter_frame(page, course_url: str):
-    """进入课程并点开"章节"导航，返回章节树所在 frame。顺带截获平台昵称（page._xxt_name_holder）。"""
+    """进入课程并定位章节树 frame（双版本兼容，2026-10-24 实测：
+    账号1=新版 fanyav3/stu 需点导航"章节"；账号2=旧版 mycourse/stu 可能直达）。
+    顺带截获平台昵称（page._xxt_name_holder）。"""
     sniffer, holder = username_sniffer()
     page.on("response", sniffer)
     page._xxt_name_holder = holder
     page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(4_000)
-    top = next((f for f in page.frames if "fanyav3/stu" in f.url), None)
-    if top is None:
-        raise RuntimeError("未找到课程主页面（可能课程入口改版）")
-    top.locator("text=章节").first.click(timeout=15_000)
-    tree_frame = find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=30)
+
+    # ① 章节树已在某个 frame（旧版直达 / 新版已展开）
+    tree_frame = find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=8)
+    if tree_frame is not None:
+        return tree_frame
+
+    # ② 在主 frame（fanyav3/stu 或 mycourse/stu）点导航"章节"
+    for fr in page.frames:
+        url = fr.url or ""
+        if "/stu?" not in url and not url.rstrip("/").endswith("/stu"):
+            continue
+        try:
+            loc = fr.locator("text=章节").first
+            if loc.count():
+                loc.click(timeout=10_000)
+                break
+        except Exception:
+            continue
+
+    tree_frame = find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=25)
     if tree_frame is None:
-        raise RuntimeError("章节树未加载（.chapter_item 未出现）")
+        raise RuntimeError("未找到课程主页面（可能课程入口改版）")
     return tree_frame
 
 
