@@ -72,17 +72,23 @@ def parse_work_questions(html: str,
 
 
 def _fill_answer(work_frame, qid: str, answer: list[str], qtype: str) -> str:
-    """把答案填入该题作答区（不提交）。返回 ok | no-input | no-match。"""
+    """把答案填入该题作答区（不提交）。返回 ok | no-input | no-match。
+
+    富文本填入后 dispatch input 事件，确保 UEditor/平台感知内容变化（暂存依赖）。
+    """
     js = """
     ([qid, text, qtype]) => {
       const q = document.getElementById(qid);
       if (!q) return 'no-input';
       const ed = q.querySelector('.edui-editor iframe');       // UEditor 富文本（简答/填空）
       if (ed && ed.contentWindow && ed.contentWindow.document.body) {
-        ed.contentWindow.document.body.innerText = text; return 'ok';
+        const body = ed.contentWindow.document.body;
+        body.innerText = text;
+        body.dispatchEvent(new Event('input', {bubbles: true}));
+        return 'ok';
       }
       const ta = q.querySelector('textarea');                   // 普通文本框兜底
-      if (ta) { ta.value = text; return 'ok'; }
+      if (ta) { ta.value = text; ta.dispatchEvent(new Event('input', {bubbles: true})); return 'ok'; }
       return 'no-input';
     }
     """
@@ -203,7 +209,18 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
         work_frame.locator("a.bluebtn").first.click(timeout=8_000)  # submitCheckTimes
         stats["status"] = "submitted"
         log.warning("作业已提交（%d 题）——自动提交为校准后功能，请留意", stats["filled"])
+    elif stats["filled"]:
+        # 半自动关键一步：点平台"暂存"把已填答案存为草稿——否则关浏览器后平台侧为空
+        try:
+            work_frame.locator("#tempsave").first.click(timeout=6_000)
+            work_frame.wait_for_timeout(2_500)  # 等 saveWork() 完成
+            stats["status"] = "draft-saved"
+            log.info("作业半自动完成：填 %d 题，暂人工 %d 题，已点暂存（平台草稿可登录核对）",
+                     stats["filled"], stats["manual"])
+        except Exception as exc:
+            stats["status"] = "semi"
+            log.warning("暂存失败（答案仅在本次会话，登录平台可能为空）：%r", exc)
     else:
-        log.info("作业半自动完成：填 %d 题，待人工 %d 题（未提交）",
-                 stats["filled"], stats["manual"])
+        stats["status"] = "semi"
+        log.info("作业完成：填 0 题，待人工 %d 题", stats["manual"])
     return stats

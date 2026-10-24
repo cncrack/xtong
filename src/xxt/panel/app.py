@@ -395,7 +395,12 @@ function renderAccounts(){
     // 仅当"课程名"命中才自动展开；搜人名/备注时保持折叠（找人不找课）
     const autoOpen = others.some(c=>hits.some(h=>h.name===c.name));
     const open = autoOpen || !!EXPANDED[a.id];
-    const mainHtml = mainCourse ? mkCourse(mainCourse) : '';
+    // 课程区标题：在刷="正在学习的课程"（绿），未刷="下次将继续的课程"（灰）
+    const runningNow = run && mainCourse && run.course===mainCourse.name;
+    const zoneTitle = mainCourse
+      ? `<div style="font-size:.78rem;font-weight:700;margin:-.15rem 0 .35rem;color:${runningNow?'var(--ok)':'var(--muted)'}">
+           ${runningNow?'▶ 正在学习的课程':'⏭ 下次将继续的课程'}</div>` : '';
+    const mainHtml = mainCourse ? zoneTitle + mkCourse(mainCourse) : '';
     const othersHtml = others.map(mkCourse).join('');
     const doneSum = others.reduce((s,c)=>s+c.done,0);
     const courses = (mainCourse ? mainHtml : '<div class="muted" style="font-size:.8rem">暂无课程数据</div>')
