@@ -54,7 +54,7 @@
 
 ## 当前状态速览（每次会话结束时维护）
 
-- 阶段：P0 收尾 / **M4 进行中**。M0/M1/M2 完成；**M3 验收实跑进行中**（10-24 白天 5 视频段，结果记入 devlog 19）；**M4 第一块完成**：AES-GCM 凭据加密 + accounts 表 v3（五字段覆盖/proxy/priority）+ `xxt account` 命令组 + 三层配置合并（测试 23/23，devlog 18，commit b479835）。M4 剩余：async 移植 → 调度器 → 面板
+- 阶段：**P0 全部完成（M0~M3 验收通过）/ M4 进行中**。M3 实跑验收：38 分钟 5 视频全 ended、断点/切节/同步/拟人间隔/额度全实证（devlog 21）。M4 已完成：账号地基（加密+表 v3+CLI，b479835）、async 移植与多账号驱动（979d859）、自动重登预算制（76be9bb）。M4 剩余：passport2 表单核对 → 面板 → 多账号实跑验收（需小号）
 - 方案：v0.13——v0.11 课程轮换落地；v0.12 代理分层（小规模家宽直连不引代理；4G 卡优选；同 IP 密度 3~8；禁按流量计费）；**v0.13 并发模型定稿（翻转 v0.12）：M4 一步到位 asyncio + async Playwright**（结构化并发/Semaphore 并发上限/单浏览器 N Context+context 级代理/移植与 M4 验收同批实跑；多进程=逃生舱；同步 StudyRunner 保留至 async 验收通过后删除）（见 §5.6）
 - 环境：Windows + Python 3.11；venv `.venv/`；CLI：`xxt init / login / status / courses / chapters <课> / learn [课] [--limit N] [--ignore-window] / progress [课]`；远端 origin=cncrack/xtong（推送前 `scripts/push_check.py` 全绿）；每日学习时段 08:00–23:00 自动生效（凌晨已实测拦截，且已前置到零访问即拒绝）
 - ⏳ **等用户**：无（定时提醒已删——用户 10-24 确认手动模式，"开始学习"即跑）；多账号实跑验收时需用户提供小号
