@@ -133,6 +133,11 @@ box-shadow:0 3px 10px rgba(24,160,93,.35);transform:translateY(-1px)}
 padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
 .stopc:hover{background:var(--bad);border-color:var(--bad);color:#fff;
 box-shadow:0 3px 10px rgba(214,69,69,.35);transform:translateY(-1px)}
+.morebtn{width:100%;margin-top:.5rem;background:none;border:1px dashed var(--line);
+border-radius:10px;padding:.4rem .5rem;font-size:.76rem;color:var(--muted);
+cursor:pointer;transition:.15s;text-align:center}
+.morebtn:hover{border-color:var(--accent);color:var(--accent);border-style:solid}
+.more{margin-top:.15rem}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:5px}
 .bar>i{display:block;height:100%;width:0;border-radius:4px;background:var(--grad);transition:width .6s ease}
 .pager{display:flex;align-items:center;gap:.55rem;justify-content:center;margin-top:1.1rem;font-size:.86rem}
@@ -269,7 +274,7 @@ function renderAccounts(){
                  a.renew_count?`续期${a.renew_count}次`:'',
                  a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' ]
                  .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
-    const courses=a.courses.map(c=>{
+    const mkCourse=(c)=>{
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
       const run=RUNNING[a.id];
       const runningThis=run&&run.course===c.name;
@@ -281,9 +286,21 @@ function renderAccounts(){
       return `<div class="course${hit}"><div class="t"><span class="nm">${esc(c.name)}</span>
       <span class="val"><span class="pct">${c.total?Math.round(c.done/c.total*100):0}%</span>
       <b>${c.done}/${c.total}</b>${ctl}</span></div>
-      <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;}).join('')
-      ||'<div class="muted" style="font-size:.8rem">暂无课程数据</div>';
+      <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
+    // 主显课程：正在刷的 > 最有进度的 > 第一门；其余默认折叠（点击展开；搜索时自动展开）
+    const mainCourse = (run && a.courses.find(c=>c.name===run.course))
+      || a.courses.find(c=>c.done>0) || a.courses[0];
+    const others = a.courses.filter(c=>!mainCourse || c.name!==mainCourse.name);
+    const searching = document.getElementById('q').value.trim()!=='';
+    const autoOpen = searching || others.some(c=>hits.some(h=>h.name===c.name));
+    const open = autoOpen || !!EXPANDED[a.id];
+    const mainHtml = mainCourse ? mkCourse(mainCourse) : '';
+    const othersHtml = others.map(mkCourse).join('');
+    const doneSum = others.reduce((s,c)=>s+c.done,0);
+    const courses = (mainCourse ? mainHtml : '<div class="muted" style="font-size:.8rem">暂无课程数据</div>')
+      + (others.length ? `<button class="morebtn" onclick="toggleMore(${a.id})">${open?'▾':'▸'} 其他 ${others.length} 门课 · 已完成 ${doneSum} 个知识点</button>
+        <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
     const stopBtn=run?`<button class="minibtn danger pulse" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
     const bad=a.days_left!==null&&a.days_left<0;
     const avatar=(a.platform_username||'?').trim().charAt(0);
@@ -343,7 +360,8 @@ function doAdd(){
       password:a_pw.value,priority:+a_pri.value||1})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
-let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={};
+let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
+function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
 function startGrind(id,course){
   fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,course:course})})
