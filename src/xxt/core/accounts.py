@@ -15,7 +15,7 @@ from .crypto import decrypt, encrypt
 
 _ACCOUNT_PUBLIC_COLS = (
     "id, label, status, created_at, window_start, window_end, start_at, "
-    "daily_max_minutes, daily_max_tasks, proxy, priority"
+    "daily_max_minutes, daily_max_tasks, proxy, priority, platform_username"
 )
 
 

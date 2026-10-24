@@ -45,15 +45,22 @@ def cmd_login(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
+    from .store.db import connect
 
     s = _settings(args)
     adapter = get_adapter(s)
-    state = adapter.probe_session(s.default_state_path)
+    state, platform_name = adapter.probe_session(s.default_state_path)
+    conn = connect(s.db_path)
+    try:
+        if platform_name:  # 抓到平台用户名即落库（面板"刷的是谁"）
+            conn.execute("UPDATE accounts SET platform_username=? WHERE id=1", (platform_name,))
+            conn.commit()
+    finally:
+        conn.close()
     if state == "invalid":
         # 自动重登（§5.1）：有凭据且预算允许则尝试，成功后重探
         from .core import accounts as acc
         from .session.relogin import maybe_auto_relogin
-        from .store.db import connect
 
         conn = connect(s.db_path)
         try:
@@ -63,17 +70,28 @@ def cmd_status(args: argparse.Namespace) -> int:
             conn.close()
         if outcome == "ok":
             print("[OK] 会话失效已自动重登成功")
-            state = adapter.probe_session(s.default_state_path)
+            state, _ = adapter.probe_session(s.default_state_path)
         elif outcome is not None:
             print(f"[!!] 自动重登未成功（{outcome}），请人工执行 xxt login")
             return 1
+    who = f"（{platform_name}）" if platform_name else ""
     text = {
-        "valid": "[OK] 会话有效",
-        "invalid": "[!!] 会话已失效且无法自动重登（未存凭据），请 xxt login 或 xxt account add 存凭据",
+        "valid": f"[OK] 会话有效{who}",
+        "invalid": f"[!!] 会话已失效且无法自动重登（未存凭据），请 xxt login 或 xxt account add 存凭据",
         "no_state": "[..] 尚未登录，请先执行 xxt login",
     }[state]
     print(text)
     return 0 if state == "valid" else 1
+
+
+def _save_username(conn, adapter, account_id: int = 1) -> None:
+    """把页面流程截获的平台昵称落到账号表（面板"刷的是谁"）。"""
+    if getattr(adapter, "last_username", None):
+        conn.execute(
+            "UPDATE accounts SET platform_username=? WHERE id=?",
+            (adapter.last_username, account_id),
+        )
+        conn.commit()
 
 
 def cmd_courses(args: argparse.Namespace) -> int:
@@ -101,6 +119,7 @@ def cmd_courses(args: argparse.Namespace) -> int:
                 """,
                 (c["platform_course_id"], c["clazz_id"], c["name"], c["url"]),
             )
+        _save_username(conn, adapter)
         conn.commit()
         rows = conn.execute(
             "SELECT platform_course_id, clazz_id, name FROM courses WHERE account_id=1 ORDER BY id"
@@ -139,6 +158,7 @@ def cmd_chapters(args: argparse.Namespace) -> int:
         except RuntimeError as exc:
             print(f"[FAIL] {exc}")
             return 1
+        _save_username(conn, adapter)
         for ch in chapters:
             conn.execute(
                 """

@@ -6,9 +6,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-# v3：accounts 扩展——凭据加密存储 + 账号级覆盖（v0.6 五字段）+ proxy/priority（v0.8）
+# v4：accounts.platform_username（平台昵称，探测时自动抓取）；run_logs.account_id（日志归属账号）
 _ACCOUNT_COLS = {
     "username_enc": "BLOB",
     "password_enc": "BLOB",
@@ -19,6 +19,7 @@ _ACCOUNT_COLS = {
     "daily_max_tasks": "INTEGER",
     "proxy": "TEXT",
     "priority": "REAL DEFAULT 1.0",
+    "platform_username": "TEXT",
 }
 
 _SCHEMA = """
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     daily_max_minutes INTEGER,
     daily_max_tasks  INTEGER,
     proxy        TEXT,
-    priority     REAL DEFAULT 1.0
+    priority     REAL DEFAULT 1.0,
+    platform_username TEXT
 );
 CREATE TABLE IF NOT EXISTS courses (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +77,8 @@ CREATE TABLE IF NOT EXISTS run_logs (
     ts     TEXT NOT NULL,
     level  TEXT NOT NULL,
     event  TEXT NOT NULL,
-    detail TEXT
+    detail TEXT,
+    account_id INTEGER DEFAULT 1
 );
 """
 
@@ -100,6 +103,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     for name, decl in _ACCOUNT_COLS.items():
         if name not in acols:
             conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
+    lcols = {r["name"] for r in conn.execute("PRAGMA table_info(run_logs)")}
+    if "account_id" not in lcols:
+        conn.execute("ALTER TABLE run_logs ADD COLUMN account_id INTEGER DEFAULT 1")
     with conn:
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",

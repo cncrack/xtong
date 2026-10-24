@@ -64,23 +64,34 @@ def manual_login(login_url: str, state_path: Path, timeout_s: int = 600) -> bool
     return ok
 
 
-def probe_session(space_url: str, state_path: Path) -> str:
-    """探测已保存会话是否有效。返回 valid | invalid | no_state。
+def probe_session(space_url: str, state_path: Path) -> tuple[str, str | None]:
+    """探测已保存会话是否有效。返回 (state, platform_username)。
 
-    判定 heuristic：未登录访问学习空间会被重定向到 passport 登录页。
-    M1 实况验证时如发现更好的判定信号（如页面用户名元素）再修正。
+    state ∈ valid | invalid | no_state；platform_username 从页面自身的
+    stu-base-info 接口截获（零额外请求），供面板展示"刷的是谁"。
     """
     if not state_path.exists():
-        return "no_state"
+        return "no_state", None
     from playwright.sync_api import sync_playwright
+
+    holder: dict[str, str] = {}
+
+    def on_response(response) -> None:
+        if "stu-base-info" in response.url and "name" not in holder:
+            try:
+                holder["name"] = response.json().get("userInfo", {}).get("username") or ""
+            except Exception:
+                pass
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(storage_state=str(state_path))
         page = context.new_page()
+        page.on("response", on_response)
         state = "invalid"
         try:
             page.goto(space_url, wait_until="domcontentloaded", timeout=30_000)
+            page.wait_for_timeout(3_000)  # 等 stu-base-info 异步返回
             final_url = page.url
             # 未登录访问学习空间会被重定向到 passport 登录页，视为会话失效
             if "passport2.chaoxing.com" not in final_url and "login" not in final_url.lower():
@@ -88,4 +99,4 @@ def probe_session(space_url: str, state_path: Path) -> str:
                 context.storage_state(path=str(state_path))  # 滚动续期（PLAN §5.1）
         finally:
             browser.close()
-    return state
+    return state, (holder.get("name") or None)

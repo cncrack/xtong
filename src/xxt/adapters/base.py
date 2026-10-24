@@ -17,8 +17,8 @@ class PlatformAdapter(ABC):
         """人工辅助登录并保存会话。"""
 
     @abstractmethod
-    def probe_session(self, state_path: Path) -> str:
-        """探测会话有效性：valid | invalid | no_state。"""
+    def probe_session(self, state_path: Path) -> tuple[str, str | None]:
+        """探测会话有效性：返回 (valid|invalid|no_state, 平台用户名或 None)。"""
 
     @abstractmethod
     def fetch_courses(self, state_path: Path) -> list[dict[str, Any]]:

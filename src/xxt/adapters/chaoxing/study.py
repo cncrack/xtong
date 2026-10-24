@@ -37,8 +37,25 @@ def find_frame_with(page, selector: str, timeout_s: int = 30):
     return None
 
 
+def username_sniffer():
+    """课程页（fanyav3）会调 stu-base-info 接口，内含平台昵称——截获它，零额外请求。"""
+    holder: dict[str, str] = {}
+
+    def on_response(response) -> None:
+        if "stu-base-info" in response.url and "name" not in holder:
+            try:
+                holder["name"] = response.json().get("userInfo", {}).get("username") or ""
+            except Exception:
+                pass
+
+    return on_response, holder
+
+
 def open_chapter_frame(page, course_url: str):
-    """进入课程并点开"章节"导航，返回章节树所在 frame。"""
+    """进入课程并点开"章节"导航，返回章节树所在 frame。顺带截获平台昵称（page._xxt_name_holder）。"""
+    sniffer, holder = username_sniffer()
+    page.on("response", sniffer)
+    page._xxt_name_holder = holder
     page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(4_000)
     top = next((f for f in page.frames if "fanyav3/stu" in f.url), None)
@@ -76,10 +93,12 @@ def match_chapter_id(conn, course_id: int, title: str) -> int | None:
 class StudyRunner:
     """单账号、单课程的一次学习会话（长会话模式：一次浏览器上下文跑到底）。"""
 
-    def __init__(self, settings, state_path: Path, conn, seed: int | None = None) -> None:
+    def __init__(self, settings, state_path: Path, conn, seed: int | None = None,
+                 account_id: int = 1) -> None:
         self.settings = settings
         self.state_path = state_path
         self.conn = conn
+        self.account_id = account_id
         self.rng = random.Random(seed)
         self.pace = settings.pace
         self.events: list[dict[str, Any]] = []
@@ -192,8 +211,9 @@ class StudyRunner:
                 budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
                 today = time.strftime("%Y-%m-%d")
                 done_today = self.conn.execute(
-                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
-                    (f"{today}%",),
+                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
+                    " AND account_id = ?",
+                    (f"{today}%", self.account_id),
                 ).fetchone()["c"]
                 if budget_tasks:
                     budget_tasks = max(0, budget_tasks - done_today)
@@ -230,10 +250,11 @@ class StudyRunner:
                             if self._play_video(page, video_frame, title):
                                 stats["videos"] += 1
                                 self.conn.execute(
-                                    "INSERT INTO run_logs(ts, level, event, detail) VALUES(?,?,?,?)",
+                                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                                    " VALUES(?,?,?,?,?)",
                                     (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done", f"{course_row['name']}｜{title}"),
-                                )
+                                     "video-done", f"{course_row['name']}｜{title}",
+                                     self.account_id))
                                 # 经"下一节"推进的知识点按任务标题精确落库
                                 cid = match_chapter_id(self.conn, course_row["id"], title)
                                 if cid is not None:

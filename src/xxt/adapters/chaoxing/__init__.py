@@ -25,13 +25,14 @@ class ChaoxingAdapter(PlatformAdapter):
         self.settings = settings
         self.login_url: str = settings.platform["login_url"]
         self.space_url: str = settings.platform["space_url"]
+        self.last_username: str | None = None  # 最近一次页面流程截获的平台昵称
 
     def login(self, state_path: Path) -> bool:
         from ...session.login import manual_login
 
         return manual_login(self.login_url, state_path)
 
-    def probe_session(self, state_path: Path) -> str:
+    def probe_session(self, state_path: Path) -> tuple[str, str | None]:
         from ...session.login import probe_session
 
         return probe_session(self.space_url, state_path)
@@ -46,7 +47,7 @@ class ChaoxingAdapter(PlatformAdapter):
 
         from .courses import parse_course_cards
 
-        holder: dict[str, str] = {}
+        holder: dict[str, str | object] = {}
 
         def on_response(response) -> None:
             if "courselistdata" in response.url and "body" not in holder:
@@ -54,6 +55,11 @@ class ChaoxingAdapter(PlatformAdapter):
                     holder["body"] = response.text()
                 except Exception as exc:  # 响应体读取失败也要留下线索
                     log.warning("读取 courselistdata 响应失败：%r", exc)
+            if "stu-base-info" in response.url and "name" not in holder:
+                try:
+                    holder["name"] = response.json().get("userInfo", {}).get("username") or ""
+                except Exception:
+                    pass
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -74,7 +80,9 @@ class ChaoxingAdapter(PlatformAdapter):
 
         if "body" not in holder:
             raise RuntimeError("未捕获到 courselistdata 接口（可能平台改版，重跑 scripts/recon_space.py 核对）")
-        courses = parse_course_cards(holder["body"])
+        courses = parse_course_cards(str(holder["body"]))
+        name = holder.get("name")
+        self.last_username = name if isinstance(name, str) and name else None
         log.info("课程抓取完成：%d 门", len(courses))
         return courses
 
@@ -96,6 +104,9 @@ class ChaoxingAdapter(PlatformAdapter):
                 )
                 if "passport2.chaoxing.com" in page.url:
                     raise RuntimeError("会话已失效，请先执行 xxt login")
+                holder = getattr(page, "_xxt_name_holder", {})
+                name = holder.get("name")
+                self.last_username = name if isinstance(name, str) and name else None
                 context.storage_state(path=str(state_path))  # 滚动续期
             finally:
                 browser.close()

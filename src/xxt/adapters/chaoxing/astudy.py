@@ -63,10 +63,12 @@ class AsyncStudyRunner:
 
     def __init__(self, settings, state_path: Path, conn,
                  pace: dict | None = None, quota: dict | None = None,
-                 proxy: str | None = None, rng: random.Random | None = None) -> None:
+                 proxy: str | None = None, rng: random.Random | None = None,
+                 account_id: int = 1) -> None:
         self.settings = settings
         self.state_path = state_path
         self.conn = conn
+        self.account_id = account_id
         self.pace = pace or settings.pace
         self.quota = quota or settings.quota
         self.proxy = proxy
@@ -150,8 +152,9 @@ class AsyncStudyRunner:
                 budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.quota)
                 today = time.strftime("%Y-%m-%d")
                 done_today = self.conn.execute(
-                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
-                    (f"{today}%",)
+                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
+                    " AND account_id = ?",
+                    (f"{today}%", self.account_id),
                 ).fetchone()["c"]
                 if budget_tasks:
                     budget_tasks = max(0, budget_tasks - done_today)
@@ -186,9 +189,11 @@ class AsyncStudyRunner:
                             if await self._play_video(page, video_frame, title):
                                 stats["videos"] += 1
                                 self.conn.execute(
-                                    "INSERT INTO run_logs(ts, level, event, detail) VALUES(?,?,?,?)",
+                                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                                    " VALUES(?,?,?,?,?)",
                                     (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done", f"{course_row['name']}｜{title}"))
+                                     "video-done", f"{course_row['name']}｜{title}",
+                                     self.account_id))
                                 cid = match_chapter_id(self.conn, course_row["id"], title)
                                 if cid is not None:
                                     self.conn.execute(
@@ -265,6 +270,7 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 pace=effective_pace(settings, row),
                 quota=effective_quota(settings, row),
                 proxy=row["proxy"],
+                account_id=row["id"],
             )
             stats = await runner.run(course_row, limit=limit)
             stats["account"] = row["label"]
