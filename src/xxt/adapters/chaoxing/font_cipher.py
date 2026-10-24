@@ -60,7 +60,17 @@ def extract_cipher_font(html: str) -> bytes | None:
 def build_dynamic_map(font_bytes: bytes,
                       ref_font_path: str = r"C:\Windows\Fonts\simhei.ttf",
                       threshold: float = 0.72) -> dict[str, str]:
-    """位图灰度余弦比对生成 cipher→plain 映射（平台换字体变体自动适配）。"""
+    """位图灰度余弦比对生成 cipher→plain 映射（平台换字体变体自动适配）。
+
+    带 _MAP_CACHE（按字体字节内容哈希）——同一套字体秒级命中，30s 比对只跑一次。
+    """
+    import hashlib
+
+    key = hashlib.sha1(font_bytes).hexdigest()
+    cached = _MAP_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     from PIL import ImageFont
 
     cipher_font = ImageFont.truetype(io.BytesIO(font_bytes), _SIZE - 8)
@@ -83,7 +93,11 @@ def build_dynamic_map(font_bytes: bytes,
                 best, best_s = ch, s
         if best is not None and best_s >= threshold:
             mapping[cipher] = best
+    _MAP_CACHE[key] = mapping
     return mapping
+
+
+_MAP_CACHE: dict[str, dict[str, str]] = {}
 
 
 def _font_codepoints(font_bytes: bytes) -> list[int]:

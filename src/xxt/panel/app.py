@@ -580,7 +580,7 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
     e_meta.textContent=`已续期，剩余 ${d.days_left} 天（至 ${until}）`;
     reload();});}
 let WORK_ACC=null,WORK_CH='';
-function doWork(id,chapter,force=false){
+function doWork(id,chapter,force=false,qidx=null){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
   const mode=(a.work_mode||'').trim()||( (typeof QUIZ!=='undefined'&&QUIZ.work_mode_default) || 'owner');
   const named=a.works? a.works.find(w=>w.name===chapter) : null;
@@ -590,15 +590,18 @@ function doWork(id,chapter,force=false){
     document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
     document.getElementById('workDlg').showModal();
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({chapter:chapter,force:force,
+      body:JSON.stringify({chapter:chapter,force:force,question_idx:qidx,
         extra_requirements:(document.getElementById('w_req')?.value||'').trim()})}).then(r=>r.json()).then(d=>{
       const el=document.getElementById('w_body');
       if(!d.ok){el.textContent='失败：'+d.error;return;}
       if(d.action==='owner'){el.textContent=d.message;return;}
       el.innerHTML=(d.answers||[]).map((x,i)=>
-        `<div style="margin:.6rem 0"><b>第 ${i+1} 题</b>（${esc(x.stem)}…）<br>
+        `<div style="margin:.6rem 0"><b>第 ${i+1} 题</b>（${esc(x.stem)}…）
+         ${x.source==='bank'?'<span class="chip" title="来自本地题库（历史已答），秒出；点右侧🔄用 AI 重生">题库答案</span>':'<span class="chip" title="本次 AI 新生成">AI 新生成</span>'}
+         <button class="minibtn" title="仅重新生成本题（用上方要求框的附加要求）"
+           onclick="doWork(${id},'${esc(chapter).replace(/'/g,'&#39;')}',false,${x.idx??i})">🔄 本题</button><br>
          <span style="color:var(--ok)">参考答案：</span>${esc(x.answer)}</div>`).join('')
-        +'<div class="hint">请登录该账号作业页抄写并提交（计分作业建议用自己的语言改写）</div>';});
+        +'<div class="hint">题库答案=历史秒出；点"🔄 本题"单题重生（带附加要求）；顶部🔄全部重生</div>';});
   } else if(mode==='ai'){
     if(!confirm('AI 代答模式：后台填入该账号作业（semi 不提交）。完成后需到平台作业页核对并提交。继续？'))return;
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1374,11 +1377,18 @@ def create_app(settings: Settings) -> FastAPI:
                         return {"ok": False, "error": "该章节不是作业任务点"}
                     qs = parse_work_questions(wf.content(), dynamic_map=_page_font_map(wf))
                     llm = LLMClient(settings.llm)
-                    from ..ai.quiz import parse_llm_json, question_hash, bank_record, build_messages
+                    from ..ai.quiz import (bank_lookup, bank_record, build_messages,
+                                           parse_llm_json, question_hash)
                     extra = str(body.get("extra_requirements") or "").strip()
+                    only_idx = body.get("question_idx")  # 单题刷新（0-based）；None=全部
                     wconn = db()
-                    for q in qs:
-                        ans, err = "", None
+                    bank_hit: dict[int, str] = {}
+
+                    def answer_one(idx_q):
+                        """纯网络函数（线程安全）：题库已由主线程预查，这里只调 LLM。"""
+                        idx, q, need_llm = idx_q
+                        if not need_llm:
+                            return idx, None, "bank", None
                         try:
                             raw = llm.chat(build_messages(
                                 q["stem"], q["qtype"], q["options"],
@@ -1386,22 +1396,59 @@ def create_app(settings: Settings) -> FastAPI:
                                 extra_requirements=extra))
                             try:
                                 parsed = parse_llm_json(raw)
-                                ans = "；".join(parsed["answer"])  # 解析出干净答案文本
+                                ans = "；".join(parsed["answer"])
                             except Exception:
-                                ans = raw.strip()[:500]  # 模型未按 JSON 输出→原文兜底
-                            bank_record(wconn, question_hash(q["stem"], q["options"]),
-                                        q["stem"], q["qtype"], q["options"],
-                                        answer=[ans])  # 入题库存档
+                                ans = raw.strip()[:500]
+                            return idx, ans, "llm", None
                         except Exception as exc:
-                            err = str(exc)
+                            return idx, "", "err", str(exc)
+
+                    # ① 主线程：题库预查（命中=不调 LLM）
+                    need = []
+                    for idx, q in enumerate(qs):
+                        h = question_hash(q["stem"], q["options"])
+                        hit = None
+                        if only_idx is None and not body.get("force"):
+                            hit = bank_lookup(wconn, h)
+                        if hit and hit.get("answer"):
+                            bank_hit[idx] = "；".join(hit["answer"])
+                            need.append((idx, q, False))
+                        elif only_idx is not None and idx != int(only_idx):
+                            need.append((idx, q, False))  # 非刷新目标跳过
+                        else:
+                            need.append((idx, q, True))
+                    # ② LLM 并行（多题时提速）
+                    results: dict[int, tuple] = {}
+                    llm_tasks = [t for t in need if t[2]]
+                    if len(llm_tasks) > 1:
+                        from concurrent.futures import ThreadPoolExecutor
+
+                        with ThreadPoolExecutor(max_workers=min(4, len(llm_tasks))) as ex:
+                            for r in ex.map(answer_one, llm_tasks):
+                                results[r[0]] = r
+                    else:
+                        for t in llm_tasks:
+                            r = answer_one(t)
+                            results[r[0]] = r
+                    # ③ 主线程：结果回写题库 + 组装
+                    for idx, q, do_llm in need:
+                        if not do_llm:
+                            results[idx] = (idx, bank_hit.get(idx, ""), "bank", None)
+                            continue
+                        _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
+                        if ans:
+                            bank_record(wconn, question_hash(q["stem"], q["options"]),
+                                        q["stem"], q["qtype"], q["options"], answer=[ans])
+                    for idx, q in enumerate(qs):
+                        _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
                         wconn.execute(
                             "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                             " VALUES(?,?,?,?,?)",
                             (time.strftime("%Y-%m-%dT%H:%M:%S"),
                              "WARNING" if err else "INFO", "work-answer",
-                             f"{chapter_full}｜{q['qtype_cn']}｜{q['stem'][:30]}…｜参考答案", account_id))
+                             f"{chapter_full}｜{q['qtype_cn']}｜{q['stem'][:30]}…｜参考答案｜{src}", account_id))
                         wconn.commit()
-                        answers.append({"stem": q["stem"][:80],
+                        answers.append({"idx": idx, "stem": q["stem"][:80], "source": src,
                                         "answer": f"（AI 调用失败：{err}）" if err else ans})
                     wconn.close()
                     context.storage_state(path=str(state))
