@@ -608,6 +608,8 @@ function doReview(id,chapter){
 }
 async function doWorkAll(id){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
+  const mode=((a.work_mode||'').trim()||(QUIZ&&QUIZ.work_mode_default)||'owner');
+  if(mode==='owner'){alert(`该账号作业策略=号主自理，批量作业跳过。\n如需 AI 处理：✎管理改策略，或⚙设置改全局默认。`);return;}
   const pend=(a.works||[]).filter(w=>w.status!=='done');
   if(!pend.length){alert('该账号没有未完成的作业任务');return;}
   for(const w of pend){ await doWork(id,w.name); await new Promise(r=>setTimeout(r,800)); }
@@ -1305,7 +1307,7 @@ def create_app(settings: Settings) -> FastAPI:
         if mode == "ai":
             if account_id in _JOBS and _JOBS[account_id]["proc"].poll() is None:
                 return {"ok": False, "error": "该账号已有进行中的会话/作业"}
-            proc = _spawn(str(settings.root), "work", str(account_id), chapter)
+            proc = _spawn(str(settings.root), "work", str(account_id), chapter, "--force")
             _JOBS[account_id] = {"proc": proc, "course": f"作业{chapter}", "since": time.strftime("%H:%M")}
             mode_name = {"ai": "AI 代答", "reference": "AI 参考答案",
                          "owner": "号主自理（不执行）"}.get(mode, mode)
@@ -1342,9 +1344,10 @@ def create_app(settings: Settings) -> FastAPI:
                     c2 = db()
                     try:
                         kid_row = c2.execute(
-                            "SELECT platform_chapter_id FROM chapters WHERE course_id=? "
+                            "SELECT platform_chapter_id, name FROM chapters WHERE course_id=? "
                             "AND name LIKE ? LIMIT 1", (course["id"], f"%{chapter}%")).fetchone()
                         kid = kid_row["platform_chapter_id"] if kid_row else None
+                        chapter_full = kid_row["name"] if kid_row else chapter
                     finally:
                         c2.close()
                     if kid is None:
@@ -1375,6 +1378,13 @@ def create_app(settings: Settings) -> FastAPI:
                                         answer=[ans])  # 入题库存档
                         except Exception as exc:
                             err = str(exc)
+                        wconn.execute(
+                            "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                            " VALUES(?,?,?,?,?)",
+                            (time.strftime("%Y-%m-%dT%H:%M:%S"),
+                             "WARNING" if err else "INFO", "work-answer",
+                             f"{chapter_full}｜{q['qtype_cn']}｜{q['stem'][:30]}…｜参考答案", account_id))
+                        wconn.commit()
                         answers.append({"stem": q["stem"][:80],
                                         "answer": f"（AI 调用失败：{err}）" if err else ans})
                     wconn.close()

@@ -165,11 +165,14 @@ def _page_font_map(work_frame) -> dict[str, str]:
 
 def answer_work(work_frame, settings, conn: sqlite3.Connection,
                 account_id: int, course_name: str, submit: bool = False,
-                chapter_name: str = "") -> dict[str, Any]:
-    """对当前已打开的作业页整卷作答。submit=False 为半自动（只填不交）。"""
+                chapter_name: str = "", force: bool = False) -> dict[str, Any]:
+    """对当前已打开的作业页整卷作答。submit=False 为半自动（只填不交）。
+
+    force=True 跳过 work_enabled 开关（面板主动触发=用户已授权）。
+    """
     quiz_cfg = dict(settings.quiz)
-    if not quiz_cfg.get("work_enabled"):
-        return {"status": "disabled", "detail": "作业作答未启用（[quiz].work_enabled）"}
+    if not quiz_cfg.get("work_enabled") and not force:
+        return {"status": "disabled", "detail": "作业作答未启用（[quiz].work_enabled 或面板 --force）"}
     # 作业开关已开即视为作答启用（handle_quiz 的 enabled 门是弹题总开关语义）
     quiz_cfg["enabled"] = True
     questions = parse_work_questions(work_frame.content(), dynamic_map=_page_font_map(work_frame))

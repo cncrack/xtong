@@ -623,7 +623,7 @@ def cmd_work(args: argparse.Namespace) -> int:
                     return 1
                 stats = answer_work(work_frame, s, conn, account_id,
                                     course["name"], submit=args.submit,
-                                    chapter_name=ch["name"])
+                                    chapter_name=ch["name"], force=args.force)
                 print(f"作业作答：{stats}")
                 if stats.get("status") == "semi":
                     import threading
@@ -712,6 +712,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="自动提交（默认只填不交，人工核对后自提）")
     p_wk.add_argument("--review", action="store_true",
                       help="判题回读：读已提交作业的每题得分，回写题库（答对转正/答错清空）")
+    p_wk.add_argument("--force", action="store_true",
+                      help="跳过 work_enabled 开关（面板主动触发时使用）")
 
     args = parser.parse_args(argv)
     handlers = {
