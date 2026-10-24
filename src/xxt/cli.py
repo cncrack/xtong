@@ -520,7 +520,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
                     r = _httpx.post(
                         f"http://127.0.0.1:{panel_port}/api/study/start",
-                        json={"account_id": aid, "course": course_name}, timeout=10,
+                        json={"account_id": aid, "course": course_name,
+                              "source": "定时"}, timeout=10,
                     )
                     ok = bool(r.json().get("ok"))
                     reason = r.json().get("error", "")

@@ -719,24 +719,49 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/auto/start")
     def auto_start():
-        """启动定时调度守护（面板化管理 xxt auto，无需开命令行）。"""
+        """启动定时调度守护；PID 落 data/run/auto.json（面板重启后仍可见、可停）。"""
+        import json as _json
+
         global _AUTO
-        if _AUTO and _AUTO["proc"].poll() is None:
-            return {"ok": False, "error": "定时调度已在运行"}
+        marker = settings.data_dir / "run" / "auto.json"
+        if marker.exists():  # 旧守护还活着（如面板重启前启动的）——先确认
+            try:
+                old = _json.loads(marker.read_text(encoding="utf-8"))
+                if _pid_alive(int(old["pid"])):
+                    return {"ok": False, "error": "定时调度已在运行"}
+            except Exception:
+                pass
         proc = _spawn(str(settings.root), "auto")
-        _AUTO = {"proc": proc, "since": time.strftime("%H:%M")}
+        since = time.strftime("%H:%M")
+        _AUTO = {"proc": proc, "since": since}
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(_json.dumps({"pid": proc.pid, "since": since}),
+                          encoding="utf-8")
         return {"ok": True}
 
     @app.post("/api/auto/stop")
     def auto_stop():
-        """停止定时调度（已启动的学习会话继续自行跑到额度停机）。"""
+        """停止定时调度（含面板重启前的旧守护）；学习会话不被动。"""
         global _AUTO
-        if not _AUTO or _AUTO["proc"].poll() is not None:
-            _AUTO = None
-            return {"ok": False, "error": "定时调度未在运行"}
-        _AUTO["proc"].terminate()
+        marker = settings.data_dir / "run" / "auto.json"
+        stopped = False
+        if _AUTO and _AUTO["proc"].poll() is None:
+            _AUTO["proc"].terminate()
+            stopped = True
+        if marker.exists():  # 孤儿守护（面板重启后失联的）
+            try:
+                import json as _json
+
+                old = _json.loads(marker.read_text(encoding="utf-8"))
+                if _pid_alive(int(old["pid"])):
+                    subprocess.run(["taskkill", "/PID", str(old["pid"]), "/F"],
+                                   capture_output=True)
+                    stopped = True
+            except Exception:
+                pass
+            marker.unlink(missing_ok=True)
         _AUTO = None
-        return {"ok": True}
+        return {"ok": True} if stopped else {"ok": False, "error": "定时调度未在运行"}
 
     @app.get("/api/study/status")
     def study_status():
@@ -750,11 +775,25 @@ def create_app(settings: Settings) -> FastAPI:
         for aid, info in _marker_jobs(settings).items():  # 定时/外部（含面板重启前的）
             out.setdefault(str(aid), {"course": info["course"], "running": True,
                                       "since": info["since"], "external": True})
-        auto_running = bool(_AUTO and _AUTO["proc"].poll() is None)
+        # 守护状态以磁盘标记为准（面板重启后仍真实反映，杜绝"看不见的孤儿守护"）
+        auto_running, auto_since = False, None
+        marker = settings.data_dir / "run" / "auto.json"
+        if marker.exists():
+            try:
+                import json as _json
+
+                info = _json.loads(marker.read_text(encoding="utf-8"))
+                if _pid_alive(int(info["pid"])):
+                    auto_running, auto_since = True, info.get("since")
+                else:
+                    marker.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if not auto_running and _AUTO and _AUTO["proc"].poll() is None:
+            auto_running, auto_since = True, _AUTO["since"]
         if not auto_running:
             globals()["_AUTO"] = None
-        return {"jobs": out, "auto": {"running": auto_running,
-                                      "since": (_AUTO or {}).get("since")}}
+        return {"jobs": out, "auto": {"running": auto_running, "since": auto_since}}
 
     @app.get("/", response_class=HTMLResponse)
     def index():
