@@ -50,10 +50,14 @@ DEFAULTS: dict[str, Any] = {
 
 
 def find_project_root() -> Path:
-    """定位项目根：XXT_ROOT 环境变量优先，否则向上查找 config/settings.toml 或 .git。"""
+    """定位项目根：XXT_ROOT 环境变量 > exe 所在目录 > 向上查找 config/settings.toml 或 .git。"""
+    import sys
+
     env = os.environ.get("XXT_ROOT")
     if env:
         return Path(env).resolve()
+    if getattr(sys, "frozen", False):  # PyInstaller 打包后：exe 所在目录即根
+        return Path(sys.executable).resolve().parent
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "config" / "settings.toml").exists() or (parent / ".git").exists():

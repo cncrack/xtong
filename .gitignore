@@ -21,3 +21,7 @@ storage_state*.json
 .idea/
 .vscode/
 Thumbs.db
+
+# P3 构建产物
+build/
+dist/

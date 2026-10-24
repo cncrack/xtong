@@ -20,10 +20,14 @@ _AUTO: dict | None = None  # 定时调度守护进程（面板一键开关）
 
 
 def _spawn(root_str: str, *cmd: str):
-    return subprocess.Popen(
-        [sys.executable, "-m", "xxt.cli", *cmd],
-        cwd=root_str, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    import sys as _sys
+
+    if getattr(_sys, "frozen", False):  # exe 模式：自身即 CLI 入口
+        argv = [_sys.executable, *cmd]
+    else:
+        argv = [_sys.executable, "-m", "xxt.cli", *cmd]
+    return subprocess.Popen(argv, cwd=root_str,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _pid_alive(pid: int) -> bool:
