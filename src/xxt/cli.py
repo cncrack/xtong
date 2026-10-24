@@ -49,9 +49,27 @@ def cmd_status(args: argparse.Namespace) -> int:
     s = _settings(args)
     adapter = get_adapter(s)
     state = adapter.probe_session(s.default_state_path)
+    if state == "invalid":
+        # 自动重登（§5.1）：有凭据且预算允许则尝试，成功后重探
+        from .core import accounts as acc
+        from .session.relogin import maybe_auto_relogin
+        from .store.db import connect
+
+        conn = connect(s.db_path)
+        try:
+            row = acc.find_account(conn, "1")
+            outcome = maybe_auto_relogin(s, conn, row) if row else None
+        finally:
+            conn.close()
+        if outcome == "ok":
+            print("[OK] 会话失效已自动重登成功")
+            state = adapter.probe_session(s.default_state_path)
+        elif outcome is not None:
+            print(f"[!!] 自动重登未成功（{outcome}），请人工执行 xxt login")
+            return 1
     text = {
         "valid": "[OK] 会话有效",
-        "invalid": "[!!] 会话已失效，请重新执行 xxt login",
+        "invalid": "[!!] 会话已失效且无法自动重登（未存凭据），请 xxt login 或 xxt account add 存凭据",
         "no_state": "[..] 尚未登录，请先执行 xxt login",
     }[state]
     print(text)
