@@ -186,6 +186,11 @@ background:#fff;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,
 .frm{display:grid;grid-template-columns:155px 1fr;gap:.15rem .9rem;align-items:center;margin:.6rem 0}
 .frm label{font-size:.88rem}
 .frm small{display:block;color:var(--muted);font-size:.72rem;margin-top:.1rem}
+.llmbox{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:.8rem .9rem}
+.llmgrid{display:grid;grid-template-columns:1fr 1fr;gap:.55rem .7rem}
+.llmgrid label{display:flex;flex-direction:column;gap:.25rem;font-size:.78rem;color:var(--muted)}
+.llmgrid .span2{grid-column:span 2}
+.llmgrid input{width:100%;font-size:.86rem}
 .primary{background:var(--grad);color:#fff;border:none;border-radius:12px;
 padding:.58rem 1.25rem;cursor:pointer;font-size:.9rem;transition:.15s}
 .primary:hover{transform:translateY(-1px);box-shadow:0 5px 14px rgba(70,80,220,.35)}
@@ -231,19 +236,23 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
-  <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型（全局，所有账号共用）</h3>
-  <div class="frow"><label>提供商列表<small>点选切换；⨯ 可删除自定义项（内置项不可删）</small></label>
-    <span id="provList" style="display:flex;gap:.3rem;flex-wrap:wrap"></span></div>
-  <div class="frow"><label>提供商名称<small>自定义时填写（保存进上方列表）</small></label><input type="text" id="s_lname" placeholder="如 MyProvider" style="width:150px"></div>
-  <div class="frow"><label>Base URL<small>OpenAI 兼容端点</small></label><input type="text" id="s_lurl" placeholder="https://api.example.com/v1" style="width:250px"></div>
-  <div class="frow"><label>模型名称</label><input type="text" id="s_lmodel" placeholder="如 deepseek-chat" style="width:180px"></div>
-  <div class="frow"><label>API Key<small>加密存本机 data/（方案B）；留空=不修改已存 Key</small></label><input type="password" id="s_lkeyv" placeholder="粘贴 Key（不回显）" style="width:220px"></div>
-  <div class="dlgbtns" style="justify-content:flex-start;margin-top:.4rem">
-    <button class="ghost" onclick="testLLM()">🔌 测试连通</button>
-    <button class="ghost" onclick="saveProvider()">💾 保存到厂商列表</button>
-    <button class="ghost" onclick="delProvider()">🗑 删除当前</button>
-    <span id="s_lhint" style="font-size:.78rem;align-self:center"></span></div>
-  <div class="hint" id="s_lhint2"></div>
+  <h3 style="margin:.4rem 0 .5rem;font-size:.92rem">🤖 AI 模型 <span class="muted" style="font-size:.75rem;font-weight:400">全局，所有账号共用</span></h3>
+  <div class="llmbox">
+    <div style="margin-bottom:.5rem"><span class="muted" style="font-size:.75rem">提供商（点选载入；自定义项⨯删除）</span>
+      <div id="provList" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.3rem"></div></div>
+    <div class="llmgrid">
+      <label>提供商名称<input type="text" id="s_lname" placeholder="如 MyProvider"></label>
+      <label>模型名称<input type="text" id="s_lmodel" placeholder="如 agnes-2.5-flash"></label>
+      <label class="span2">Base URL（OpenAI 兼容端点）<input type="text" id="s_lurl" placeholder="https://api.example.com/v1"></label>
+      <label class="span2">API Key（加密存本机；<b>留空=沿用已存 Key</b>）<input type="password" id="s_lkeyv" placeholder="粘贴 Key（保存后不回显）"></label>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.55rem">
+      <button class="ghost" onclick="testLLM()">🔌 测试连通</button>
+      <button class="ghost" onclick="saveProvider()">💾 保存为当前厂商</button>
+      <button class="ghost" onclick="delProvider()">🗑 删除自定义</button>
+      <span id="s_lhint" style="font-size:.76rem;color:var(--muted);flex:1;min-width:140px"></span></div>
+    <div class="hint" id="s_lhint2" style="margin-top:.45rem"></div>
+  </div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
@@ -870,7 +879,7 @@ def create_app(settings: Settings) -> FastAPI:
             upsert = ("INSERT INTO app_config(key,value) VALUES(?,?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
             conn.execute(upsert, ("llm.providers", _json.dumps(saved, ensure_ascii=False)))
-            conn.execute(upsert, ("llm.provider_name", name))
+            conn.execute(upsert, ("llm.provider_name", _json.dumps(name, ensure_ascii=False)))
             conn.execute(upsert, ("llm.base_url", base_url))
             conn.execute(upsert, ("llm.model", model))
             if key:  # 方案B：Key 加密落 data/（AES-GCM，主密钥同账号凭据体系）

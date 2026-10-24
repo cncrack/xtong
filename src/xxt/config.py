@@ -94,11 +94,15 @@ class Settings:
                 _conn = sqlite3.connect(db_file)
                 try:
                     for k, v in _conn.execute("SELECT key, value FROM app_config"):
+                        try:  # 单行坏值不中断整体覆盖层（历史裸字符串等）
+                            parsed = json.loads(v)
+                        except Exception:
+                            continue
                         node: dict[str, Any] = data
                         parts = k.split(".")
                         for p in parts[:-1]:
                             node = node.setdefault(p, {})
-                        node[parts[-1]] = json.loads(v)
+                        node[parts[-1]] = parsed
                 finally:
                     _conn.close()
         except Exception:
