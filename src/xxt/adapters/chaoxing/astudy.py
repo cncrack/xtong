@@ -144,6 +144,7 @@ class AsyncStudyRunner:
             return False
         log.info("[%s] 开始播放：倍速 %.2f", label, rate)
         max_wait, ended, last_report, start = 600, False, 0.0, time.monotonic()
+        last_dur = 0
         while time.monotonic() - start < max_wait:
             got = self._drain()
             if not got and time.monotonic() - max(self._last_event_at, start) > 90:
@@ -155,6 +156,7 @@ class AsyncStudyRunner:
                 elif t == "quiz-popup":
                     await self._handle_quiz(video_frame, ev)
                 elif t == "tick" and ev.get("dur"):
+                    last_dur = int(ev["dur"])
                     if ev["cur"] >= ev["dur"] - 0.5:
                         ended = True
                     if time.monotonic() - last_report > 30:
@@ -169,6 +171,7 @@ class AsyncStudyRunner:
             except Exception:
                 break
         self._drain()
+        self._last_video_dur = last_dur
         log.info("[%s] 播放结束（ended=%s）", label, ended)
         return ended
 
@@ -243,7 +246,8 @@ class AsyncStudyRunner:
                                     "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                                     " VALUES(?,?,?,?,?)",
                                     (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done", f"{course_row['name']}｜{title}",
+                                     "video-done",
+                                     f"{course_row['name']}｜{title}｜{getattr(self, '_last_video_dur', 0)}s",
                                      self.account_id))
                                 cid = match_chapter_id(self.conn, course_row["id"], title)
                                 if cid is not None:

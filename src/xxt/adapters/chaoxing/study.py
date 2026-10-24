@@ -186,6 +186,7 @@ class StudyRunner:
 
         deadline_margin, max_wait = 90, 600
         ended, last_report, start = False, 0.0, time.monotonic()
+        last_dur = 0
         while time.monotonic() - start < max_wait:
             got = self._drain()
             if not got and time.monotonic() - max(self._last_event_at, start) > 90:
@@ -199,6 +200,7 @@ class StudyRunner:
                 elif t in ("error", "play-blocked"):
                     log.warning("[%s] 播放异常事件：%s", knowledge_label, t)
                 elif t == "tick" and ev.get("dur"):
+                    last_dur = int(ev["dur"])
                     if ev["cur"] >= ev["dur"] - 0.5:  # attach 时可能已播完
                         ended = True
                     if time.monotonic() - last_report > 30:
@@ -216,6 +218,7 @@ class StudyRunner:
             except Exception:
                 break
         self._drain()
+        self._last_video_dur = last_dur  # 供 video-done 记录真实观看时长
         log.info("[%s] 播放结束（ended=%s）", knowledge_label, ended)
         return ended
 
@@ -308,7 +311,8 @@ class StudyRunner:
                                     "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                                     " VALUES(?,?,?,?,?)",
                                     (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done", f"{course_row['name']}｜{title}",
+                                     "video-done",
+                                     f"{course_row['name']}｜{title}｜{getattr(self, '_last_video_dur', 0)}s",
                                      self.account_id))
                                 # 经"下一节"推进的知识点按任务标题精确落库
                                 cid = match_chapter_id(self.conn, course_row["id"], title)

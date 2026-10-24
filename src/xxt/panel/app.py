@@ -448,23 +448,20 @@ def create_app(settings: Settings) -> FastAPI:
         from datetime import datetime as _dt
 
         def today_stats(conn: sqlite3.Connection, account_id: int, today: str) -> dict:
-            videos = conn.execute(
-                "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' "
+            """分钟数 = Σ 每个完成视频的真实时长（video-done 详情尾部"Ns"，纯观看时长）。
+            机制上线前的历史记录无时长后缀，不计入（宁少勿虚报）。"""
+            import re as _re
+
+            rows = conn.execute(
+                "SELECT detail FROM run_logs WHERE event='video-done' "
                 "AND account_id=? AND ts LIKE ?", (account_id, f"{today}%"),
-            ).fetchone()["c"]
-            events = conn.execute(
-                "SELECT ts, event FROM run_logs WHERE account_id=? AND ts LIKE ? "
-                "AND event LIKE 'session-%' ORDER BY id", (account_id, f"{today}%"),
             ).fetchall()
-            seconds, start = 0.0, None
-            for ev in events:  # 会话开始→结束配对累计时长（含拟人间隔，≈学习时长）
-                ts = _dt.fromisoformat(ev["ts"])
-                if ev["event"] == "session-start":
-                    start = ts
-                elif ev["event"] in ("session-end", "session-stop") and start:
-                    seconds += (ts - start).total_seconds()
-                    start = None
-            return {"today_videos": videos, "today_min": int(seconds // 60)}
+            seconds = sum(
+                int(m.group(1))
+                for r in rows
+                if (m := _re.search(r"｜(\d+)s$", r["detail"] or ""))
+            )
+            return {"today_videos": len(rows), "today_min": int(seconds // 60)}
 
         conn = db()
         try:
