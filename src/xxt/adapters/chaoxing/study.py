@@ -361,7 +361,8 @@ class StudyRunner:
                 stats["leaves"] = stats["videos"]
                 # 标记起始叶子完成（后续经"下一节"推进的知识点由 M3 精确同步）
                 self.conn.execute(
-                    "UPDATE chapters SET status='done' WHERE course_id=? AND platform_chapter_id=?",
+                    # 入口叶子只标 visited（路过）——done 仅留给真实完成的视频/作业（标题匹配路径）
+                    "UPDATE chapters SET status='visited' WHERE course_id=? AND platform_chapter_id=?",
                     (course_row["id"], kid),
                 )
                 self.conn.commit()
