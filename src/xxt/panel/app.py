@@ -1074,9 +1074,9 @@ def create_app(settings: Settings) -> FastAPI:
                       "proxy", "start_at", "work_mode"):
                 if k in body:
                     v = body[k]
-                    if k == "work_mode" and v not in (None, "ai", "owner", "reference"):
-                        return {"ok": False, "error": "work_mode 仅 ai/owner/reference"}
-                    fields[k] = v or None
+                    if k == "work_mode" and v not in (None, "", "ai", "owner", "reference"):
+                        return {"ok": False, "error": "作业策略仅 ai/owner/reference"}
+                    fields[k] = v or None  # 空串→None（跟随全局/清除覆盖）
             for k in ("daily_max_minutes", "daily_max_tasks"):
                 if k in body:
                     v = body[k]
