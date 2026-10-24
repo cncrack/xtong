@@ -70,7 +70,7 @@ _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 body{font-family:system-ui,"Microsoft YaHei",sans-serif;margin:0;background:var(--bg);color:var(--ink)}
 ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#c9cfe0;border-radius:9px}
 ::selection{background:#cdd8ff}
-.wrap{max-width:1180px;margin:0 auto;padding:1.4rem 1.1rem 2.5rem}
+.wrap{max-width:1440px;margin:0 auto;padding:1.4rem 1.1rem 2.5rem}
 .hero{background:var(--grad);color:#fff;border-radius:20px;padding:1.15rem 1.4rem;
 display:flex;align-items:center;gap:1.1rem;flex-wrap:wrap;
 box-shadow:0 10px 30px rgba(70,80,220,.28),inset 0 1px 0 rgba(255,255,255,.25)}
@@ -97,7 +97,7 @@ select,input[type=time],input[type=number],input[type=text],input[type=password]
 {border:1px solid var(--line);border-radius:10px;padding:.42rem .6rem;font-size:.86rem;
 background:var(--card);color:var(--ink);outline:none;transition:.15s}
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,108,255,.12)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(345px,1fr));gap:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(410px,1fr));gap:1rem}
 .card{background:var(--card);border-radius:18px;padding:1.05rem 1.15rem;border:1px solid var(--line);
 box-shadow:0 1px 4px rgba(25,35,70,.05);transition:.2s;position:relative;overflow:hidden}
 .card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(25,35,70,.13)}
@@ -126,10 +126,11 @@ border-radius:7px;padding:.12rem .5rem}
 .course{margin:.5rem 0;padding:.45rem .55rem;border-radius:11px;border:1px solid transparent;transition:.15s}
 .course:hover{background:var(--bg)}
 .course.hit{background:#f0f3ff;border-color:#cdd8ff}
-.course .t{display:flex;justify-content:space-between;align-items:center;font-size:.84rem;gap:.5rem}
-.course .t .nm{flex:1;min-width:0;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.course .t .val{display:flex;gap:.5rem;align-items:center;flex:none;font-size:.8rem}
-.course .pct{color:var(--muted);font-size:.72rem;min-width:34px;text-align:right}
+.course .nm{display:block;font-size:.84rem;line-height:1.35;word-break:break-all;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.course .t2{display:flex;justify-content:space-between;align-items:center;margin-top:3px;gap:.5rem}
+.nums{font-size:.78rem;color:var(--muted);font-weight:700;flex:none}
+.nums b{color:var(--ink);font-size:.82rem}
 .play{border:1px solid #bfe5d2;background:#eef9f3;color:var(--ok);border-radius:9px;
 padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
 .play:hover{background:var(--ok);color:#fff;border-color:var(--ok);
@@ -290,9 +291,8 @@ function renderAccounts(){
             onclick="stopGrind(${a.id})">▶ 刷课中 ${run.since} · 点击停止</button>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
-      return `<div class="course${hit}"><div class="t"><span class="nm">${esc(c.name)}</span>
-      <span class="val"><span class="pct">${c.total?Math.round(c.done/c.total*100):0}%</span>
-      <b>${c.done}/${c.total}</b>${ctl}</span></div>
+      return `<div class="course${hit}"><span class="nm">${esc(c.name)}</span>
+      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b></span>${ctl}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
     // 主显课程：正在刷的 > 最有进度的 > 第一门；其余默认折叠（点击展开；搜索时自动展开）
