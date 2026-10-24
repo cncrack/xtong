@@ -60,6 +60,20 @@ def build_messages(stem: str, qtype: str, options: list[str], context: str = "",
     return [{"role": "user", "content": text}]
 
 
+def clean_markdown(text: str) -> str:
+    """剥离模型输出中的 Markdown 符号（填入平台表单/展示用）：**加粗**、*斜体*、
+    行首 #、`代码`、行首 - 转 ·。保留换行与数字编号。"""
+    import re as _re
+
+    t = text or ""
+    t = _re.sub(r"\*\*(.+?)\*\*", r"\1", t)      # **粗体**
+    t = _re.sub(r"\*(.+?)\*", r"\1", t)           # *斜体*
+    t = _re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", t)  # `代码`
+    t = _re.sub(r"^\s{0,3}#{1,6}\s*", "", t, flags=_re.M)  # 行首标题#
+    t = _re.sub(r"^\s*[-*]\s+", "· ", t, flags=_re.M)       # 行首 -/*
+    return t.strip()
+
+
 def parse_llm_json(text: str) -> dict[str, Any]:
     """容错解析模型输出（剥离 ```json 围栏/前后杂文）。"""
     cleaned = text.strip()

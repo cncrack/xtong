@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # v7：账号作业策略——ai（AI代答semi）/ owner（号主自理，默认）/ reference（面板出参考答案人工填）
 _ACCOUNT_COLS = {
@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS run_logs (
     event  TEXT NOT NULL,
     detail TEXT,
     account_id INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS work_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key  TEXT NOT NULL,
+    idx        INTEGER NOT NULL,
+    qid        TEXT,
+    qtype      TEXT,
+    qtype_cn   TEXT,
+    stem       TEXT,
+    options    TEXT,
+    updated_at TEXT,
+    UNIQUE (cache_key, idx)
 );
 """
 

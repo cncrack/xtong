@@ -169,7 +169,7 @@ tr:hover td{background:#f7f9fd}
 .mono{font-family:Consolas,monospace;color:var(--muted);font-size:.76rem}.muted{color:var(--muted)}
 mark{background:#ffe17d;border-radius:3px;padding:0 2px;color:inherit}
 footer{margin-top:2.2rem;text-align:center;font-size:.74rem;color:#a5acbf}
-dialog{border:none;border-radius:20px;padding:1.25rem 1.45rem;width:min(640px,94vw);
+dialog{border:none;border-radius:20px;padding:1.25rem 1.45rem;width:min(720px,95vw);
 max-height:86vh;overflow:auto;box-shadow:0 24px 70px rgba(20,30,70,.35)}
 dialog::backdrop{background:rgba(20,25,45,.45);backdrop-filter:blur(3px)}
 dialog h3{margin:0 0 .95rem}
@@ -192,6 +192,10 @@ background:#fff;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,
 .llmgrid .span2{grid-column:span 2}
 .llmgrid input{width:100%;font-size:.86rem}
 .tabs{display:flex;gap:.4rem;margin:.6rem 0 .8rem;border-bottom:1px solid var(--line);padding-bottom:.55rem}
+.qa{margin:.7rem 0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.qa .q{background:var(--bg);padding:.55rem .75rem;font-size:.84rem;border-left:3px solid var(--accent)}
+.qa .a{padding:.55rem .75rem;font-size:.87rem;line-height:1.55;background:#fff}
+.qa .a .chip{margin-right:.4rem}
 .tab{border:none;background:none;padding:.35rem .8rem;font-size:.85rem;cursor:pointer;
 color:var(--muted);border-radius:9px;transition:.15s}
 .tab:hover{color:var(--accent)}
@@ -305,7 +309,10 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>对 AI 的要求<small>可空；如"300字以内""结合大学生视角""分点作答"</small></label>
     <input type="text" id="w_req" placeholder="无附加要求" style="flex:1"></div>
   <div id="w_body" class="log" style="max-height:52vh;overflow:auto;font-size:.86rem">加载中…</div>
-  <div class="dlgbtns"><button class="primary" onclick="this.closest('dialog').close()">知道了</button></div>
+  <div class="dlgbtns" style="justify-content:space-between">
+    <button class="primary" title="把上述答案填入该账号作业页并点暂存（草稿，不提交）——随后到平台核对满意再提交"
+      onclick="fillFromRef()">📝 回填到平台（填入+暂存，不提交）</button>
+    <button class="ghost" onclick="this.closest('dialog').close()">关闭</button></div>
 </dialog>
 
 <script>
@@ -587,21 +594,28 @@ function doWork(id,chapter,force=false,qidx=null){
   if(mode==='reference'){
     WORK_ACC=id;WORK_CH=chapter;
     document.getElementById('w_ch').textContent=`#${id} ${a.platform_username||a.label}｜${chapter}`;
-    document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
+    document.getElementById('w_body').textContent='正在打开作业页解析题目…';
     document.getElementById('workDlg').showModal();
+    // 渐进式第一步：只取题目（快）→ 立即渲染题干 + 生成中占位
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({chapter:chapter,force:force,question_idx:qidx,
-        extra_requirements:(document.getElementById('w_req')?.value||'').trim()})}).then(r=>r.json()).then(d=>{
-      const el=document.getElementById('w_body');
-      if(!d.ok){el.textContent='失败：'+d.error;return;}
-      if(d.action==='owner'){el.textContent=d.message;return;}
-      el.innerHTML=(d.answers||[]).map((x,i)=>
-        `<div style="margin:.6rem 0"><b>第 ${i+1} 题</b>（${esc(x.stem)}…）
-         ${x.source==='bank'?'<span class="chip" title="来自本地题库（历史已答），秒出；点右侧🔄用 AI 重生">题库答案</span>':'<span class="chip" title="本次 AI 新生成">AI 新生成</span>'}
-         <button class="minibtn" title="仅重新生成本题（用上方要求框的附加要求）"
-           onclick="doWork(${id},'${esc(chapter).replace(/'/g,'&#39;')}',false,${x.idx??i})">🔄 本题</button><br>
-         <span style="color:var(--ok)">参考答案：</span>${esc(x.answer)}</div>`).join('')
-        +'<div class="hint">题库答案=历史秒出；点"🔄 本题"单题重生（带附加要求）；顶部🔄全部重生</div>';});
+      body:JSON.stringify({chapter:chapter,questions_only:true})}).then(r=>r.json()).then(d0=>{
+      if(!d0.ok||d0.action!=='questions'){document.getElementById('w_body').textContent='题目解析失败：'+(d0.error||'');return;}
+      document.getElementById('w_body').innerHTML=d0.questions.map(x=>
+        `<div class="qa"><div class="q"><b>第 ${x.idx+1} 题（${esc(x.qtype_cn)}）</b><br>${esc(x.stem)}</div>
+         <div class="a" id="ans_${x.idx}"><span class="muted">⏳ 答案生成中…</span></div></div>`).join('');
+      // 第二步：取答案（题库优先/LLM 并行）逐题填充
+      fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({chapter:chapter,force:force,question_idx:qidx,
+          extra_requirements:(document.getElementById('w_req')?.value||'').trim()})}).then(r=>r.json()).then(d=>{
+        if(!d.ok){document.getElementById('w_body').textContent='失败：'+d.error;return;}
+        (d.answers||[]).forEach(x=>{
+          const cell=document.getElementById('ans_'+(x.idx??0));
+          if(!cell)return;
+          const src=x.source==='bank'?'<span class="chip">题库答案</span>':'<span class="chip">AI 新生成</span>';
+          const rb=`<button class="minibtn" style="float:right" title="仅重生成本题（带附加要求）"
+            onclick="doWork(${id},'${esc(chapter).replace(/'/g,'&#39;')}',false,${x.idx??0})">🔄</button>`;
+          cell.innerHTML=`${rb}${src}<br>${esc(x.answer)||'<span class="muted">（空）</span>'}`;});
+      });});
   } else if(mode==='ai'){
     if(!confirm('AI 代答模式：后台填入该账号作业（semi 不提交）。完成后需到平台作业页核对并提交。继续？'))return;
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -619,6 +633,14 @@ function doReview(id,chapter){
     const lines=(d.results||[]).map(r=>`[${r.status}] ${r.stem}（得分 ${r.score??'待批阅'}）`).join('\\n');
     alert(`判分回读完成：\\n${lines}\\n\\n题库已自动更新（答对转正/答错清空）。`);
     syncRun();});
+}
+function fillFromRef(){
+  if(!WORK_ACC){alert('未选择账号');return;}
+  if(!confirm('将把参考答案填入该账号作业页并暂存（草稿，不提交）。约 1 分钟完成，之后请登录平台核对满意再提交。继续？'))return;
+  fetch(`/api/accounts/${WORK_ACC}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({chapter:WORK_CH,action:'fill'})}).then(r=>r.json()).then(d=>{
+    alert(d.ok?d.message:'失败：'+d.error);
+    if(d.ok){document.getElementById('workDlg').close();syncRun();reload();}});
 }
 async function doWorkAll(id){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
@@ -1323,16 +1345,15 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": True, "action": "owner",
                     "message": f"该账号作业策略=号主自理：请通知 {row['label']} 自己完成作业；"
                                f"如需 AI 参考答案，可在✎管理中把作业策略改为 reference"}
-        if mode == "ai":
+        if mode == "ai" or body.get("action") == "fill":
             if account_id in _JOBS and _JOBS[account_id]["proc"].poll() is None:
                 return {"ok": False, "error": "该账号已有进行中的会话/作业"}
             proc = _spawn(str(settings.root), "work", str(account_id), chapter, "--force")
             _JOBS[account_id] = {"proc": proc, "course": f"作业{chapter}", "since": time.strftime("%H:%M")}
-            mode_name = {"ai": "AI 代答", "reference": "AI 参考答案",
-                         "owner": "号主自理（不执行）"}.get(mode, mode)
+            mode_name = "AI 回填" if body.get("action") == "fill" else "AI 代答"
             _log_event(account_id, "work-start", f"{chapter}｜{mode_name}")
             return {"ok": True, "action": "ai",
-                    "message": "AI 已开始作答（headless 填入，semi 不提交）——完成后请到平台作业页核对提交"}
+                    "message": "AI 已开始填入并暂存（不提交）——约 1 分钟后到平台作业页核对，满意再提交"}
         # reference：只出参考答案（解析+AI，不填表单）
         try:
             from playwright.sync_api import sync_playwright
@@ -1351,109 +1372,160 @@ def create_app(settings: Settings) -> FastAPI:
                 conn2.close()
             if course is None:
                 return {"ok": False, "error": "账号无课程数据"}
-            answers = []
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                from ..core.stealth import hardened_context
-                context = hardened_context(browser, storage_state=str(state))
-                page = context.new_page()
+            cache_key = f"{account_id}|{course['id']}|{chapter}"
+            wq = db()
+            try:
+                ch_row = wq.execute(
+                    "SELECT name FROM chapters WHERE course_id=? AND name LIKE ? LIMIT 1",
+                    (course["id"], f"%{chapter}%")).fetchone()
+                chapter_full = ch_row["name"] if ch_row else chapter
+            finally:
+                wq.close()
+            import json as _json5
+
+            # 题目缓存优先（题目静态：解析+字体解码只付一次成本，之后全程无浏览器）
+            qs: list = []
+            if not body.get("force_questions"):
+                wq = db()
                 try:
-                    tree = open_chapter_frame(page, course["url"])
-                    kid = conn2_id = None
-                    c2 = db()
-                    try:
-                        kid_row = c2.execute(
-                            "SELECT platform_chapter_id, name FROM chapters WHERE course_id=? "
-                            "AND name LIKE ? LIMIT 1", (course["id"], f"%{chapter}%")).fetchone()
-                        kid = kid_row["platform_chapter_id"] if kid_row else None
-                        chapter_full = kid_row["name"] if kid_row else chapter
-                    finally:
-                        c2.close()
-                    if kid is None:
-                        return {"ok": False, "error": f"未找到章节 {chapter}"}
-                    tree.locator(f"#cur{kid}").first.click(timeout=15_000)
-                    wf = find_frame_with(page, "div.singleQuesId", timeout_s=25)
-                    if wf is None:
-                        return {"ok": False, "error": "该章节不是作业任务点"}
-                    qs = parse_work_questions(wf.content(), dynamic_map=_page_font_map(wf))
-                    llm = LLMClient(settings.llm)
-                    from ..ai.quiz import (bank_lookup, bank_record, build_messages,
-                                           parse_llm_json, question_hash)
-                    extra = str(body.get("extra_requirements") or "").strip()
-                    only_idx = body.get("question_idx")  # 单题刷新（0-based）；None=全部
-                    wconn = db()
-                    bank_hit: dict[int, str] = {}
-
-                    def answer_one(idx_q):
-                        """纯网络函数（线程安全）：题库已由主线程预查，这里只调 LLM。"""
-                        idx, q, need_llm = idx_q
-                        if not need_llm:
-                            return idx, None, "bank", None
-                        try:
-                            raw = llm.chat(build_messages(
-                                q["stem"], q["qtype"], q["options"],
-                                course=course["name"], chapter=chapter,
-                                extra_requirements=extra))
-                            try:
-                                parsed = parse_llm_json(raw)
-                                ans = "；".join(parsed["answer"])
-                            except Exception:
-                                ans = raw.strip()[:500]
-                            return idx, ans, "llm", None
-                        except Exception as exc:
-                            return idx, "", "err", str(exc)
-
-                    # ① 主线程：题库预查（命中=不调 LLM）
-                    need = []
-                    for idx, q in enumerate(qs):
-                        h = question_hash(q["stem"], q["options"])
-                        hit = None
-                        if only_idx is None and not body.get("force"):
-                            hit = bank_lookup(wconn, h)
-                        if hit and hit.get("answer"):
-                            bank_hit[idx] = "；".join(hit["answer"])
-                            need.append((idx, q, False))
-                        elif only_idx is not None and idx != int(only_idx):
-                            need.append((idx, q, False))  # 非刷新目标跳过
-                        else:
-                            need.append((idx, q, True))
-                    # ② LLM 并行（多题时提速）
-                    results: dict[int, tuple] = {}
-                    llm_tasks = [t for t in need if t[2]]
-                    if len(llm_tasks) > 1:
-                        from concurrent.futures import ThreadPoolExecutor
-
-                        with ThreadPoolExecutor(max_workers=min(4, len(llm_tasks))) as ex:
-                            for r in ex.map(answer_one, llm_tasks):
-                                results[r[0]] = r
-                    else:
-                        for t in llm_tasks:
-                            r = answer_one(t)
-                            results[r[0]] = r
-                    # ③ 主线程：结果回写题库 + 组装
-                    for idx, q, do_llm in need:
-                        if not do_llm:
-                            results[idx] = (idx, bank_hit.get(idx, ""), "bank", None)
-                            continue
-                        _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
-                        if ans:
-                            bank_record(wconn, question_hash(q["stem"], q["options"]),
-                                        q["stem"], q["qtype"], q["options"], answer=[ans])
-                    for idx, q in enumerate(qs):
-                        _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
-                        wconn.execute(
-                            "INSERT INTO run_logs(ts, level, event, detail, account_id)"
-                            " VALUES(?,?,?,?,?)",
-                            (time.strftime("%Y-%m-%dT%H:%M:%S"),
-                             "WARNING" if err else "INFO", "work-answer",
-                             f"{chapter_full}｜{q['qtype_cn']}｜{q['stem'][:30]}…｜参考答案｜{src}", account_id))
-                        wconn.commit()
-                        answers.append({"idx": idx, "stem": q["stem"][:80], "source": src,
-                                        "answer": f"（AI 调用失败：{err}）" if err else ans})
-                    wconn.close()
-                    context.storage_state(path=str(state))
+                    rows = wq.execute(
+                        "SELECT idx, qid, qtype, qtype_cn, stem, options FROM work_questions "
+                        "WHERE cache_key=? ORDER BY idx", (cache_key,)).fetchall()
                 finally:
-                    browser.close()
+                    wq.close()
+                qs = [{"qid": r["qid"], "qtype": r["qtype"], "qtype_cn": r["qtype_cn"],
+                       "stem": r["stem"],
+                       "options": _json5.loads(r["options"] or "[]")} for r in rows]
+            answers = []
+            if qs:  # 缓存命中：不开浏览器
+                if body.get("questions_only"):
+                    return {"ok": True, "action": "questions",
+                            "questions": [{"idx": i, "stem": q["stem"][:120],
+                                           "qtype_cn": q["qtype_cn"]}
+                                          for i, q in enumerate(qs)]}
+            else:  # 未缓存：浏览器解析一次 → 存库（后续永不再开浏览器取题）
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    from ..core.stealth import hardened_context
+
+                    context = hardened_context(browser, storage_state=str(state))
+                    page = context.new_page()
+                    try:
+                        tree = open_chapter_frame(page, course["url"])
+                        c2 = db()
+                        try:
+                            kid_row = c2.execute(
+                                "SELECT platform_chapter_id FROM chapters WHERE course_id=? "
+                                "AND name LIKE ? LIMIT 1",
+                                (course["id"], f"%{chapter}%")).fetchone()
+                        finally:
+                            c2.close()
+                        if kid_row is None:
+                            return {"ok": False, "error": f"未找到章节 {chapter}"}
+                        tree.locator(f"#cur{kid_row['platform_chapter_id']}").first.click(timeout=15_000)
+                        wf = find_frame_with(page, "div.singleQuesId", timeout_s=25)
+                        if wf is None:
+                            return {"ok": False, "error": "该章节不是作业任务点"}
+                        qs = parse_work_questions(wf.content(), dynamic_map=_page_font_map(wf))
+                        context.storage_state(path=str(state))
+                        wq = db()
+                        try:
+                            wq.execute("DELETE FROM work_questions WHERE cache_key=?", (cache_key,))
+                            for i, q in enumerate(qs):
+                                wq.execute(
+                                    "INSERT INTO work_questions(cache_key, idx, qid, qtype, qtype_cn,"
+                                    " stem, options, updated_at) VALUES(?,?,?,?,?,?,?,datetime('now'))",
+                                    (cache_key, i, q.get("qid", ""), q["qtype"], q["qtype_cn"],
+                                     q["stem"], _json5.dumps(q.get("options") or [], ensure_ascii=False)))
+                            wq.commit()
+                        finally:
+                            wq.close()
+                    finally:
+                        browser.close()
+                if body.get("questions_only"):
+                    return {"ok": True, "action": "questions",
+                            "questions": [{"idx": i, "stem": q["stem"][:120],
+                                           "qtype_cn": q["qtype_cn"]}
+                                          for i, q in enumerate(qs)]}
+
+            # ===== 答案生成（题目已在手，全程无浏览器）=====
+            llm = LLMClient(settings.llm)
+            from ..ai.quiz import (bank_lookup, bank_record, build_messages,
+                                   parse_llm_json, question_hash)
+            extra = str(body.get("extra_requirements") or "").strip()
+            only_idx = body.get("question_idx")
+            wconn = db()
+            bank_hit: dict[int, str] = {}
+
+            def answer_one(idx_q):
+                """纯网络函数（线程安全）：题库已由主线程预查，这里只调 LLM。"""
+                idx, q, need_llm = idx_q
+                if not need_llm:
+                    return idx, None, "bank", None
+                try:
+                    raw = llm.chat(build_messages(
+                        q["stem"], q["qtype"], q["options"],
+                        course=course["name"], chapter=chapter,
+                        extra_requirements=extra))
+                    from ..ai.quiz import clean_markdown
+
+                    try:
+                        parsed = parse_llm_json(raw)
+                        ans = clean_markdown("；".join(parsed["answer"]))
+                    except Exception:
+                        ans = clean_markdown(raw.strip()[:500])
+                    return idx, ans, "llm", None
+                except Exception as exc:
+                    return idx, "", "err", str(exc)
+
+            # ① 主线程：题库预查（命中=不调 LLM）
+            need = []
+            for idx, q in enumerate(qs):
+                h = question_hash(q["stem"], q["options"])
+                hit = None
+                if only_idx is None and not body.get("force"):
+                    hit = bank_lookup(wconn, h)
+                if hit and hit.get("answer"):
+                    bank_hit[idx] = "；".join(hit["answer"])
+                    need.append((idx, q, False))
+                elif only_idx is not None and idx != int(only_idx):
+                    need.append((idx, q, False))  # 非刷新目标跳过
+                else:
+                    need.append((idx, q, True))
+            # ② LLM 并行（多题时提速）
+            results: dict[int, tuple] = {}
+            llm_tasks = [t for t in need if t[2]]
+            if len(llm_tasks) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=min(4, len(llm_tasks))) as ex:
+                    for r in ex.map(answer_one, llm_tasks):
+                        results[r[0]] = r
+            else:
+                for t in llm_tasks:
+                    r = answer_one(t)
+                    results[r[0]] = r
+            # ③ 主线程：结果回写题库 + 组装
+            for idx, q, do_llm in need:
+                if not do_llm:
+                    results[idx] = (idx, bank_hit.get(idx, ""), "bank", None)
+                    continue
+                _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
+                if ans:
+                    bank_record(wconn, question_hash(q["stem"], q["options"]),
+                                q["stem"], q["qtype"], q["options"], answer=[ans])
+            for idx, q in enumerate(qs):
+                _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
+                wconn.execute(
+                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                    " VALUES(?,?,?,?,?)",
+                    (time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     "WARNING" if err else "INFO", "work-answer",
+                     f"{chapter_full}｜{q['qtype_cn']}｜{q['stem'][:30]}…｜参考答案｜{src}", account_id))
+                wconn.commit()
+                answers.append({"idx": idx, "stem": q["stem"][:80], "source": src,
+                                "answer": f"（AI 调用失败：{err}）" if err else ans})
+            wconn.close()
             return {"ok": True, "action": "reference", "answers": answers}
         except Exception as exc:
             return {"ok": False, "error": repr(exc)}
