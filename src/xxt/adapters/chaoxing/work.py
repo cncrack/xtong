@@ -37,8 +37,17 @@ def decode_cxsecret(text: str) -> str:
     return "".join(CIPHER_MAP.get(ch, ch) for ch in text)
 
 
-def parse_work_questions(html: str) -> list[dict[str, Any]]:
-    """解析作业页 → [{qid, qtype, qtype_cn, stem, options}]（按页面顺序）。"""
+def parse_work_questions(html: str,
+                         dynamic_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """解析作业页 → [{qid, qtype, qtype_cn, stem, options}]（按页面顺序）。
+
+    dynamic_map：本页内嵌密文字体的动态解码映射（优先）；静态经验表兜底。
+    """
+    from .font_cipher import decode
+
+    def dec(text: str) -> str:
+        return decode(text, dynamic_map=dynamic_map, static_map=CIPHER_MAP)
+
     soup = BeautifulSoup(html, "html.parser")
     out: list[dict[str, Any]] = []
     for q in soup.select("div.singleQuesId"):
@@ -56,8 +65,8 @@ def parse_work_questions(html: str) -> list[dict[str, Any]]:
             "qid": q.get("id", ""),
             "qtype": QTYPE_MAP.get(qtype_cn, "fill"),
             "qtype_cn": qtype_cn,
-            "stem": decode_cxsecret(stem)[:400],
-            "options": [decode_cxsecret(o) for o in options],
+            "stem": dec(stem)[:400],
+            "options": [dec(o) for o in options],
         })
     return out
 
@@ -95,6 +104,22 @@ def _fill_answer(work_frame, qid: str, answer: list[str], qtype: str) -> str:
     return work_frame.evaluate(js, [qid, " ".join(answer), qtype])
 
 
+def _page_font_map(work_frame) -> dict[str, str]:
+    """提取本页内嵌密文字体并生成动态解码映射（失败返回空表，静态表兜底）。"""
+    from .font_cipher import build_dynamic_map, extract_cipher_font
+
+    try:
+        font = extract_cipher_font(work_frame.content())
+        if font:
+            m = build_dynamic_map(font)
+            if m:
+                log.info("字体动态解码：%d 个密文字符", len(m))
+                return m
+    except Exception as exc:
+        log.warning("字体动态解码失败（用静态表）：%r", exc)
+    return {}
+
+
 def answer_work(work_frame, settings, conn: sqlite3.Connection,
                 account_id: int, course_name: str, submit: bool = False) -> dict[str, Any]:
     """对当前已打开的作业页整卷作答。submit=False 为半自动（只填不交）。"""
@@ -103,7 +128,7 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
         return {"status": "disabled", "detail": "作业作答未启用（[quiz].work_enabled）"}
     # 作业开关已开即视为作答启用（handle_quiz 的 enabled 门是弹题总开关语义）
     quiz_cfg["enabled"] = True
-    questions = parse_work_questions(work_frame.content())
+    questions = parse_work_questions(work_frame.content(), dynamic_map=_page_font_map(work_frame))
     stats = {"total": len(questions), "filled": 0, "manual": 0, "status": "semi"}
     llm = LLMClient(settings.llm)
     for q in questions:
