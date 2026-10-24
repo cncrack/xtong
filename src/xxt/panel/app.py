@@ -228,6 +228,19 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
   <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
+  <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
+  <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型（全局，所有账号共用）</h3>
+  <div class="chips" style="margin-bottom:.5rem">
+    <span class="chip" style="cursor:pointer" onclick="presetLLM('GLM','https://open.bigmodel.cn/api/paas/v4','glm-4-flash')">GLM</span>
+    <span class="chip" style="cursor:pointer" onclick="presetLLM('DeepSeek','https://api.deepseek.com/v1','deepseek-chat')">DeepSeek</span>
+    <span class="chip" style="cursor:pointer" onclick="presetLLM('Qwen','https://dashscope.aliyuncs.com/compatible-mode/v1','qwen-plus')">Qwen</span>
+    <span class="chip" style="cursor:pointer" onclick="presetLLM('Kimi','https://api.moonshot.cn/v1','moonshot-v1-8k')">Kimi</span>
+    <span class="chip" style="cursor:pointer" onclick="presetLLM('Agnès','https://api.agnes-ai.cn/v1','agnes-2.5-flash')">Agnès</span>
+  </div>
+  <div class="frow"><label>Base URL<small>OpenAI 兼容端点（点上方厂商快选自动填）</small></label><input type="text" id="s_lurl" style="width:250px"></div>
+  <div class="frow"><label>模型名称</label><input type="text" id="s_lmodel" style="width:180px"></div>
+  <div class="frow"><label>Key 环境变量名<small>Key 本体放系统环境变量（如 XXT_LLM_API_KEY），不落盘</small></label><input type="text" id="s_lkey" style="width:180px"></div>
+  <div class="hint" id="s_lhint"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
@@ -262,7 +275,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="hint" id="e_meta"></div>
 </dialog>
 
-<dialog id="workDlg"><h3>📝 作业参考答案 <span id="w_ch" class="muted" style="font-size:.85rem"></span></h3>
+<dialog id="workDlg"><h3>📝 作业参考答案 <span id="w_ch" class="muted" style="font-size:.85rem"></span>
+  <button class="minibtn" style="margin-left:auto" onclick="doWork(WORK_ACC,WORK_CH,true)">🔄 重新生成</button></h3>
   <div id="w_body" class="log" style="max-height:52vh;overflow:auto;font-size:.86rem">加载中…</div>
   <div class="dlgbtns"><button class="primary" onclick="this.closest('dialog').close()">知道了</button></div>
 </dialog>
@@ -394,13 +408,19 @@ function loadSettings(){
     s_ws.value=d.window_start||'08:00'; s_we.value=d.window_end||'23:00';
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
+    s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
+    s_lkey.value=d.llm_api_key_env||'XXT_LLM_API_KEY';
+    s_lhint.textContent=d.llm_key_present?'✓ 已检测到 Key 环境变量':'⚠ 未检测到 Key——请在系统环境变量设置后重开终端/面板';
     window.QUIZ=d;});
 }
+function presetLLM(name,url,model){s_lurl.value=url;s_lmodel.value=model;
+  s_lhint.textContent=`已填入 ${name} 预设——确认后点保存`; window.QUIZ=window.QUIZ||{};}
 function saveSettings(){
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({quiz_enabled:s_quiz.checked,window_start:s_ws.value,
       window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
-      work_mode_default:s_wm.value})}
+      work_mode_default:s_wm.value,llm_base_url:s_lurl.value,
+      llm_model:s_lmodel.value,llm_api_key_env:s_lkey.value})}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
     if(d.ok){window.QUIZ.work_mode_default=s_wm.value;document.getElementById('dlg').close();syncRun();}});
 }
@@ -457,16 +477,18 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
     e_vu.value=until;  // 弹窗内即时刷新有效期
     e_meta.textContent=`已续期，剩余 ${d.days_left} 天（至 ${until}）`;
     reload();});}
-function doWork(id,chapter){
+let WORK_ACC=null,WORK_CH='';
+function doWork(id,chapter,force=false){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
   const mode=(a.work_mode||'').trim()||( (typeof QUIZ!=='undefined'&&QUIZ.work_mode_default) || 'owner');
   const named=a.works? a.works.find(w=>w.name===chapter) : null;
   if(mode==='reference'){
+    WORK_ACC=id;WORK_CH=chapter;
     document.getElementById('w_ch').textContent=`#${id} ${a.platform_username||a.label}｜${chapter}`;
     document.getElementById('w_body').textContent='AI 解析作业中（约 10~30 秒，含字体解码）…';
     document.getElementById('workDlg').showModal();
     fetch(`/api/accounts/${id}/work`,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({chapter:chapter})}).then(r=>r.json()).then(d=>{
+      body:JSON.stringify({chapter:chapter,force:force})}).then(r=>r.json()).then(d=>{
       const el=document.getElementById('w_body');
       if(!d.ok){el.textContent='失败：'+d.error;return;}
       if(d.action==='owner'){el.textContent=d.message;return;}
@@ -699,6 +721,11 @@ def create_app(settings: Settings) -> FastAPI:
             "daily_minutes": int(fresh.quota["daily_minutes"]),
             "daily_tasks": int(fresh.quota["daily_tasks"]),
             "work_mode_default": fresh.quiz.get("work_mode_default", "owner"),
+            "llm_base_url": fresh.llm["base_url"],
+            "llm_model": fresh.llm["model"],
+            "llm_api_key_env": fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"),
+            "llm_key_present": bool(__import__("os").environ.get(
+                fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"))),
         }
 
     @app.put("/api/settings")
@@ -736,6 +763,11 @@ def create_app(settings: Settings) -> FastAPI:
                 if body["work_mode_default"] not in ("owner", "reference", "ai"):
                     return {"ok": False, "error": "作业策略仅 owner/reference/ai"}
                 upsert(conn, "quiz.work_mode_default", body["work_mode_default"])
+            for field, key in (("llm_base_url", "llm.base_url"),
+                               ("llm_model", "llm.model"),
+                               ("llm_api_key_env", "llm.api_key_env")):
+                if field in body and str(body[field]).strip():
+                    upsert(conn, key, str(body[field]).strip())
             conn.commit()
         finally:
             conn.close()
