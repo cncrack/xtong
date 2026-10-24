@@ -1486,7 +1486,9 @@ def create_app(settings: Settings) -> FastAPI:
                 if only_idx is None and not body.get("force"):
                     hit = bank_lookup(wconn, h)
                 if hit and hit.get("answer"):
-                    bank_hit[idx] = "；".join(hit["answer"])
+                    from ..ai.quiz import clean_markdown as _cm
+
+                    bank_hit[idx] = _cm("；".join(hit["answer"]))
                     need.append((idx, q, False))
                 elif only_idx is not None and idx != int(only_idx):
                     need.append((idx, q, False))  # 非刷新目标跳过
