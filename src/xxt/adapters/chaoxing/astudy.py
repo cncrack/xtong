@@ -256,7 +256,8 @@ class AsyncStudyRunner:
                                 self.conn.commit()
                         else:
                             no_video_streak += 1
-                            if no_video_streak >= 2:
+                            log.info("跳过非视频任务点（第 %d 次，如作业/阅读）", no_video_streak)
+                            if no_video_streak >= 4:  # 连续4个无视频才认头（章节间的作业点应穿过）
                                 stats["stop_reason"] = "连续无视频任务点，本段结束"
                                 break
                     except RuntimeError:
