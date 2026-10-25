@@ -646,10 +646,32 @@ def cmd_work(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_machine_id(args: argparse.Namespace) -> int:
+    """显示本机机器码（授权用：发给发牌方生成 xxt.lic）。"""
+    from .core.licensing import check_license, machine_id
+
+    s = _settings(args)
+    lic = s.root / "xxt.lic"
+    ok, msg = check_license(lic)
+    print(f"机器码：{machine_id()}")
+    print(f"授权状态：{msg or '未安装授权文件（自用模式）'}")
+    print("（授权流程：把机器码发给发牌方 → 收到 xxt.lic 放到程序目录）")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # 授权校验：xxt.lic 存在即校验（伪造/过期/异机拒绝）；无 lic=自用直通
+    from .core.licensing import check_license
+    from .config import find_project_root
+
+    _ok, _msg = check_license(find_project_root() / "xxt.lic")
+    if not _ok:
+        print(f"[授权失败] {_msg}")
+        return 403
 
     sub.add_parser("init", help="初始化数据目录与数据库")
     sub.add_parser("login", help="打开浏览器人工登录学习通，保存会话")
@@ -715,6 +737,8 @@ def main(argv: list[str] | None = None) -> int:
     p_wk.add_argument("--force", action="store_true",
                       help="跳过 work_enabled 开关（面板主动触发时使用）")
 
+    p_mid = sub.add_parser("machine-id", help="显示本机机器码与授权状态（对外分发授权用）")
+
     args = parser.parse_args(argv)
     handlers = {
         "init": cmd_init,
@@ -729,6 +753,7 @@ def main(argv: list[str] | None = None) -> int:
         "panel": cmd_panel,
         "auto": cmd_auto,
         "work": cmd_work,
+        "machine-id": cmd_machine_id,
     }
     try:
         return handlers[args.command](args)

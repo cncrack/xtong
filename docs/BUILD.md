@@ -41,3 +41,20 @@ PyInstaller 打包 → 产物见上。
 - 对外分发前需：购买 PyArmor 授权（启用 RFT/BCC 更强混淆 + 到期/机器码锁定），或按 PLAN §5.7
   将 core/ai 上云（客户端只剩壳，最强保护）；
 - 敏感数据（凭据密文、会话、API Key 环境变量）本就不随 exe 分发。
+
+## 分发授权（自研 lic，已内置）
+
+分发时的完整流程（PyArmor 之外多一道自研锁，trial 下即可用）：
+
+```
+① 对方：xxt.exe machine-id        → 显示机器码（如 6187-E9A8-4156-7ABE）发给你
+② 你：  scripts/make_lic.py --mid 对方机器码 --days 30 [--note 买家名]
+        → 生成 xxt.lic 发回
+③ 对方：xxt.lic 放 exe 同目录      → 启动自动校验（异机/篡改/过期均拒绝运行 exit 403）
+```
+
+- 自用不受影响：**无 xxt.lic = 自用直通**（放行），有 lic 才校验；
+- **分发前必做**：更换 `core/licensing.py` 的 `_SIGN_KEY` 为你自己的随机串（否则懂行的人可自签）；
+- 续期=再发一张新 lic；吊销=不再发即可（到期自动停）；
+- 与 PyArmor 正式版叠加：lic 校验逻辑在混淆的 core 内，改校验需先脱壳——双层成本。
+
