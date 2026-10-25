@@ -29,8 +29,26 @@
 - `src/xxt/cli.py`：`cmd_learn` 传 `effective_*`（#1）
 - `tests/test_accounts.py`：新增 `TestRunnerQuotaOverride`
 
-## 四、交接块
+## 四、端到端实测（面板路径，账号级）
+
+设置：#1 `daily_max_tasks=1`、`daily_max_minutes=0`（跟随全局 240）；全局仍是 60 个 / 240 分钟。
+
+`/api/overview` 返回值证明优先级正确且两项独立：
+```
+#1 default  quota_tasks=1   quota_minutes=240  from_global=False  today=2/17
+#2 小号1    quota_tasks=60  quota_minutes=240  from_global=True   today=6/48
+```
+（#1 只覆盖任务数、分钟数仍跟随全局；#2 全部跟随全局）
+
+启动 #1 → 26 秒（纯错峰，零浏览器、零平台访问）后：
+```
+22:26:45 [账号#1] session-end｜任务数额度达标（今日已完成 2 个）｜视频 0 个
+```
+全局 60 个绝不可能拦下，拒绝只能来自账号级 1 → 账号级额度在面板路径**确实生效**。测完已把 #1 恢复为 0/0。
+
+## 五、交接块
 
 - **进行中**：无
-- **下一步第一个动作**：端到端实测账号级额度（面板路径）——把 #1 的 `daily_max_tasks` 设为 1（全局 60），点开始，预期"任务数额度达标（今日已完成 2 个）"且零平台访问；测完改回 0
+- **下一步第一个动作**：无（账号级额度三项已验证：代码链路、面板显示、运行时拦截）
 - **阻塞点**：无
+- **遗留**：`xxt learn` 仍不写 `data/run/<id>.json`（双开防护缺口，未在本轮处理）
