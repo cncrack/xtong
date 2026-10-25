@@ -106,6 +106,64 @@ class TestStats(unittest.TestCase):
         self.assertEqual(rows[1]["grade"], "2022级")
         self.assertEqual(rows[0]["grade"], "")
 
+    def test_student_no_roundtrip(self):
+        r = set_profile(self.conn, 1, student_no="2024123456", grade="2024级")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["student_no"], "2024123456")
+        self.assertEqual(get_profile(self.conn, 1)["student_no"], "2024123456")
+        rows = list_profiles(self.conn)
+        self.assertEqual(rows[0]["student_no"], "2024123456")
+        # 学号是独立字段：清空年级不影响学号
+        set_profile(self.conn, 1, student_no="2024123456", grade="")
+        self.assertEqual(get_profile(self.conn, 1)["student_no"], "2024123456")
+        self.assertEqual(get_profile(self.conn, 1)["grade"], "")
+
+    def test_aggregate_by_course(self):
+        # video-done 详情的第一段就是课程名（课程｜知识点｜秒数）
+        self._log(1, "video-done", "数据结构｜栈｜120s")
+        self._log(2, "video-done", "数据结构｜队列｜60s")
+        self._log(1, "video-done", "操作系统｜进程｜300s")
+        self._log(1, "work-start", "作业1｜AI 代答")  # 作业日志没有课程名 → 不归组
+        d = aggregate(self.conn, by="course", days=0)
+        rows = {r["key"]: r for r in d["rows"]}
+        self.assertEqual(rows["数据结构"]["videos"], 2)
+        self.assertEqual(rows["数据结构"]["accounts"], 2)
+        self.assertEqual(rows["数据结构"]["minutes"], 3.0)
+        self.assertEqual(rows["操作系统"]["videos"], 1)
+        self.assertNotIn("作业1", rows)
+        self.assertEqual(d["total"]["works"], 0)
+
+    def test_keyword_search(self):
+        set_profile(self.conn, 1, student_no="2024123456", major="计算机")
+        set_profile(self.conn, 2, student_no="2024654321", major="软件工程")
+        self._log(1, "video-done", "数据结构｜栈｜120s")
+        self._log(2, "video-done", "操作系统｜进程｜60s")
+        # 按学号搜 → 只剩 1 号账号的记录
+        d = aggregate(self.conn, by="account", days=0, q="2024123456")
+        self.assertEqual([r["key"] for r in d["rows"]], ["#1 甲"])
+        self.assertEqual(d["total"]["videos"], 1)
+        # 按课程名搜（维度=课程时命中 key）
+        c = aggregate(self.conn, by="course", days=0, q="操作")
+        self.assertEqual([r["key"] for r in c["rows"]], ["操作系统"])
+        # 搜不到 → 空结果但不是错误
+        self.assertTrue(aggregate(self.conn, by="account", days=0, q="不存在")["ok"])
+        self.assertEqual(aggregate(self.conn, by="account", days=0, q="不存在")["rows"], [])
+
+    def test_trend_by_day(self):
+        self._log(1, "video-done", "课A｜一｜120s", ts="2026-10-24T10:00:00")
+        self._log(1, "video-done", "课A｜二｜60s", ts="2026-10-24T11:00:00")
+        self._log(2, "video-done", "课A｜三｜60s", ts="2026-10-25T09:00:00")
+        self._log(2, "work-start", "作业1", ts="2026-10-25T12:00:00")
+        d = aggregate(self.conn, by="grade", days=0)
+        trend = {t["date"]: t for t in d["trend"]}
+        self.assertEqual(trend["2026-10-24"]["videos"], 2)
+        self.assertEqual(trend["2026-10-24"]["minutes"], 3.0)
+        self.assertEqual(trend["2026-10-25"]["videos"], 1)
+        self.assertEqual(trend["2026-10-25"]["works"], 1)
+        # 趋势按日期升序（前端直接画柱）
+        self.assertEqual([t["date"] for t in d["trend"]],
+                         ["2026-10-24", "2026-10-25"])
+
 
 if __name__ == "__main__":
     unittest.main()

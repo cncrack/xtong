@@ -135,9 +135,11 @@ CREATE TABLE IF NOT EXISTS plan_accounts (
 -- 单独成列而不是塞进 note，否则没法按维度聚合。
 CREATE TABLE IF NOT EXISTS account_profiles (
     account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    student_no TEXT,
     grade      TEXT,
     major      TEXT,
     term       TEXT,
+    source     TEXT,
     updated_at TEXT
 );
 """
@@ -166,6 +168,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     lcols = {r["name"] for r in conn.execute("PRAGMA table_info(run_logs)")}
     if "account_id" not in lcols:
         conn.execute("ALTER TABLE run_logs ADD COLUMN account_id INTEGER DEFAULT 1")
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(account_profiles)")}
+    for name, decl in (("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
+                       ("grade", "TEXT"), ("major", "TEXT"), ("term", "TEXT"),
+                       ("source", "TEXT")):          # source: manual | platform
+        if name not in pcols:
+            conn.execute(f"ALTER TABLE account_profiles ADD COLUMN {name} {decl}")
     with conn:
         # 答案按账号隔离（2026-10-26）：老库 questions 里的全局 answer 迁到
         # answers(account_id=0) 后清空——归不到具体账号的旧答案不得再被自动复用，
