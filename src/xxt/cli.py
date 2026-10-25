@@ -164,6 +164,34 @@ def _pick_course(conn, needle: str, account_id: int = 1):
     return row
 
 
+def _pick_course_in(conn, *, account_ids, name: str | None = None, pid: str | None = None):
+    """在**给定账号集合**里找课程行（批次路径用）。
+
+    顺序：pid 精确（平台课程ID，跨账号唯一锚点）→ 课名全等 → 课名模糊。
+    这样同名多门时优先命中 pid 指定的那门；不同账号的同名课也不会串。
+    """
+    ids = [int(a) for a in account_ids or []]
+    if not ids:
+        return None
+    ph = ",".join("?" * len(ids))
+    if pid:
+        row = conn.execute(
+            f"SELECT * FROM courses WHERE platform_course_id = ? AND account_id IN ({ph})"
+            " ORDER BY account_id LIMIT 1", (pid, *ids)).fetchone()
+        if row is not None:
+            return row
+    if name:
+        for sql in (f"SELECT * FROM courses WHERE name = ? AND account_id IN ({ph})"
+                    " ORDER BY account_id LIMIT 1",
+                    f"SELECT * FROM courses WHERE name LIKE ? AND account_id IN ({ph})"
+                    " ORDER BY account_id LIMIT 1"):
+            arg = name if "name = ?" in sql else f"%{name}%"
+            row = conn.execute(sql, (arg, *ids)).fetchone()
+            if row is not None:
+                return row
+    return None
+
+
 def _account_id_of(conn, needle: str | None) -> int:
     """解析 --account 参数（id/标签，缺省 1=default）。"""
     if not needle:
@@ -407,10 +435,8 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
     conn = connect(s.db_path)
     marked: list[int] = []  # 已写标记的账号（finally 只清自己写过的）
     try:
-        course = _pick_course(conn, args.course) if args.course else None
-        if course is None:
-            print("[FAIL] 未找到课程（mlearn 需显式指定课程）")
-            return 1
+        # 先定账号：种子课程要从"本批次账号"里解析，而非默认账号#1。
+        # （修 2026-10-26 的 R1：批次只含 #2/#3 时，旧逻辑在 #1 找不到课会整轮失败）
         if args.accounts:
             rows = []
             for needle in args.accounts.split(","):
@@ -424,6 +450,16 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
         if not rows:
             print("[FAIL] 无可用账号（xxt account add / list 查看）")
             return 1
+        ids = [int(r["id"]) for r in rows]
+        # 课程解析：pid 精确优先（跨账号唯一锚点）→ 课名；范围限定本批次账号
+        course = _pick_course_in(conn, account_ids=ids,
+                                 pid=getattr(args, "course_pid", None), name=args.course)
+        if course is None:
+            want = getattr(args, "course_pid", None) or args.course
+            print(f"[FAIL] 在本批次账号里未找到课程：{want}"
+                  "（确认账号已抓取该课程；或在面板重新选择课程）")
+            return 1
+        print(f"[mlearn] 课程匹配：《{course['name']}》pid={course['platform_course_id']}")
         # 会话标记文件：面板据此显示/停止本会话（跨面板重启仍可见）
         for row in rows:
             write_marker(s.data_dir, int(row["id"]), course["name"])
@@ -540,14 +576,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 未登录，今日跳过")
                     continue
                 conn = connect(s.db_path)
-                plan_course = None
+                plan = None
                 try:
                     # 批次优先：启用中的批次指定了课程 → 用它；否则走课程轮转。
                     # 批次不含时间字段，开跑时刻仍由本账号 start_at/窗口决定（天然错峰）。
                     from .core import plans as _plans
 
-                    plan_course = _plans.course_for_account(conn, aid)
-                    picks = ([{"name": plan_course}] if plan_course
+                    plan = _plans.course_for_account(conn, aid)  # {"name","pid"} | None
+                    picks = ([plan] if plan
                              else pick_courses(conn, _random.Random(), s.rotation,
                                                account_id=aid, count=1))
                 finally:
@@ -557,6 +593,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
                     continue
                 course_name = picks[0]["name"]
+                course_pid = picks[0].get("pid")
                 # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试。
                 # ⚠ 与账号卡片 ▶ 走的是同一个 /api/study/start，共用防双开锁
                 #   （进程内 _JOBS + data/run/<id>.json 标记），因此不会重复多开。
@@ -566,7 +603,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     r = _httpx.post(
                         f"http://127.0.0.1:{panel_port}/api/study/start",
                         json={"account_id": aid, "course": course_name,
-                              "source": "批次" if plan_course else "定时"}, timeout=10,
+                              "course_pid": course_pid,
+                              "source": "批次" if plan else "定时"}, timeout=10,
                     )
                     ok = bool(r.json().get("ok"))
                     reason = r.json().get("error", "")
@@ -770,6 +808,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ml = sub.add_parser("mlearn", help="多账号并发学习（async，M4 实验性）")
     p_ml.add_argument("course", help="课程名或 courseid")
+    p_ml.add_argument("--course-pid", default=None,
+                      help="平台课程ID（批次锚点，优先于课名精确匹配）")
     p_ml.add_argument("--accounts", default=None, help="账号（id/标签，逗号分隔；缺省=全部 active）")
     p_ml.add_argument("--limit", type=int, default=None, help="每账号本次最多视频数")
     p_ml.add_argument("--concurrency", type=int, default=2, help="全局同时学习账号数上限")

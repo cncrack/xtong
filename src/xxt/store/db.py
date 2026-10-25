@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS plans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     course_name TEXT NOT NULL,
+    course_pid  TEXT,                -- 平台课程ID：跨账号唯一锚点，运行按它精确匹配（2026-10-26）
     enabled     INTEGER NOT NULL DEFAULT 1,
     extra_json  TEXT,
     created_at  TEXT
@@ -153,6 +154,15 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _ensure_col(conn: sqlite3.Connection, table: str, name: str, decl: str) -> None:
+    """幂等补列：已存在（含并发连接刚加上的）视为成功，不抛错。"""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     """打开（必要时创建）数据库并确保 schema 就绪。"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,17 +171,17 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
-    # 轻量迁移：老库补列
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(courses)")}
-    if "clazz_id" not in cols:
-        conn.execute("ALTER TABLE courses ADD COLUMN clazz_id TEXT")
+    # 轻量迁移：老库补列。⚠ 面板每个请求各开一条连接（线程池并发），首次触达新列时
+    # 可能多个连接同时执行同一 ALTER → 抛 "duplicate column name"。用 _ensure_col
+    # 把"已存在/并发已加"都视为成功，迁移幂等。
+    _ensure_col(conn, "courses", "clazz_id", "TEXT")
     acols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}
     for name, decl in _ACCOUNT_COLS.items():
         if name not in acols:
-            conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
+            _ensure_col(conn, "accounts", name, decl)
     lcols = {r["name"] for r in conn.execute("PRAGMA table_info(run_logs)")}
     if "account_id" not in lcols:
-        conn.execute("ALTER TABLE run_logs ADD COLUMN account_id INTEGER DEFAULT 1")
+        _ensure_col(conn, "run_logs", "account_id", "INTEGER DEFAULT 1")
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(account_profiles)")}
     for name, decl in (("name", "TEXT"),            # 姓名（默认取平台昵称，可手改）
                        ("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
@@ -180,7 +190,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
                        # 学校/院系/班级：平台读取回填，只展示不参与统计维度
                        ("source", "TEXT")):          # source: manual | platform
         if name not in pcols:
-            conn.execute(f"ALTER TABLE account_profiles ADD COLUMN {name} {decl}")
+            _ensure_col(conn, "account_profiles", name, decl)
+    # 批次增 course_pid（平台课程ID锚点）：老批次该列为 NULL → 仍按课名匹配并提示补选
+    _ensure_col(conn, "plans", "course_pid", "TEXT")
     with conn:
         # 答案按账号隔离（2026-10-26）：老库 questions 里的全局 answer 迁到
         # answers(account_id=0) 后清空——归不到具体账号的旧答案不得再被自动复用，

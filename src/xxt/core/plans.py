@@ -20,7 +20,8 @@ from typing import Any
 def list_plans(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """全部批次（含账号列表与人数）。"""
     plans = [dict(r) for r in conn.execute(
-        "SELECT id, name, course_name, enabled, created_at FROM plans ORDER BY id")]
+        "SELECT id, name, course_name, course_pid, enabled, created_at"
+        " FROM plans ORDER BY id")]
     for p in plans:
         p["account_ids"] = [r["account_id"] for r in conn.execute(
             "SELECT account_id FROM plan_accounts WHERE plan_id=? ORDER BY account_id",
@@ -44,9 +45,15 @@ def busy_accounts(conn: sqlite3.Connection, exclude_plan: int | None = None) -> 
 
 
 def create_plan(conn: sqlite3.Connection, name: str, course_name: str,
-                account_ids: list[int], enabled: bool = True) -> dict[str, Any]:
-    """新建批次。返回 {"ok": True, "id": N} 或 {"ok": False, "error": ...}。"""
+                account_ids: list[int], enabled: bool = True,
+                course_pid: str | None = None) -> dict[str, Any]:
+    """新建批次。返回 {"ok": True, "id": N} 或 {"ok": False, "error": ...}。
+
+    `course_pid` = 平台课程ID（跨账号唯一锚点）：新批次优先按它匹配；缺省（老式
+    仅课名）仍按课名匹配。二者都存，pid 只用于运行匹配，课名仅显示。
+    """
     name, course_name = (name or "").strip(), (course_name or "").strip()
+    course_pid = (course_pid or "").strip() or None
     if not name or not course_name:
         return {"ok": False, "error": "批次名与课程名都不能为空"}
     ids = sorted({int(a) for a in account_ids or []})
@@ -66,9 +73,9 @@ def create_plan(conn: sqlite3.Connection, name: str, course_name: str,
                     "error": f"这些账号已在其他启用中的批次里：{detail}。"
                              "请先停用原批次，或把它们从本批次剔除"}
     cur = conn.execute(
-        "INSERT INTO plans(name, course_name, enabled, extra_json, created_at)"
-        " VALUES(?,?,?,?,?)",
-        (name, course_name, 1 if enabled else 0, json.dumps({}, ensure_ascii=False),
+        "INSERT INTO plans(name, course_name, course_pid, enabled, extra_json, created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (name, course_name, course_pid, 1 if enabled else 0, json.dumps({}, ensure_ascii=False),
          time.strftime("%Y-%m-%dT%H:%M:%S")))
     pid = int(cur.lastrowid)
     conn.executemany("INSERT OR IGNORE INTO plan_accounts(plan_id, account_id) VALUES(?,?)",
@@ -98,9 +105,10 @@ def set_enabled(conn: sqlite3.Connection, plan_id: int, enabled: bool) -> dict[s
 
 def update_plan(conn: sqlite3.Connection, plan_id: int, *, name: str | None = None,
                 course_name: str | None = None, account_ids: list[int] | None = None,
-                enabled: bool | None = None) -> dict[str, Any]:
+                enabled: bool | None = None, course_pid: str | None = None) -> dict[str, Any]:
     """改已建批次：名称 / 课程 / 账号清单 / 启停（None = 该项不变）。
 
+    `course_pid`：传入即覆盖（传空串 = 清空，退回按课名匹配）；None = 不动。
     账号是关键：用户在"编辑批次"里加号减号都走这里。启用态下要重查冲突，
     但**排除自己**（否则自己批次里的账号会跟自己撞车）。
     """
@@ -109,6 +117,7 @@ def update_plan(conn: sqlite3.Connection, plan_id: int, *, name: str | None = No
         return {"ok": False, "error": "批次不存在"}
     new_name = row["name"] if name is None else (name or "").strip()
     new_course = row["course_name"] if course_name is None else (course_name or "").strip()
+    new_pid = row["course_pid"] if course_pid is None else ((course_pid or "").strip() or None)
     if not new_name or not new_course:
         return {"ok": False, "error": "批次名与课程名都不能为空"}
     if account_ids is None:
@@ -132,8 +141,8 @@ def update_plan(conn: sqlite3.Connection, plan_id: int, *, name: str | None = No
             return {"ok": False,
                     "error": f"这些账号已在其他启用中的批次里：{detail}。"
                              "请先停用原批次，或把它们从本批次剔除"}
-    conn.execute("UPDATE plans SET name=?, course_name=?, enabled=? WHERE id=?",
-                 (new_name, new_course, 1 if new_enabled else 0, plan_id))
+    conn.execute("UPDATE plans SET name=?, course_name=?, course_pid=?, enabled=? WHERE id=?",
+                 (new_name, new_course, new_pid, 1 if new_enabled else 0, plan_id))
     if account_ids is not None:
         conn.execute("DELETE FROM plan_accounts WHERE plan_id=?", (plan_id,))
         conn.executemany("INSERT OR IGNORE INTO plan_accounts(plan_id, account_id)"
@@ -148,11 +157,17 @@ def delete_plan(conn: sqlite3.Connection, plan_id: int) -> bool:
     return True
 
 
-def course_for_account(conn: sqlite3.Connection, account_id: int) -> str | None:
-    """该账号此刻应刷的课程（来自启用中的批次）；无批次则 None → 走课程轮转。"""
+def course_for_account(conn: sqlite3.Connection, account_id: int) -> dict[str, Any] | None:
+    """该账号此刻应刷的课程（来自启用中的批次）→ {"name","pid"}；无批次则 None → 走课程轮转。
+
+    返回 pid（平台课程ID）而不只是课名：调用方据此精确匹配课程，避免同名歧义。
+    老批次 pid 为 None → 调用方退回按课名匹配。
+    """
     row = conn.execute(
-        "SELECT p.course_name FROM plans p"
+        "SELECT p.course_name, p.course_pid FROM plans p"
         " JOIN plan_accounts pa ON pa.plan_id = p.id"
         " WHERE p.enabled = 1 AND pa.account_id = ? ORDER BY p.id LIMIT 1",
         (account_id,)).fetchone()
-    return row["course_name"] if row else None
+    if row is None:
+        return None
+    return {"name": row["course_name"], "pid": row["course_pid"]}

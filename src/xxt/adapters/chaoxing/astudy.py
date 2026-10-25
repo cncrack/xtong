@@ -431,13 +431,24 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 log.warning("账号#%s 无会话（state.json 缺失），跳过——先为其登录", row["id"])
                 results.append({"account": row["label"], "account_id": row["id"], "videos": 0, "stop_reason": "未登录"})
                 return
-            # 关键：各账号用自己的课程入口（clazzid/cpi 因账号而异，不可共用 URL）
-            course = conn.execute(
-                "SELECT * FROM courses WHERE account_id = ? AND platform_course_id = ? LIMIT 1",
-                (row["id"], course_row["platform_course_id"]),
-            ).fetchone()
+            # 关键：各账号用自己的课程入口（clazzid/cpi 因账号而异，不可共用 URL）。
+            # 优先按平台课程ID精确匹配（跨账号唯一锚点，避免同名歧义）；
+            # 老批次无 pid 时退回按课名全等匹配。
+            cpid = course_row.get("platform_course_id")
+            if cpid:
+                course = conn.execute(
+                    "SELECT * FROM courses WHERE account_id = ? AND platform_course_id = ? LIMIT 1",
+                    (row["id"], cpid),
+                ).fetchone()
+            else:
+                course = conn.execute(
+                    "SELECT * FROM courses WHERE account_id = ? AND name = ? ORDER BY id LIMIT 1",
+                    (row["id"], course_row["name"]),
+                ).fetchone()
             if course is None:
-                results.append({"account": row["label"], "account_id": row["id"], "videos": 0, "stop_reason": "该账号无此课程"})
+                key = f"pid={cpid}" if cpid else f"课名《{course_row['name']}》"
+                results.append({"account": row["label"], "account_id": row["id"], "videos": 0,
+                                "stop_reason": f"该账号无此课程（{key}）——请核对或重新选课"})
                 return
             runner = AsyncStudyRunner(
                 settings, state, conn,

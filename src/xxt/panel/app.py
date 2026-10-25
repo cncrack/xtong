@@ -179,6 +179,22 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .ptable.pick label{display:flex;align-items:center;gap:.35rem;cursor:pointer}
 .ptable.pick tr.off td{opacity:.45}
 .ptable.pick tr.off label{cursor:not-allowed}
+/* 选择账号弹窗：容器改为块级+横向滚动（原先 grid 会被 13 列表格撑破），并调窄各列 */
+#pk_list{display:block;overflow:auto;max-height:60vh;margin-top:.3rem}
+.ptable.pick{min-width:980px}
+.ptable.pick th:nth-child(1),.ptable.pick td:nth-child(1){width:32px;text-align:center}
+.ptable.pick th:nth-child(2),.ptable.pick td:nth-child(2){width:46px}
+.ptable.pick th:nth-child(3),.ptable.pick td:nth-child(3){width:82px}
+.ptable.pick th:nth-child(4),.ptable.pick td:nth-child(4){width:72px}
+.ptable.pick th:nth-child(5),.ptable.pick td:nth-child(5){width:82px}
+.ptable.pick th:nth-child(6),.ptable.pick td:nth-child(6){width:100px}
+.ptable.pick th:nth-child(7),.ptable.pick td:nth-child(7){width:60px}
+.ptable.pick th:nth-child(8),.ptable.pick td:nth-child(8){width:92px}
+.ptable.pick th:nth-child(9),.ptable.pick td:nth-child(9){width:72px}
+.ptable.pick th:nth-child(10),.ptable.pick td:nth-child(10){width:108px}
+.ptable.pick th:nth-child(11),.ptable.pick td:nth-child(11){width:92px}
+.ptable.pick th:nth-child(12),.ptable.pick td:nth-child(12){width:68px}
+.ptable.pick th:nth-child(13),.ptable.pick td:nth-child(13){width:92px}
 .toolbar .muted{font-size:.85rem}
 #synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
 .flash{animation:flash 1.2s ease}
@@ -259,7 +275,10 @@ tr:hover td{background:#f7f9fd}
 mark{background:#ffe17d;border-radius:3px;padding:0 2px;color:inherit}
 footer{margin-top:2.2rem;text-align:center;font-size:.74rem;color:#a5acbf}
 dialog{border:none;border-radius:20px;padding:1.25rem 1.45rem;width:min(720px,95vw);
-max-height:86vh;overflow:auto;box-shadow:0 24px 70px rgba(20,30,70,.35)}
+max-width:96vw;max-height:88vh;overflow:auto;box-shadow:0 24px 70px rgba(20,30,70,.35);
+resize:both;min-width:340px;min-height:220px}
+#planDlg{width:min(840px,96vw)}
+#pickDlg{width:min(1180px,96vw)}
 dialog::backdrop{background:rgba(20,25,45,.45);backdrop-filter:blur(3px)}
 dialog h3{margin:0 0 .95rem}
 .frow{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:.7rem 0}
@@ -438,7 +457,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <dialog id="planDlg"><h3 id="planTitle">📚 新建批次</h3>
   <div class="frow"><label>批次名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
-  <div class="frow"><label>课程名</label><input type="text" id="pl_course" style="width:240px" list="pl_courses" placeholder="填该账号课程列表里的课名"></div>
+  <div class="frow"><label>课程<small>按平台课程ID锚定 · 同名不同班会分开列</small></label>
+      <select id="pl_course" style="width:330px" onchange="updateCourseCov()"></select></div>
+    <div id="pl_cov" class="hint" style="margin:.1rem 0 .35rem"></div>
   <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label>
     <span style="flex:1"></span>
     <button class="minibtn" title="打开账号选择器：可按 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级 搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
@@ -466,7 +487,6 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <button class="primary" onclick="pickApply()">确定添加</button></div>
   <div class="hint">勾选只是"加进批次"，不会立刻开刷；开跑仍按各账号定时/窗口错峰。</div>
 </dialog>
-<datalist id="pl_courses"></datalist>
 
 <dialog id="addDlg"><h3>＋ 添加账号</h3>
   <div class="frow"><label>备注名（唯一）</label><input type="text" id="a_label" style="width:180px"></div>
@@ -561,7 +581,8 @@ function renderAccounts(){
         ?`<button class="stopc" title="正在刷这门课，点击停止（进度保留）"
             onclick="stopGrind(${a.id})">▶ 刷课中 ${run.since} · 点击停止</button>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
-            data-c="${esc(c.name)}" onclick="startGrind(${a.id},this.dataset.c)">▶ 刷这门课</button>`;
+            data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
+            onclick="startGrind(${a.id},this.dataset.c,this.dataset.p)">▶ 刷这门课</button>`;
       const q=document.getElementById('q').value.trim();
       const now=runningThis?` style="border-left:3px solid var(--ok);padding-left:.5rem"`:'';
       const nowTag=runningThis?` <span class="badge b-ok pulse" style="margin-left:.3rem">当前正在学</span>`:'';
@@ -843,7 +864,7 @@ function renderProfiles(){
   if(!rows.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的账号</span>';return;}
   const inp=(id,k,v,ph)=>`<input id="pf_${k}_${id}" class="pf" placeholder="${esc(ph)}" value="${esc(v||'')}">`;
   el.innerHTML='<table class="ptable"><thead><tr>'
-    + '<th>账号</th><th>备注名</th><th>姓名</th><th>平台昵称</th><th>学号</th>'
+    + '<th>账号</th><th>备注</th><th>姓名</th><th>昵称</th><th>学号</th>'
     + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th>'
     + '<th>来源</th><th>操作</th></tr></thead><tbody>'
     + rows.map(p=>{const id=p.account_id;return `<tr>
@@ -912,8 +933,10 @@ function renderPlans(){
     const accs=p.account_ids.map(id=>{const a=(ACCOUNTS||[]).find(x=>x.id===id);
       return '#'+id+(a?' '+esc(a.label):'');}).join('、')||'—';
     const st=p.enabled?badge('启用中','b-ok'):badge('已停用','b-warn');
+    const pidNote=p.course_pid?'':` <span class="b-warn" style="font-size:.68rem"
+      title="老批次只存了课名（无平台课程ID），同名课程可能歧义——点「✎ 编辑」重新选一次课程即可补上">建议补选课程ID</span>`;
     return `<div class="prow"><b>${esc(p.name)}</b>${st}
-      <span>课程《${esc(p.course_name)}》</span>
+      <span>课程《${esc(p.course_name)}》${pidNote}</span>
       <span class="muted">${p.account_ids.length} 个账号：${esc(accs)}</span>
       <span style="flex:1"></span>
       <button class="minibtn" title="改名/换课程/增删账号（不影响已完成的刷课）" onclick="openPlan(${p.id})">✎ 编辑</button>
@@ -947,15 +970,64 @@ function openPlan(planId){
   PLANMODE=planId||null;
   const p=planId?PLANS.find(x=>x.id===planId):null;
   document.getElementById('pl_name').value=p?p.name:'';
-  document.getElementById('pl_course').value=p?p.course_name:'';
+  buildCourseOptions();
+  const sel=document.getElementById('pl_course');
+  if(p){  // 编辑：按 pid 回选；老批次无 pid 则按课名回选
+    let key=p.course_pid?('pid:'+p.course_pid):('name:'+p.course_name);
+    if(![...sel.options].some(o=>o.value===key)){
+      key='name:'+p.course_name;
+      if(![...sel.options].some(o=>o.value===key)){  // 课名已不在任何账号课程里→补占位项
+        sel.insertAdjacentHTML('beforeend',
+          `<option value="${esc(key)}" data-name="${esc(p.course_name)}">${esc(p.course_name)}（原批次课名，未在账号课程中）</option>`);
+      }
+    }
+    sel.value=key;
+  }else{ sel.value=''; }
   document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
   document.getElementById('planOk').textContent=p?'保存修改':'创建（默认停用）';
   PLSEL=new Set(p?p.account_ids:[]);
   loadPlanBusy();
   renderPicked();
-  const names=[...new Set((ACCOUNTS||[]).reduce((s,a)=>s.concat((a.courses||[]).map(c=>c.name)),[]))];
-  document.getElementById('pl_courses').innerHTML=names.map(n=>`<option value="${esc(n)}">`).join('');
+  updateCourseCov();
   document.getElementById('planDlg').showModal();
+}
+let PLCOURSE={};   // 课程下拉 key → {pid,name,ids:Set}（按平台课程ID聚合，同名不同班分开）
+function buildCourseOptions(){
+  const map=new Map();
+  (ACCOUNTS||[]).forEach(a=>(a.courses||[]).forEach(c=>{
+    const key=c.platform_course_id?('pid:'+c.platform_course_id):('name:'+c.name);
+    if(!map.has(key))map.set(key,{pid:c.platform_course_id||'',name:c.name,ids:new Set()});
+    map.get(key).ids.add(a.id);
+  }));
+  PLCOURSE={};
+  const opts=[...map.entries()].sort((x,y)=>y[1].ids.size-x[1].ids.size).map(([key,v])=>{
+    PLCOURSE[key]=v;
+    const note=v.pid?' · pid='+esc(v.pid):' · 无pid(老式)';
+    return `<option value="${esc(key)}" data-name="${esc(v.name)}">《${esc(v.name)}》 · ${v.ids.size} 个账号有此课${note}</option>`;
+  });
+  const sel=document.getElementById('pl_course');
+  if(sel)sel.innerHTML='<option value="">（请选择课程）</option>'+opts.join('');
+}
+function updateCourseCov(){
+  const sel=document.getElementById('pl_course');
+  const el=document.getElementById('pl_cov');
+  if(!sel||!el)return;
+  const key=sel.value, v=PLCOURSE[key];
+  const name=(sel.selectedOptions[0]?.dataset.name)||'';
+  el.style.color='';
+  if(!key||!name){el.textContent='';return;}
+  const ids=[...PLSEL];
+  if(!ids.length){el.style.color='var(--muted)';el.textContent=`课程《${name}》：尚未选择账号`;return;}
+  const have=ids.filter(i=>v&&v.ids.has(i));
+  const lack=ids.filter(i=>!(v&&v.ids.has(i)));
+  if(lack.length){
+    el.style.color='#c0392b';
+    el.innerHTML=`⚠ 本批次 ${ids.length} 个账号里 <b>${have.length}</b> 个有此课；缺课：`
+      +`<b>${lack.map(i=>'#'+i).join('、')}</b>（运行时这些账号会被跳过，请核对）`;
+  }else{
+    el.style.color='var(--ok)';
+    el.textContent=`✔ 本批次 ${ids.length} 个账号都有此课`;
+  }
 }
 function renderPicked(){
   const box=document.getElementById('pl_picked'); if(!box)return;
@@ -970,6 +1042,7 @@ function renderPicked(){
       ${b?`<span class="b-warn" style="font-size:.7rem">已在《${esc(b)}》</span>`:''}
       <span class="x" title="从本批次移除" onclick="pickedRemove(${id})">✕</span></div>`;}).join('')
     :'还没有选择账号 —— 点「＋ 选择账号」从列表里挑';
+  updateCourseCov();
 }
 function pickedRemove(id){PLSEL.delete(+id);renderPicked();}
 function clearPicked(){PLSEL=new Set();renderPicked();}
@@ -1011,7 +1084,7 @@ function renderPick(){
   if(!rows.length){box.innerHTML=`<span class="muted">${(ACCOUNTS||[]).length?'没有匹配的账号（试试清空搜索或取消筛选）':'还没有账号'}</span>`;return;}
   const dash='<span class="muted">—</span>';
   box.innerHTML='<table class="ptable pick"><thead><tr>'
-    + '<th>选</th><th>账号</th><th>备注名</th><th>姓名</th><th>平台昵称</th><th>学号</th>'
+    + '<th>选</th><th>账号</th><th>备注</th><th>姓名</th><th>昵称</th><th>学号</th>'
     + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th><th>状态</th>'
     + '</tr></thead><tbody>'
     + rows.map(a=>{const b=PLBUSY[a.id], p=a.profile||{};
@@ -1046,13 +1119,18 @@ function pickApply(){
 }
 function doPlan(){
   const name=document.getElementById('pl_name').value.trim();
-  const course=document.getElementById('pl_course').value.trim();
+  const sel=document.getElementById('pl_course');
+  const key=sel.value;
+  const course=(sel.selectedOptions[0]?.dataset.name)||'';
+  let pid='';
+  if(key.startsWith('pid:'))pid=key.slice(4);
+  else if(PLCOURSE[key]&&PLCOURSE[key].pid)pid=PLCOURSE[key].pid;
   const ids=[...PLSEL];
-  if(!name||!course){toast('批次名与课程名都不能为空',1);return;}
+  if(!name||!course){toast('批次名与课程都不能为空（课程请从下拉里选）',1);return;}
   if(!ids.length){toast('至少选择一个账号',1);return;}
   const url=PLANMODE?`/api/plans/${PLANMODE}/update`:'/api/plans';
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,course_name:course,account_ids:ids})})
+    body:JSON.stringify({name,course_name:course,course_pid:pid||null,account_ids:ids})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('保存失败：'+d.error,1);return;}
     document.getElementById('planDlg').close();loadPlans();
@@ -1072,9 +1150,9 @@ function delPlan(id){
     toast('✔ 批次已删除');loadPlans();});}
 let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
 function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
-function startGrind(id,course){
+function startGrind(id,course,pid){
   fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({account_id:id,course:course})})
+    body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已开始刷《'+course+'》（拟人节奏，额度内自动停）':'失败：'+d.error);
     syncRun();});}
 function stopGrind(id){
@@ -1359,7 +1437,7 @@ def create_app(settings: Settings) -> FastAPI:
                 a["courses"] = [
                     dict(r)
                     for r in conn.execute(
-                        """SELECT c.name,
+                        """SELECT c.name, c.platform_course_id, c.clazz_id,
                            (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id) AS total,
                            (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id
                               AND h.status='done') AS done
@@ -1811,7 +1889,8 @@ def create_app(settings: Settings) -> FastAPI:
             r = planmod.create_plan(conn, str(body.get("name") or ""),
                                     str(body.get("course_name") or ""),
                                     [int(a) for a in (body.get("account_ids") or [])],
-                                    enabled=bool(body.get("enabled", False)))
+                                    enabled=bool(body.get("enabled", False)),
+                                    course_pid=body.get("course_pid"))
             if r.get("ok"):
                 _log_event(0, "plan-create",
                            f"{body.get('name')}｜{body.get('course_name')}｜"
@@ -1847,6 +1926,8 @@ def create_app(settings: Settings) -> FastAPI:
                 name=None if body.get("name") is None else str(body.get("name")),
                 course_name=None if body.get("course_name") is None
                 else str(body.get("course_name")),
+                course_pid=None if body.get("course_pid") is None
+                else str(body.get("course_pid")),
                 account_ids=None if ids is None else [int(a) for a in ids],
                 enabled=None if body.get("enabled") is None else bool(body.get("enabled")))
             if r.get("ok"):
@@ -2019,7 +2100,13 @@ def create_app(settings: Settings) -> FastAPI:
         if not n:
             return {"ok": False, "error": "该账号还没有课程数据，先为其抓取课程（xxt courses --account）"}
         root = pathlib.Path(settings.root)
-        proc = _spawn(str(root), "mlearn", course, "--accounts", str(account_id))
+        # 批次带平台课程ID时透传（运行按 pid 精确匹配，避免同名歧义）
+        cpid = str(body.get("course_pid") or "").strip()
+        argv = ["mlearn", course]
+        if cpid:
+            argv += ["--course-pid", cpid]
+        argv += ["--accounts", str(account_id)]
+        proc = _spawn(str(root), *argv)
         # 立刻写运行标记（子进程自己写前有 1~2 秒空窗，期间再点一次就会双开）。
         # 标记内容与子进程一致：pid=子进程 pid，退出时由子进程清理。
         from ..core.runmark import write_marker

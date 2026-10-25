@@ -69,6 +69,47 @@ class TestPanel(unittest.TestCase):
         self.assertEqual(p["dept"], "计算机学院")
         self.assertEqual(p["cls"], "1班")
 
+    def test_plan_course_pid_roundtrip(self):
+        r = self.client.post("/api/plans", json={
+            "name": "PID批次", "course_name": "测试课", "course_pid": "c1",
+            "account_ids": [1]})
+        self.assertTrue(r.json()["ok"])
+        row = next(p for p in self.client.get("/api/plans").json()["plans"]
+                   if p["id"] == r.json()["id"])
+        self.assertEqual(row["course_pid"], "c1")  # 平台课程ID锚点已存
+
+    def test_legacy_plan_without_pid_still_creates(self):
+        r = self.client.post("/api/plans", json={
+            "name": "老式批次", "course_name": "测试课", "account_ids": [1]})
+        self.assertTrue(r.json()["ok"])
+        row = next(p for p in self.client.get("/api/plans").json()["plans"]
+                   if p["id"] == r.json()["id"])
+        self.assertIsNone(row["course_pid"])  # 无 pid → 老式批次仍按课名匹配
+
+    def test_plan_update_sets_course_pid(self):
+        pid = self.client.post("/api/plans", json={
+            "name": "X", "course_name": "测试课", "account_ids": [1]}).json()["id"]
+        r = self.client.post(f"/api/plans/{pid}/update", json={"course_pid": "c1"})
+        self.assertTrue(r.json()["ok"])
+        row = next(p for p in self.client.get("/api/plans").json()["plans"]
+                   if p["id"] == pid)
+        self.assertEqual(row["course_pid"], "c1")
+
+    def test_overview_courses_include_platform_course_id(self):
+        acc = self.client.get("/api/overview").json()["accounts"][0]
+        self.assertEqual(acc["courses"][0]["platform_course_id"], "c1")
+
+    def test_course_for_account_returns_pid(self):
+        conn = connect(self.settings.db_path)
+        try:
+            from xxt.core import plans as planmod
+
+            planmod.create_plan(conn, "P", "测试课", [1], enabled=True, course_pid="c1")
+            self.assertEqual(planmod.course_for_account(conn, 1),
+                             {"name": "测试课", "pid": "c1"})
+        finally:
+            conn.close()
+
     def test_settings_roundtrip(self):
         r = self.client.put("/api/settings", json={
             "quiz_enabled": True, "window_start": "09:30", "window_end": "22:30",
