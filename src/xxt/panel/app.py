@@ -455,10 +455,10 @@ function loadSettings(){
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
-    s_lkeyv.value='';s_lkeyv.dataset.hasKey=(window.LLM_KEY_STORED||d.llm_key_env_set)?'1':'0';    window.LLM_NAME=d.llm_provider_name||'Agnès';
+    s_lkeyv.value='';s_lkeyv.dataset.hasKey=d.llm_key_stored?'1':'0';
+    window.LLM_NAME=d.llm_provider_name||'Agnès';
     window.LLM_KEY_STORED=!!d.llm_key_stored;
-    window.LLM_KEY_ENV=!!d.llm_key_env_set;
-    const hint=d.llm_key_stored?'✓ Key 已加密保存，可直接使用':(d.llm_key_env_set?'⚠ Key 仅在环境变量（旧方式，建议粘贴到上方保存为加密存储）':'⚠ 未配置 Key——下方粘贴后点保存');
+    const hint=d.llm_key_stored?'✓ Key 已加密保存，可直接使用':'⚠ 未配置 Key——下方粘贴后点保存';
     const h2=document.getElementById('s_lhint2'); if(h2)h2.textContent=hint;
     renderProviders();
     window.QUIZ=d;});
@@ -485,7 +485,7 @@ function renderProviders(){
   if(s){
     const keyStat=window.LLM_KEY_STORED
       ?'✓ Key 已加密保存，可直接使用'
-      :(window.LLM_KEY_ENV?'⚠ Key 仅在环境变量（旧方式）——建议粘贴保存为加密存储':'⚠ 尚无可用 Key——粘贴 Key 后点保存');
+      :'⚠ 尚无可用 Key——下方粘贴 Key 后点保存';
     s.innerHTML=`当前使用：<b style="color:var(--accent)">${esc(PROV.current)}</b>`+
       (cur?`（${esc(cur.base_url)} / ${esc(cur.model)}）`:'')+`<br>${keyStat}`+
       (PROV.current===document.getElementById('s_lname').value.trim()
@@ -722,8 +722,7 @@ def create_app(settings: Settings) -> FastAPI:
         from ..log import get_logger
 
         get_logger("panel").info("启动自检清理：%s", cleanup)
-    if not (conn2_has_key(settings) or _os.environ.get(
-            Settings(root=settings.root).llm.get("api_key_env", "XXT_LLM_API_KEY"))):
+    if not conn2_has_key(settings):
         from ..log import get_logger
 
         get_logger("panel").warning(
@@ -962,7 +961,7 @@ def create_app(settings: Settings) -> FastAPI:
         base_url = str(body.get("base_url") or fresh.llm["base_url"]).rstrip("/")
         model = str(body.get("model") or fresh.llm["model"])
         key = str(body.get("key") or "").strip()
-        if not key:  # 未粘贴 → 用已存密钥
+        if not key:  # 未粘贴 → 只用已存加密 Key（不读环境变量：分发版数据封闭原则）
             try:
                 from ..core.crypto import decrypt, master_key
 
@@ -977,9 +976,7 @@ def create_app(settings: Settings) -> FastAPI:
             except Exception:
                 pass
         if not key:
-            key = _os.environ.get(fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"), "")
-        if not key:
-            return {"ok": False, "error": "未提供 Key 且本机无已存 Key"}
+            return {"ok": False, "error": "未配置 Key——请在上方 Key 框粘贴后点『保存到厂商列表』（加密存本机）"}
         try:
             r = _httpx.post(f"{base_url}/chat/completions",
                             headers={"Authorization": f"Bearer {key}"},
@@ -1033,11 +1030,8 @@ def create_app(settings: Settings) -> FastAPI:
             "work_mode_default": fresh.quiz.get("work_mode_default", "owner"),
             "llm_base_url": fresh.llm["base_url"],
             "llm_model": fresh.llm["model"],
-            "llm_api_key_env": fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"),
             "llm_provider_name": fresh.llm.get("provider_name", ""),
             "llm_key_stored": conn2_has_key(settings),
-            "llm_key_env_set": bool(_os.environ.get(
-                fresh.llm.get("api_key_env", "XXT_LLM_API_KEY"))),
         }
 
     @app.put("/api/settings")
@@ -1076,8 +1070,7 @@ def create_app(settings: Settings) -> FastAPI:
                     return {"ok": False, "error": "作业策略仅 owner/reference/ai"}
                 upsert(conn, "quiz.work_mode_default", body["work_mode_default"])
             for field, key in (("llm_base_url", "llm.base_url"),
-                               ("llm_model", "llm.model"),
-                               ("llm_api_key_env", "llm.api_key_env")):
+                               ("llm_model", "llm.model")):
                 if field in body and str(body[field]).strip():
                     upsert(conn, key, str(body[field]).strip())
             conn.commit()
@@ -1449,7 +1442,7 @@ def create_app(settings: Settings) -> FastAPI:
                                           for i, q in enumerate(qs)]}
 
             # ===== 答案生成（题目已在手，全程无浏览器）=====
-            llm = LLMClient(settings.llm)
+            llm = LLMClient(settings.llm, data_dir=settings.data_dir)
             from ..ai.quiz import (bank_lookup, bank_record, build_messages,
                                    parse_llm_json, question_hash)
             extra = str(body.get("extra_requirements") or "").strip()

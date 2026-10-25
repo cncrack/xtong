@@ -152,7 +152,7 @@ class StudyRunner:
         from ...ai.quiz import handle_quiz
 
         try:
-            dec = handle_quiz(self.settings.quiz, self.conn, LLMClient(self.settings.llm), ev)
+            dec = handle_quiz(self.settings.quiz, self.conn, LLMClient(self.settings.llm, data_dir=self.settings.data_dir), ev)
         except Exception as exc:  # 决策异常不干扰播放
             dec = {"action": "manual", "reason": repr(exc)}
         log.info("弹题：%s → %s", (ev.get("stem") or "")[:30], dec.get("action"))

@@ -1,14 +1,14 @@
 """OpenAI 兼容 LLM 客户端（PLAN §4：GLM/DeepSeek/Qwen/本地随时切换，零改码）。
 
-配置（config/settings.toml [llm]）：
-    base_url    如 https://open.bigmodel.cn/api/paas/v4 或 https://api.deepseek.com/v1
-    model       如 glm-4-flash / deepseek-chat
-    api_key_env 环境变量名（Key 绝不落盘）
+Key 来源（唯一正道）：加密落库（app_config: llm.key_enc，AES-GCM，主密钥同账号体系）。
+面板粘贴 Key 保存即写入。不读环境变量——分发版数据封闭于自身 data 目录（安全设计）。
 """
 
 from __future__ import annotations
 
-import os
+import base64
+import sqlite3
+from pathlib import Path
 from typing import Any
 
 
@@ -16,18 +16,39 @@ class LLMError(RuntimeError):
     """LLM 调用失败（缺 Key / 网络 / 响应异常）。"""
 
 
+def _load_key_from_db(data_dir: Path) -> str | None:
+    """从 data/xxt.db 解密 llm.key_enc；无则 None。"""
+    try:
+        from ..core.crypto import decrypt, master_key
+
+        db = data_dir / "xxt.db"
+        if not db.exists():
+            return None
+        conn = sqlite3.connect(db)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key='llm.key_enc'").fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return decrypt(master_key(data_dir), base64.b64decode(row[0]))
+    except Exception:
+        return None
+
+
 class LLMClient:
-    def __init__(self, cfg: dict[str, Any]) -> None:
+    def __init__(self, cfg: dict[str, Any], data_dir: Path | None = None) -> None:
         self.base_url: str = str(cfg["base_url"]).rstrip("/")
         self.model: str = str(cfg["model"])
-        self.api_key_env: str = str(cfg.get("api_key_env", "XXT_LLM_API_KEY"))
         self.timeout: int = int(cfg.get("timeout", 60))
+        self.data_dir = data_dir
 
     def _api_key(self) -> str:
-        key = os.environ.get(self.api_key_env)
+        key = _load_key_from_db(self.data_dir) if self.data_dir else None
         if not key:
             raise LLMError(
-                f"未设置环境变量 {self.api_key_env}——请在系统环境变量中配置 LLM API Key 后重开终端"
+                "未配置 LLM Key——请打开管理面板 → ⚙设置 → AI模型 → 粘贴 Key 保存（加密存本机 data/）"
             )
         return key
 

@@ -184,7 +184,7 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
     quiz_cfg["enabled"] = True
     questions = parse_work_questions(work_frame.content(), dynamic_map=_page_font_map(work_frame))
     stats = {"total": len(questions), "filled": 0, "manual": 0, "status": "semi"}
-    llm = LLMClient(settings.llm)
+    llm = LLMClient(settings.llm, data_dir=settings.data_dir)
     for q in questions:
         dec = handle_quiz(quiz_cfg, conn, llm, {**q, "course": course_name,
                                                 "chapter": chapter_name})
