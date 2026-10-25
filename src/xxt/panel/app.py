@@ -1536,7 +1536,7 @@ def create_app(settings: Settings) -> FastAPI:
                 h = question_hash(q["stem"], q["options"])
                 hit = None
                 if only_idx is None and not body.get("force"):
-                    hit = bank_lookup(wconn, h)
+                    hit = bank_lookup(wconn, h, account_id=account_id)
                 if hit and hit.get("answer"):
                     from ..ai.quiz import clean_markdown as _cm
 
@@ -1567,7 +1567,8 @@ def create_app(settings: Settings) -> FastAPI:
                 _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
                 if ans:
                     bank_record(wconn, question_hash(q["stem"], q["options"]),
-                                q["stem"], q["qtype"], q["options"], answer=[ans])
+                                q["stem"], q["qtype"], q["options"],
+                                account_id=account_id, answer=[ans])
             for idx, q in enumerate(qs):
                 _, ans, src, err = results.get(idx, (idx, "", "err", "未生成"))
                 wconn.execute(

@@ -77,10 +77,20 @@ CREATE TABLE IF NOT EXISTS questions (
     stem          TEXT NOT NULL,
     type          TEXT NOT NULL,      -- single | multi | judge | fill
     options       TEXT,               -- JSON 数组
-    answer        TEXT,               -- JSON：已验证的正确答案
+    created_at    TEXT,
+    updated_at    TEXT
+);
+-- 答案按账号隔离（2026-10-26 用户要求：题目可共用，答案不可共用，只能各自用 AI 生成）。
+-- account_id=0 保留给"历史遗留答案"：只展示、不参与自动作答。
+CREATE TABLE IF NOT EXISTS answers (
+    question_hash TEXT NOT NULL,
+    account_id    INTEGER NOT NULL,
+    answer        TEXT,               -- JSON：该账号的候选/已验证答案
     correct_count INTEGER NOT NULL DEFAULT 0,
     wrong_count   INTEGER NOT NULL DEFAULT 0,
-    updated_at    TEXT
+    source        TEXT,               -- llm | manual | legacy
+    updated_at    TEXT,
+    PRIMARY KEY (question_hash, account_id)
 );
 CREATE TABLE IF NOT EXISTS app_config (
     key   TEXT PRIMARY KEY,   -- 点分键，如 quiz.enabled / pace.daily_window
@@ -133,6 +143,20 @@ def connect(db_path: Path) -> sqlite3.Connection:
     if "account_id" not in lcols:
         conn.execute("ALTER TABLE run_logs ADD COLUMN account_id INTEGER DEFAULT 1")
     with conn:
+        # 答案按账号隔离（2026-10-26）：老库 questions 里的全局 answer 迁到
+        # answers(account_id=0) 后清空——归不到具体账号的旧答案不得再被自动复用，
+        # 只作历史展示。此迁移幂等（清空后 answer 全为 NULL，下次不会再触发）。
+        qcols = {r["name"] for r in conn.execute("PRAGMA table_info(questions)")}
+        if "answer" in qcols:
+            legacy = conn.execute(
+                "SELECT COUNT(*) FROM questions WHERE answer IS NOT NULL").fetchone()[0]
+            if legacy:
+                conn.execute(
+                    "INSERT OR IGNORE INTO answers"
+                    "(question_hash, account_id, answer, source, updated_at)"
+                    " SELECT question_hash, 0, answer, 'legacy', datetime('now')"
+                    " FROM questions WHERE answer IS NOT NULL")
+                conn.execute("UPDATE questions SET answer = NULL WHERE answer IS NOT NULL")
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
             (str(SCHEMA_VERSION),),

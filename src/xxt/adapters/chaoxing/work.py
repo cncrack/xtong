@@ -113,10 +113,17 @@ def _fill_answer(work_frame, qid: str, answer: list[str], qtype: str) -> str:
 
 def review_work(work_frame, conn: sqlite3.Connection,
                 account_id: int) -> list[dict[str, Any]]:
-    """判题回读：解析已提交作业页的每题得分，回写题库（verified/wrong）。
+    """判题回读：解析已提交作业页的每题得分，回写**本账号**的答案库。
 
-    得分标记按通用文本规则解析（"得分：X"/"X分"/"待批阅"），⚠️ 选择器待提交样本校准；
-    题库匹配用题干片段 LIKE（字体解码差异容忍）。
+    三态（2026-10-26 修）：
+    - correct：明确拿到 >0 的得分 → 本账号 correct_count+1（verified）
+    - wrong：明确 0 分或页面写"回答错误" → 只清**本账号**答案
+    - unknown：页面没给分数（未真正提交成功/结构改版/字体没解出/主观题待批阅）
+      → **不动题库**。原实现把"解析不到"一律当 wrong 并清空答案，
+      会把已验证正确的答案误删（用户 2026-10-25 反馈）。
+
+    题目匹配：优先用平台题号 qid（与 work_questions 缓存对齐，精确）；
+    退化按题干前缀 LIKE，且要求**唯一**候选，多候选就跳过（不猜，避免张冠李戴）。
     """
     import re as _re
 
@@ -125,33 +132,81 @@ def review_work(work_frame, conn: sqlite3.Connection,
     soup = BeautifulSoup(work_frame.content(), "html.parser")
     results: list[dict[str, Any]] = []
     for q in soup.select("div.singleQuesId"):
+        qid = (q.get("id") or "").strip()
         text = q.get_text(" ", strip=True)
         stem = _re.sub(r"^[\d\s]+", "", text)[:40]
+
+        # 得分只认"得分：X"或得分容器内的"X分"——避免误抓题干自带的"（2分）"
         score = None
-        m = _re.search(r"得分[：:]\s*([\d.]+)", text) or _re.search(r"([\d.]+)\s*分", text)
+        m = _re.search(r"得分[：:]\s*([\d.]+)", text)
         if m:
             score = float(m.group(1))
-        status = "pending" if "待批阅" in text else (
-            "correct" if (score is not None and score > 0) else "wrong")
-        results.append({"stem": stem, "score": score, "status": status})
-        row = conn.execute(
-            "SELECT question_hash FROM questions WHERE stem LIKE ? LIMIT 1",
-            (f"%{stem[:14]}%",)).fetchone()
-        if row is None:
-            continue
-        h = row["question_hash"]
+        else:
+            for el in q.select(".mark_score, .score, .TiMu .fraction, span.dui, span.cuo"):
+                mm = _re.search(r"([\d.]+)\s*分", el.get_text(" ", strip=True))
+                if mm:
+                    score = float(mm.group(1))
+                    break
+
+        if "待批阅" in text:
+            status = "pending"
+        elif score is not None:
+            status = "correct" if score > 0 else "wrong"
+        elif any(k in text for k in ("回答错误", "本题答错", "答案解析：错误")):
+            # 必须是指向"作答结果"的明确字样；题干里出现"错误"二字不算
+            status = "wrong"
+        else:
+            status = "unknown"
+
+        h = _match_question_hash(conn, qid, text, account_id)
+        results.append({"qid": qid, "stem": stem, "score": score,
+                        "status": status, "linked": h is not None})
+        if h is None or status not in ("correct", "wrong"):
+            continue  # 未关联或无定论：绝不动题库
         if status == "correct":
-            bank_record(conn, h, stem, "fill", [], answer=None, verified=True)
-            log.info("判题回读：答对转正 %s…", stem[:16])
-        elif status == "wrong":
-            bank_record_wrong(conn, h)
-            log.info("判题回读：答错清空 %s…", stem[:16])
+            bank_record(conn, h, stem, "fill", [], account_id=account_id, verified=True)
+            log.info("判题回读：答对转正（账号#%s）%s…", account_id, stem[:16])
+        else:
+            bank_record_wrong(conn, h, account_id=account_id)
+            log.info("判题回读：答错清空（账号#%s）%s…", account_id, stem[:16])
     conn.execute(
         "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,?)",
         (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO", "work-review",
          f"回读 {len(results)} 题：" + "/".join(r["status"] for r in results), account_id))
     conn.commit()
     return results
+
+
+def _match_question_hash(conn: sqlite3.Connection, qid: str, text: str,
+                         account_id: int) -> str | None:
+    """把回读到的题映射到 question_hash：先 qid 精确，再题干前缀唯一匹配。"""
+    import json as _json
+
+    from ...ai.quiz import question_hash
+
+    # ① qid 精确：同一个账号自己解析过这道题，缓存里有 stem+options
+    if qid:
+        row = conn.execute(
+            "SELECT stem, options FROM work_questions"
+            " WHERE qid = ? AND cache_key LIKE ? ORDER BY updated_at DESC LIMIT 1",
+            (qid, f"{account_id}|%")).fetchone()
+        if row is not None:
+            try:
+                opts = _json.loads(row["options"] or "[]")
+            except ValueError:
+                opts = []
+            return question_hash(row["stem"] or "", opts)
+
+    # ② 题干前缀：必须唯一命中，多候选宁可放弃
+    prefix = text.strip()[:20]
+    if not prefix:
+        return None
+    rows = conn.execute(
+        "SELECT question_hash FROM questions WHERE stem LIKE ? LIMIT 2",
+        (f"%{prefix}%",)).fetchall()
+    if len(rows) == 1:
+        return rows[0]["question_hash"]
+    return None
 
 
 def _page_font_map(work_frame) -> dict[str, str]:
@@ -187,7 +242,8 @@ def answer_work(work_frame, settings, conn: sqlite3.Connection,
     llm = LLMClient(settings.llm, data_dir=settings.data_dir)
     for q in questions:
         dec = handle_quiz(quiz_cfg, conn, llm, {**q, "course": course_name,
-                                                "chapter": chapter_name})
+                                                "chapter": chapter_name},
+                          account_id=account_id)
         detail = (f"{chapter_name or course_name}｜{q['qtype_cn']}｜{(q['stem'])[:30]}…｜"
                   f"{dec.get('action')}｜置信{dec.get('confidence', 0):.2f}")
         conn.execute(

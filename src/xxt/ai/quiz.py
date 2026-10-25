@@ -99,11 +99,19 @@ def parse_llm_json(text: str) -> dict[str, Any]:
     }
 
 
-def bank_lookup(conn: sqlite3.Connection, h: str) -> dict[str, Any] | None:
-    """题库命中：仅返回已验证（answer 非空）的记录。"""
+def bank_lookup(conn: sqlite3.Connection, h: str, *, account_id: int) -> dict[str, Any] | None:
+    """题库命中：**只查本账号**已生成的答案（题目共享，答案不跨账号复用）。
+
+    account_id=0 是历史遗留（迁移自旧的全局 answer），永远不会命中——
+    用户 2026-10-26 明确：答案只能由该账号自己用 AI 生成。
+    """
+    if not account_id or account_id <= 0:  # 显式拦 0：legacy 行永不被复用
+        return None
     row = conn.execute(
-        "SELECT answer, type, correct_count FROM questions WHERE question_hash=? AND answer IS NOT NULL",
-        (h,),
+        "SELECT a.answer, q.type, a.correct_count FROM answers a"
+        " JOIN questions q ON q.question_hash = a.question_hash"
+        " WHERE a.question_hash = ? AND a.account_id = ? AND a.answer IS NOT NULL",
+        (h, account_id),
     ).fetchone()
     if row is None:
         return None
@@ -112,40 +120,56 @@ def bank_lookup(conn: sqlite3.Connection, h: str) -> dict[str, Any] | None:
 
 
 def bank_record(conn: sqlite3.Connection, h: str, stem: str, qtype: str,
-                options: list[str], answer: list[str] | None = None,
+                options: list[str], *, account_id: int, answer: list[str] | None = None,
                 verified: bool = False) -> None:
-    """写入/更新题库；verified=True 表示判题确认正确（correct_count+1）。"""
+    """写答案：题目本体写进共享的 questions，答案只写本账号的 answers 行。
+
+    verified=True 表示判题确认正确（本账号 correct_count+1）。
+    """
     conn.execute(
-        """INSERT INTO questions(question_hash, stem, type, options, answer,
-                                 correct_count, wrong_count, updated_at)
-           VALUES(?,?,?,?,?,0,0,datetime('now'))
+        """INSERT INTO questions(question_hash, stem, type, options, created_at, updated_at)
+           VALUES(?,?,?,?,datetime('now'),datetime('now'))
            ON CONFLICT(question_hash) DO UPDATE SET
-             answer = COALESCE(excluded.answer, questions.answer),
-             correct_count = questions.correct_count + ?,
+             stem = excluded.stem,
+             options = excluded.options,
              updated_at = datetime('now')""",
-        (h, stem.strip(), qtype, json.dumps(options, ensure_ascii=False),
-         json.dumps(answer, ensure_ascii=False) if answer else None,
-         1 if verified else 0),
+        (h, stem.strip(), qtype, json.dumps(options, ensure_ascii=False)),
+    )
+    inc = 1 if verified else 0
+    conn.execute(
+        """INSERT INTO answers(question_hash, account_id, answer, correct_count,
+                               wrong_count, source, updated_at)
+           VALUES(?,?,?,?,0,'llm',datetime('now'))
+           ON CONFLICT(question_hash, account_id) DO UPDATE SET
+             answer = COALESCE(excluded.answer, answers.answer),
+             correct_count = answers.correct_count + ?,
+             updated_at = datetime('now')""",
+        (h, account_id, json.dumps(answer, ensure_ascii=False) if answer else None,
+         inc, inc),
     )
     conn.commit()
 
 
-def bank_record_wrong(conn: sqlite3.Connection, h: str) -> None:
+def bank_record_wrong(conn: sqlite3.Connection, h: str, *, account_id: int) -> None:
+    """判错：只清本账号的答案（别的账号验证正确的答案不受影响）。"""
     conn.execute(
-        "UPDATE questions SET wrong_count = wrong_count + 1, answer = NULL,"
-        " updated_at = datetime('now') WHERE question_hash = ?", (h,),
+        "UPDATE answers SET wrong_count = wrong_count + 1, answer = NULL,"
+        " updated_at = datetime('now')"
+        " WHERE question_hash = ? AND account_id = ?", (h, account_id),
     )
     conn.commit()
 
 
 def solve(conn: sqlite3.Connection, llm: LLMClient | Any, stem: str, qtype: str,
-          options: list[str], context: str = "", course: str = "",
+          options: list[str], *, account_id: int, context: str = "", course: str = "",
           chapter: str = "", extra_requirements: str = "") -> dict[str, Any]:
     """作答一条题目。返回：
     {source: bank|llm|manual, answer: [...], confidence, reason?, need_manual}
+
+    account_id 为强制参数：答案库按账号隔离，漏传即报错（防止再退回全局复用）。
     """
     h = question_hash(stem, options)
-    hit = bank_lookup(conn, h)
+    hit = bank_lookup(conn, h, account_id=account_id)
     if hit is not None:
         return {"source": "bank", **hit, "need_manual": False, "hash": h}
 
@@ -158,14 +182,15 @@ def solve(conn: sqlite3.Connection, llm: LLMClient | Any, stem: str, qtype: str,
         return {"source": "manual", "answer": [], "confidence": 0.0,
                 "need_manual": True, "hash": h,
                 "reason": "AI 调用/解析失败"}
-    bank_record(conn, h, stem, qtype, options, answer=parsed["answer"])  # 先存候选
+    bank_record(conn, h, stem, qtype, options, account_id=account_id,
+                answer=parsed["answer"])  # 先存候选（仅本账号）
     if parsed["confidence"] < MIN_CONFIDENCE or not parsed["answer"]:
         return {"source": "manual", **parsed, "need_manual": True, "hash": h}
     return {"source": "llm", **parsed, "need_manual": False, "hash": h}
 
 
 def handle_quiz(quiz_cfg: dict[str, Any], conn: sqlite3.Connection, llm: LLMClient | Any,
-                payload: dict[str, Any]) -> dict[str, Any]:
+                payload: dict[str, Any], *, account_id: int) -> dict[str, Any]:
     """弹题事件的决策入口（watcher 上报 quiz-popup 后由运行器调用）。
 
     返回 action ∈ ignore（未启用，不干扰平台默认行为）/ manual（转人工）/ fill（半自动：只填不交）/
@@ -177,7 +202,8 @@ def handle_quiz(quiz_cfg: dict[str, Any], conn: sqlite3.Connection, llm: LLMClie
     if not stem:
         return {"action": "manual", "reason": "题干解析失败"}
     result = solve(conn, llm, stem, payload.get("qtype") or "single",
-                   payload.get("options") or [], payload.get("context") or "",
+                   payload.get("options") or [], account_id=account_id,
+                   context=payload.get("context") or "",
                    course=payload.get("course") or "", chapter=payload.get("chapter") or "",
                    extra_requirements=payload.get("extra_requirements") or "")
     if result["need_manual"]:
