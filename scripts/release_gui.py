@@ -142,7 +142,8 @@ class App(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    _ISSUER_TMPL = '''"""便携发牌器（窗口版，自包含：双击即用；内嵌签名密钥）"""
+    _ISSUER_TMPL = '''"""发牌器（窗口版·密钥导入式）：exe 本身不含密钥，可任意存放；
+用时导入私钥文件（lic_sign.key）→ 签牌 → 关闭即忘。"""
 
 import base64
 import hashlib
@@ -151,23 +152,27 @@ import json
 import sys
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
-_SIGN_KEY = {key!r}.encode()
-KEY_TAG = hashlib.sha256(_SIGN_KEY).hexdigest()[:4].upper()  # 钥匙指纹（识别用的哪把）
+_sign_key = None  # 会话内持有，不落盘
+
+
+def _tag():
+    return hashlib.sha256(_sign_key).hexdigest()[:4].upper() if _sign_key else "----"
 
 
 def make_license(mid, days, note=""):
     expire = time.strftime("%Y-%m-%d", time.localtime(time.time() + days * 86400))
-    payload = json.dumps({{"mid": mid, "expire": expire, "note": note}}, ensure_ascii=False)
+    payload = json.dumps({"mid": mid, "expire": expire, "note": note}, ensure_ascii=False)
     b = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
-    return b + "." + hmac.new(_SIGN_KEY, b.encode(), hashlib.sha1).hexdigest()
+    return b + "." + hmac.new(_sign_key, b.encode(), hashlib.sha1).hexdigest()
 
 
 def _selftest():
-    lic = make_license("SELF-TEST-0000", 1)
-    print(lic[:40], KEY_TAG)
+    global _sign_key
+    _sign_key = b"selftest-key"
+    print(make_license("SELF-TEST-0000", 1)[:40], _tag())
     sys.exit(0)
 
 
@@ -175,10 +180,44 @@ if "--selftest" in sys.argv:
     _selftest()
 
 root = tk.Tk()
-root.title("发牌器（钥匙 " + KEY_TAG + "）")
-root.geometry("460x300")
+root.title("发牌器")
+root.geometry("480x340")
 frm = ttk.Frame(root, padding=14)
 frm.pack(fill="both", expand=True)
+
+key_row = ttk.Frame(frm)
+key_row.pack(fill="x", pady=(0, 10))
+
+
+def load_key():
+    global _sign_key
+    p = filedialog.askopenfilename(title="选择私钥文件（lic_sign.key）",
+                                    filetypes=[("密钥", "*.key"), ("所有", "*.*")])
+    if not p:
+        return
+    try:
+        _sign_key = Path(p).read_text(encoding="utf-8").strip().encode()
+        if len(_sign_key) < 16:
+            raise ValueError("文件内容太短，不像是密钥")
+    except Exception as e:
+        _sign_key = None
+        messagebox.showerror("导入失败", str(e))
+    refresh_key()
+
+
+key_lbl = ttk.Label(key_row, text="🔑 未导入密钥（签牌前必须导入）", foreground="#b45309")
+
+
+def refresh_key():
+    key_lbl.config(text=("🔑 密钥已导入，指纹 " + _tag()) if _sign_key
+                   else "🔑 未导入密钥（签牌前必须导入）",
+                   foreground="#166534" if _sign_key else "#b45309")
+    btn_issue.state(["!disabled"] if _sign_key else ["disabled"])
+
+
+ttk.Button(key_row, text="📂 导入私钥…", command=load_key).pack(side="left")
+key_lbl.pack(side="left", padx=8)
+
 ttk.Label(frm, text="对方机器码（xxt machine-id 显示的 XXXX-XXXX-XXXX-XXXX）").pack(anchor="w")
 mid = ttk.Entry(frm, width=30)
 mid.pack(anchor="w", pady=(2, 8))
@@ -206,20 +245,18 @@ def issue():
     messagebox.showinfo("已发牌", "xxt.lic 已生成在本程序旁（" + str(d) + " 天，绑定 " + m + "）。\\n发给对方放在 xxt.exe 同目录。")
 
 
-ttk.Button(frm, text="🎫 生成 xxt.lic", command=issue).pack()
+btn_issue = ttk.Button(frm, text="🎫 生成 xxt.lic", command=issue, state="disabled")
+btn_issue.pack()
+refresh_key()
 root.mainloop()
 '''
 
     def _build_issuer_exe(self) -> None:
-        """打包窗口版发牌器为单文件 exe（dist/portable_issuer.exe，双击即用）。"""
-        if not KEY_FILE.exists():
-            messagebox.showerror("无法打包", "签名密钥不存在（先完成一次构建）")
-            return
-        key = KEY_FILE.read_text(encoding="utf-8").strip()
+        """打包窗口版发牌器为单文件 exe（dist/portable_issuer.exe，双击即用，密钥导入式）。"""
         workdir = ROOT / "build" / "issuer"
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "portable_issuer.py").write_text(
-            self._ISSUER_TMPL.format(key=key), encoding="utf-8")
+            self._ISSUER_TMPL, encoding="utf-8")  # 静态模板：exe 不含密钥，可任意存放
 
         def work() -> None:
             self._log(">> 打包发牌器 exe（约 10~30 秒）…")
@@ -232,24 +269,21 @@ root.mainloop()
                 cwd=str(ROOT), capture_output=True, text=True,
                 encoding="utf-8", errors="replace")
             if r.returncode == 0:
-                self._log(">> 完成 ✓ → dist/portable_issuer.exe（拷这一个文件到任何电脑双击发牌）")
+                self._log(">> 完成 ✓ → dist/portable_issuer.exe（exe 不含密钥可任意存放；"
+                          "用时双击→导入 lic_sign.key→发牌）")
             else:
                 self._log(">> 失败 ✗\n" + (r.stderr or "")[-300:])
 
         threading.Thread(target=work, daemon=True).start()
 
     def _export_issuer(self) -> None:
-        if not KEY_FILE.exists():
-            messagebox.showerror("无法导出", "签名密钥不存在（先完成一次构建）")
-            return
-        key = KEY_FILE.read_text(encoding="utf-8").strip()
         out = ROOT / "data" / "portable_issuer.py"
-        out.write_text(self._ISSUER_TMPL.format(key=key), encoding="utf-8")
+        out.write_text(self._ISSUER_TMPL, encoding="utf-8")
         messagebox.showinfo(
-            "已导出便携发牌器",
-            f"{out}\n\n拷这一个文件到任何装有 Python 的电脑即可发牌：\n"
-            f"python portable_issuer.py --mid 对方机器码 --days 30\n\n"
-            f"⚠ 文件内含私钥，只存你掌控的介质，不要外发。")
+            "已导出发牌器源码",
+            f"{out}\n\n窗口版（密钥导入式）：python portable_issuer.py 打开窗口，\n"
+            f"或直接点『📦 打包发牌器exe』得到双击即用的 exe。\n"
+            f"密钥与程序分离——lic_sign.key 另行保管。")
 
     def _issue(self) -> None:
         mid = self.ent_mid.get().strip().upper()
