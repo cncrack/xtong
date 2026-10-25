@@ -89,6 +89,7 @@ class App(tk.Tk):
         self.ent_note = ttk.Entry(row, width=18); self.ent_note.pack(side="left", padx=4)
         ttk.Button(row, text="🎫 生成 lic", command=self._issue).pack(side="left", padx=8)
         ttk.Button(row, text="📁 导出便携发牌器", command=self._export_issuer).pack(side="left")
+        ttk.Button(row, text="📦 打包发牌器exe", command=self._build_issuer_exe).pack(side="left")
         ttk.Label(issue, text="生成于项目根 xxt.lic——通过微信/网盘发给对方，放到 exe 同目录即可",
                   foreground="#555").pack(anchor="w", padx=8, pady=(0, 6))
 
@@ -141,16 +142,20 @@ class App(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    _ISSUER_TMPL = '''"""便携发牌器（自包含：内嵌签名密钥，任何装有 Python 的电脑可用）：
+    _ISSUER_TMPL = '''"""便携发牌器（窗口版，自包含：双击即用；内嵌签名密钥）"""
 
-    python portable_issuer.py --mid 对方机器码 --days 30 [--note 备注]
-    → 在当前目录生成 xxt.lic，发给对方放在 exe 同目录。
-
-⚠ 内含私钥，只保存在你掌控的介质（U盘/私人网盘），不要外发/入库。
-"""
-import argparse, base64, hashlib, hmac, json, time
+import base64
+import hashlib
+import hmac
+import json
+import sys
+import time
+import tkinter as tk
+from tkinter import messagebox, ttk
+from pathlib import Path
 
 _SIGN_KEY = {key!r}.encode()
+KEY_TAG = hashlib.sha256(_SIGN_KEY).hexdigest()[:4].upper()  # 钥匙指纹（识别用的哪把）
 
 
 def make_license(mid, days, note=""):
@@ -160,16 +165,78 @@ def make_license(mid, days, note=""):
     return b + "." + hmac.new(_SIGN_KEY, b.encode(), hashlib.sha1).hexdigest()
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mid", required=True)
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--note", default="")
-    a = ap.parse_args()
-    lic = make_license(a.mid.upper(), a.days, a.note)
-    open("xxt.lic", "w", encoding="utf-8").write(lic)
-    print("xxt.lic 已生成（" + str(a.days) + " 天，绑定 " + a.mid.upper() + "）→ 发给对方放 exe 同目录")
+def _selftest():
+    lic = make_license("SELF-TEST-0000", 1)
+    print(lic[:40], KEY_TAG)
+    sys.exit(0)
+
+
+if "--selftest" in sys.argv:
+    _selftest()
+
+root = tk.Tk()
+root.title("发牌器（钥匙 " + KEY_TAG + "）")
+root.geometry("460x300")
+frm = ttk.Frame(root, padding=14)
+frm.pack(fill="both", expand=True)
+ttk.Label(frm, text="对方机器码（xxt machine-id 显示的 XXXX-XXXX-XXXX-XXXX）").pack(anchor="w")
+mid = ttk.Entry(frm, width=30)
+mid.pack(anchor="w", pady=(2, 8))
+ttk.Label(frm, text="有效天数").pack(anchor="w")
+days = ttk.Entry(frm, width=8)
+days.insert(0, "30")
+days.pack(anchor="w", pady=(2, 8))
+ttk.Label(frm, text="备注（如买家名）").pack(anchor="w")
+note = ttk.Entry(frm, width=24)
+note.pack(anchor="w", pady=(2, 10))
+
+
+def issue():
+    m = mid.get().strip().upper()
+    if not m:
+        messagebox.showerror("缺少机器码", "请填对方机器码")
+        return
+    try:
+        d = int(days.get().strip())
+    except ValueError:
+        messagebox.showerror("天数错误", "天数须为整数")
+        return
+    out = Path(sys.executable if getattr(sys, "frozen", False) else __file__).parent / "xxt.lic"
+    out.write_text(make_license(m, d, note.get().strip()), encoding="utf-8")
+    messagebox.showinfo("已发牌", "xxt.lic 已生成在本程序旁（" + str(d) + " 天，绑定 " + m + "）。\\n发给对方放在 xxt.exe 同目录。")
+
+
+ttk.Button(frm, text="🎫 生成 xxt.lic", command=issue).pack()
+root.mainloop()
 '''
+
+    def _build_issuer_exe(self) -> None:
+        """打包窗口版发牌器为单文件 exe（dist/portable_issuer.exe，双击即用）。"""
+        if not KEY_FILE.exists():
+            messagebox.showerror("无法打包", "签名密钥不存在（先完成一次构建）")
+            return
+        key = KEY_FILE.read_text(encoding="utf-8").strip()
+        workdir = ROOT / "build" / "issuer"
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "portable_issuer.py").write_text(
+            self._ISSUER_TMPL.format(key=key), encoding="utf-8")
+
+        def work() -> None:
+            self._log(">> 打包发牌器 exe（约 10~30 秒）…")
+            r = subprocess.run(
+                [str(ROOT / ".venv" / "Scripts" / "pyinstaller.exe"),
+                 "--noconfirm", "--clean", "--onefile", "--noconsole",
+                 "--distpath", str(ROOT / "dist"),
+                 "--workpath", str(workdir / "pyi"), "--specpath", str(workdir),
+                 str(workdir / "portable_issuer.py")],
+                cwd=str(ROOT), capture_output=True, text=True,
+                encoding="utf-8", errors="replace")
+            if r.returncode == 0:
+                self._log(">> 完成 ✓ → dist/portable_issuer.exe（拷这一个文件到任何电脑双击发牌）")
+            else:
+                self._log(">> 失败 ✗\n" + (r.stderr or "")[-300:])
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _export_issuer(self) -> None:
         if not KEY_FILE.exists():
