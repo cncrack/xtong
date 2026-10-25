@@ -76,16 +76,34 @@ Object.defineProperty(navigator, 'permissions',
 """
 
 
-def hardened_context(browser, **kw):
-    """统一创建加固 context：正常 UA + 视口 + 反自动化指纹注入。
-
-    storage_state/proxy 等照常传；viewport/screen 固定为常见笔记本尺寸，
-    避免默认 1280x720 且 outerHeight==innerHeight 的组合特征。
-    """
+def _context_kwargs(kw: dict) -> dict:
+    """补默认的 UA / 语言 / 视口 / 屏幕（同步与异步两条路径共用，避免再次分叉）。"""
     kw.setdefault("user_agent", CHROME_UA)
     kw.setdefault("locale", "zh-CN")
     kw.setdefault("viewport", {"width": 1280, "height": 800})
     kw.setdefault("screen", {"width": 1280, "height": 800})
-    ctx = browser.new_context(**kw)
+    return kw
+
+
+def hardened_context(browser, **kw):
+    """同步版：统一创建加固 context（正常 UA + 视口 + 反自动化指纹注入）。
+
+    storage_state/proxy 等照常传；viewport/screen 固定为常见笔记本尺寸，
+    避免默认 1280x720 且 outerHeight==innerHeight 的组合特征。
+    """
+    ctx = browser.new_context(**_context_kwargs(kw))
     ctx.add_init_script(STEALTH_JS)
     return ctx
+
+
+async def async_hardened_context(browser, **kw):
+    """异步版（**必须用这个**）：async Playwright 的 new_context/add_init_script 都是协程。
+
+    2026-10-25 事故：异步版误用了同步的 hardened_context，`ctx` 拿到的是 coroutine，
+    随后 `ctx.add_init_script` / `new_page` 抛 AttributeError，表现为"点了开始、
+    日志只有额度行、界面无反应、进程已死"（traceback 被 DEVNULL 吞掉）。
+    """
+    ctx = await browser.new_context(**_context_kwargs(kw))
+    await ctx.add_init_script(STEALTH_JS)
+    return ctx
+

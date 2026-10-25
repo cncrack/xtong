@@ -239,6 +239,15 @@ def cmd_learn(args: argparse.Namespace) -> int:
         # 账号级覆盖对 CLI 同样生效：learn 固定用 #1 的会话文件，故按 #1 的账号行合并。
         # 2026-10-25 修：此前 StudyRunner 直接吃 settings.quota/pace，完全忽略账号管理里的设置。
         from .core.accounts import effective_pace, effective_quota, find_account
+        from .core.runmark import clear_marker, live_session, write_marker
+
+        # 同账号单进程：learn 固定用 #1，启动前先看有没有别的会话（面板/定时/另开的 CLI）。
+        # 2026-10-25 修：此前 learn 不写标记，面板看不见它 → 再点"开始"就会双开。
+        running = live_session(s.data_dir, 1)
+        if running:
+            print(f"[FAIL] 账号 #1 已有会话在跑（{running.get('course')}，pid {running.get('pid')}）"
+                  "——先停掉再启动，避免同账号双开")
+            return 1
 
         acc_row = find_account(conn, "1")
         runner = StudyRunner(
@@ -246,7 +255,11 @@ def cmd_learn(args: argparse.Namespace) -> int:
             quota=effective_quota(s, acc_row) if acc_row else None,
             pace=effective_pace(s, acc_row) if acc_row else None,
         )
-        stats = runner.run(dict(course), limit=args.limit, ignore_window=args.ignore_window)
+        write_marker(s.data_dir, 1, course["name"])
+        try:
+            stats = runner.run(dict(course), limit=args.limit, ignore_window=args.ignore_window)
+        finally:
+            clear_marker(s.data_dir, 1)
         summary = f"学习会话结束：视频 {stats['videos']} 个；原因：{stats['stop_reason'] or '达到 limit'}"
         get_logger("cli").info("%s", summary)
         print(summary)
@@ -379,10 +392,12 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
 
     from .adapters.chaoxing.astudy import run_accounts
     from .core import accounts as acc
+    from .core.runmark import clear_marker, write_marker
     from .store.db import connect
 
     s = _settings(args)
     conn = connect(s.db_path)
+    marked: list[int] = []  # 已写标记的账号（finally 只清自己写过的）
     try:
         course = _pick_course(conn, args.course) if args.course else None
         if course is None:
@@ -402,13 +417,9 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
             print("[FAIL] 无可用账号（xxt account add / list 查看）")
             return 1
         # 会话标记文件：面板据此显示/停止本会话（跨面板重启仍可见）
-        run_dir = s.data_dir / "run"
-        run_dir.mkdir(parents=True, exist_ok=True)
         for row in rows:
-            (run_dir / f"{row['id']}.json").write_text(_json.dumps({
-                "pid": _os.getpid(), "course": course["name"],
-                "since": __import__("time").strftime("%H:%M"),
-            }), encoding="utf-8")
+            write_marker(s.data_dir, int(row["id"]), course["name"])
+            marked.append(int(row["id"]))
         results = asyncio.run(run_accounts(s, conn, rows, dict(course),
                                            limit=args.limit,
                                            max_concurrency=args.concurrency))
@@ -430,9 +441,9 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
                 pass
         return 0
     finally:
-        for row in rows:  # 清理本会话标记
+        for aid in marked:  # 清理本会话标记（只清自己写过的）
             try:
-                (s.data_dir / "run" / f"{row['id']}.json").unlink(missing_ok=True)
+                clear_marker(s.data_dir, aid)
             except Exception:
                 pass
         conn.close()

@@ -37,10 +37,21 @@ async def _find_frame_with(page, selector: str, timeout_s: int = 30):
 
 async def _open_chapter_frame(page, course_url: str):
     """双版本兼容的章节树定位（与同步版 open_chapter_frame 逻辑一致）。"""
-    from .study import username_sniffer
+    # 昵称截获必须用**异步**处理器：同步版 username_sniffer 里的 resp.json() 在
+    # async Playwright 下返回协程，事件回调又是同步的 → 永远不 await，
+    # 只留下 "coroutine 'Response.json' was never awaited" 的 RuntimeWarning，
+    # 昵称永远抓不到（与 2026-10-25 会话崩溃同源的 sync/async 混用）。
+    holder: dict[str, str] = {}
 
-    sniffer, holder = username_sniffer()
-    page.on("response", sniffer)
+    async def _on_response(response) -> None:
+        if "stu-base-info" in response.url and "name" not in holder:
+            try:
+                info = (await response.json()).get("userInfo") or {}
+                holder["name"] = info.get("username") or ""
+            except Exception:
+                pass
+
+    page.on("response", _on_response)
     page._xxt_name_holder = holder
     await page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
     await page.wait_for_timeout(4_000)
@@ -223,17 +234,23 @@ class AsyncStudyRunner:
                  budget_tasks or "不限", done_seconds // 60, done_today)
 
         async with async_playwright() as p:
-            from ...core.stealth import LAUNCH_ARGS, hardened_context
+            from ...core.stealth import LAUNCH_ARGS, async_hardened_context
 
             browser = await p.chromium.launch(headless=True, args=LAUNCH_ARGS)
             ctx_kw: dict[str, Any] = {"storage_state": str(self.state_path)}
             if self.proxy:
                 ctx_kw["proxy"] = {"server": self.proxy}
-            context = hardened_context(browser, **ctx_kw)
+            context = await async_hardened_context(browser, **ctx_kw)
             await context.expose_binding("__xxtEvent", self._on_event)
             page = await context.new_page()
             try:
                 tree_frame = await _open_chapter_frame(page, course_row["url"])
+                if tree_frame is None:
+                    # 2026-10-25：这里原本直接 .locator() → AttributeError 被吞进黑洞，
+                    # 表现为"点了开始、日志只有额度行、进程已死"。给出可读原因。
+                    stats["stop_reason"] = "打不开章节树（登录态可能已失效，或课程链接过期）——请重新登录该账号"
+                    log.warning("[#%s] %s", self.account_id, stats["stop_reason"])
+                    return stats
                 log.info("[#%s] 进入知识点：%s（%s）", self.account_id, leaf_name, kid)
                 await tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 
@@ -373,7 +390,15 @@ async def run_accounts(settings, conn, account_rows, course_row: dict[str, Any],
                 proxy=row["proxy"],
                 account_id=row["id"],
             )
-            stats = await runner.run(dict(course), limit=limit)
+            try:
+                stats = await runner.run(dict(course), limit=limit)
+            except Exception as exc:
+                # TaskGroup 里任一任务抛异常会取消兄弟任务：一个账号崩不能连累其他账号。
+                # 同时必须把 traceback 写进日志（2026-10-25：进程级静默崩溃排查过久）。
+                log.error("[#%s] 会话异常终止：%r", row["id"], exc, exc_info=True)
+                results.append({"account": row["label"], "account_id": row["id"],
+                                "videos": 0, "stop_reason": f"异常终止：{exc!r}"})
+                return
             stats["account"] = row["label"]
             stats["account_id"] = row["id"]
             results.append(stats)

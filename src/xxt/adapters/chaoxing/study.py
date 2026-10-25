@@ -296,6 +296,11 @@ class StudyRunner:
             page = context.new_page()
             try:
                 tree_frame = open_chapter_frame(page, course_row["url"])
+                if tree_frame is None:
+                    # 与异步版一致：原直接 .locator() 会抛 AttributeError，原因是"会话失效/链接过期"
+                    stats["stop_reason"] = "打不开章节树（登录态可能已失效，或课程链接过期）——请重新登录该账号"
+                    log.warning("%s", stats["stop_reason"])
+                    return stats
                 if not window_ok():
                     stats["stop_reason"] = "超出每日学习时段"
                     return stats  # 此处为会话中途越窗（browser 已开），交由 finally 收尾

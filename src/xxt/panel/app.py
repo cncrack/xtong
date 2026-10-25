@@ -22,14 +22,34 @@ _AUTO: dict | None = None  # 定时调度守护进程（面板一键开关）
 
 
 def _spawn(root_str: str, *cmd: str):
+    """拉起子进程（会话/自动调度）。子进程输出必须落盘，不许进 DEVNULL。
+
+    2026-10-25 教训：DEVNULL 吞掉了 #1 会话的 traceback，表现为"点了开始、
+    日志只有 session-start、界面不显示刷课中、进程已死"的哑故障，无法定位。
+    现在每次拉起都留一份 data/logs/sub-<命令>-<HHMMSS>.log。
+    """
+    import pathlib as _pl
     import sys as _sys
+
+    from ..log import get_logger  # 模块级未导入（同文件其他位置均在函数内取）
 
     if getattr(_sys, "frozen", False):  # exe 模式：自身即 CLI 入口
         argv = [_sys.executable, *cmd]
     else:
         argv = [_sys.executable, "-m", "xxt.cli", *cmd]
-    return subprocess.Popen(argv, cwd=root_str,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log_dir = _pl.Path(root_str) / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"sub-{cmd[0] if cmd else 'cli'}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    fh = open(log_path, "ab")
+    try:
+        # 子进程 stdout 默认按系统码页（cp936）编码，中文会写成乱码——强制 UTF-8
+        env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        proc = subprocess.Popen(argv, cwd=root_str, stdout=fh, stderr=fh, env=env)
+    finally:
+        fh.close()  # 句柄已由子进程继承
+    get_logger("panel").info("子进程 %s 已启动 pid=%s，输出 → %s",
+                             " ".join(cmd[:2]), proc.pid, log_path.name)
+    return proc
 
 
 def _pid_alive(pid: int) -> bool:

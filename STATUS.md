@@ -2,7 +2,7 @@
 
 > **任何会话 / 任何开发工具接手前，先读本文件。**
 > 本文是"当前状态"的唯一真相；工作约定见 `AGENTS.md`，长期方案见 `docs/PLAN.md`，历史见 `docs/devlog/`。
-> 最近更新：2026-10-25（会话 25：账号级额度核查与 CLI learn 修复；额度体系已全链路验证；测试 49 全绿）
+> 最近更新：2026-10-25（会话 26：修复异步引擎误用同步 API 导致的会话崩溃 + 子进程日志落盘；测试 52 全绿）
 
 ---
 
@@ -26,8 +26,8 @@
 
 ## 3. 交接字段（每次会话收尾必更）
 
-- **进行中**：无。额度体系已闭环（任务数 + 时长都跨会话累计，实测拦截两次且零平台访问）；#2 在跑（额度 240/60），#1 今日 2 个 / 17 分钟
-- **下一步第一个动作**：等用户拍板"同步版是否统一到异步"（建议保留，统一走"删引擎留命令"，见 devlog 24 §5）；若曾切过 Provider，让用户重存一次让 base_url/model 以 JSON 落库
+- **进行中**：#1（22:44 重启，新代码）与 #2（21:33 起，运行内存中旧代码）都在刷课。修复了 22:42 的崩溃：异步引擎误用同步 `hardened_context`（`'coroutine' object has no attribute 'add_init_script'`）；#2 未受影响是因为它在改动前启动、进程内仍是旧模块
+- **下一步第一个动作**：观察 #1 连续多个视频无新的 `RuntimeWarning`；下次起会话确认昵称截获生效；等用户拍板"同步版是否统一到异步"（建议保留，见 devlog 24 §5）
 - **阻塞点**：无
 - **等用户**：① 作业全链路实测与判分校准（最优先）② 弹题选择器实况 ③ 指纹加固后的账号异常观察 ④ ≥3 账号并发 ⑤ Docker 实机构建 ⑥ 同步版取舍拍板
 
@@ -40,10 +40,13 @@
 | P0-1 | `src/xxt/session/login.py:30` 缩进错误 | `xxt login` 必然 `IndentationError`；`dist/xxt.exe`（18:58 构建）与 build 副本均已实证带此缺陷。由提交 `99ea2d3` 引入；因 login 为延迟导入且无测试覆盖，43 个测试全绿仍漏网 | ✅ 已修（devlog 21）；exe 待重建 |
 | P0-2 | `.venv/Lib/site-packages/__editable__.xxt-0.1.0.pth` → `E:\code\xxt\src` | 在 `E:\xxt` 跑 pytest / CLI / `scripts/push_check.py` 实际加载旧目录代码，测试与推送门禁结果不可信 | ✅ 已修（pth → `E:\xxt\src`），并有测试常驻守护 |
 
-### 实况监控发现并已修（2026-10-25 会话 22–23）
+### 实况监控发现并已修（2026-10-25 会话 22–26）
 
 | 缺陷 | 根因 | 状态 |
 |---|---|---|
+| 点开始无反应、进程已死（`coroutine … add_init_script`） | 异步引擎调用**同步版** `hardened_context`：async 下 `browser.new_context()` 返回协程，未 await 就 `.add_init_script()` | ✅ 新增 `async_hardened_context`（devlog 26）；同源的 `username_sniffer` 一并改异步；源码级测试守护 |
+| 子进程 traceback 完全不可见（哑故障放大器） | `_spawn` 把 stdout/stderr 重定向到 `DEVNULL` | ✅ 落盘 `data/logs/sub-<cmd>-<时间>.log` + 强制 UTF-8（devlog 26） |
+| 一个账号崩溃连坐兄弟账号 | `asyncio.TaskGroup` 中子任务未捕获异常会取消其余任务 | ✅ `supervise()` 加 per-account `try/except` + `exc_info=True`（devlog 26） |
 | 全局额度被账号级 0 覆盖（安全红线失效） | `effective_quota` 判 `is not None`，而面板"✎ 管理"保存过的账号两列为 **0** → 把全局 240/60 覆盖成"不限" | ✅ 改真值判断，0=跟随全局；新增三形态测试 |
 | 账号视频 0 个提前结束（"下一节按钮不可点"） | 缓存的 `next_frame` 在 iframe 重建后 detached，`click` 8s 超时被误判为"到课程末尾" | ✅ 每轮重取 + 失败重取重试一次（astudy / study 同步修） |
 | 两号并发时分不清日志归属 | 过程日志（进入知识点/播放/进度）无账号标识 | ✅ 关键 9 处加 `[#账号id]` 前缀 |
@@ -57,7 +60,9 @@
 |---|---|
 | `adapters/chaoxing/astudy.py` + `study.py` | 每日**时长**额度已改为跨会话（读当日 `video-done` 累计秒数，2026-10-25 修）；任务数额度按当日 `run_logs` 扣减 |
 | `core/pace.py` `FocusTimer` | 已实现但**零引用**，"连续 25~60 分钟 → 休息 5~15 分钟"未生效 |
-| 同步 `StudyRunner` vs 异步 `run_accounts` | 双引擎并存；`xxt learn` 走同步版且**不写 `data/run/<id>.json` 标记** → 可绕过"同账号绝不双开"硬约束（面板无法感知）；两版本轮已**同步**修复 frame 失效 + 额度口径；建议保留（devlog 24 §5），统一须走"删引擎留命令" |
+| 同步 `StudyRunner` vs 异步 `run_accounts` | 双引擎并存；`xxt learn` 走同步版，但**已补写/校验 `data/run/<id>.json` 标记**（`core/runmark.py`，面板与 CLI 共用）→ 双开红线已堵。两版本轮已**同步**修复 frame 失效 + 额度口径 + 章节树可读报错；建议保留（devlog 24 §5），统一须走"删引擎留命令" |
+| 异步引擎复用同步 helper | 2026-10-25 已踩两次（`hardened_context` 致会话崩溃、`username_sniffer` 致昵称抓不到）。凡碰 page/response/context/browser 的函数两边**不得复用**；已加源码级测试守护（`tests/test_async_api.py`） |
+| `panel/app.py::_spawn` | 子进程输出已改为落盘 `data/logs/sub-*.log`（2026-10-25 修）；此前 DEVNULL 吞掉 traceback，哑故障无法定位 |
 | `src/xxt/config.py` | 覆盖层失败已留痕（2026-10-25 修）；同时修复**裸字符串覆盖项被永久忽略**的 P0：`llm.base_url`/`llm.model` 曾因写入未 JSON 化而从不生效（切 Provider 实际仍打旧地址） |
 | `config/settings.toml` | 死配置三处：`[learn].daily_max_minutes`（真额度在 `[quota]`）、`[stealth].headless`（全部 `launch()` 硬编码）、`[llm].api_key_env`（Key 已改为加密落库） |
 | `session/login.py:99` | 硬编码 `chaoxing.com` 域名，违反"平台细节只进 adapters/" |
@@ -88,6 +93,7 @@ AES-256-GCM 加密（`data/secret.key` 不入库）、无凭据写入代码/日�
 
 | 会话 | 摘要 |
 |---|---|
+| 26 | 修会话崩溃：异步引擎误用同步 `hardened_context`（`coroutine … add_init_script`）；`_spawn` 输出从 DEVNULL 改为落盘 `sub-*.log`（本次排查的最大盲区）；昵称截获改异步处理器；`TaskGroup` 加 per-account 异常兜底（一个号崩不连累兄弟）；源码级测试守护 sync/async 不得混用（52 全绿） |
 | 25 | 账号级额度核查：面板/mlearn/auto 链路本就正确（含"只覆盖一项、另一项跟随全局"）；修 `xxt learn` 漏用账号级额度与时段窗口（`StudyRunner` 增 quota/pace 参数）；端到端实测 #1 设 1 个任务 → 26 秒零访问拦截（49 全绿） |
 | 24 | 每日**时长**额度改跨会话（读 `run_logs` 累计秒数），两次实测：22:13 任务数拦截、22:22 时长拦截，均零平台访问；加日志捞出 P0——`llm.base_url`/`llm.model` 裸串写入被 `json.loads` 丢弃，切 Provider 从来没生效过（48 全绿） |
 | 23 | 指纹加固方案 A（UA/plugins/mimeTypes/userAgentData/webdriver/AutomationControlled，12 项 9 项对齐真机）；额度与待学章节检查前置（被拒时零平台访问）；面板卡片显示"今日 x / 上限 y（全局｜账号）"；额度实证生效（46 全绿） |
