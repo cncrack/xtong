@@ -1,119 +1,30 @@
-"""学习通 M2 学习运行器：外层 Playwright 编排 + 页内 watcher（上报-决策，PLAN §5.3）。
+"""学习通 M2 同步学习运行器：外层 Playwright 编排 + 页内 watcher（上报-决策，PLAN §5.3）。
 
 流程：打开课程 → 点导航"章节"进入章节树（新版 fanyav3/studentcourse）→ 解析/更新章节库
 → 点击首个待学叶子 → 进入旧版知识点页（视频/任务点在此层，§5.8 选择器适用）
 → 循环：找视频帧 → 注入 watcher 播放至 ended → 点 #prevNextFocusNext 切下一任务点
 → 节奏全部走 core.pace 抽样（无固定延时）。
+
+模块边界（2026-10-25 解耦）：
+- 纯数据/JS 拼接 → `pagejs.py`（同步异步共用）
+- 同步 page 辅助函数 → `pagesync.py`（异步引擎禁止引用）
+本文件只留 `StudyRunner` 与它的编排逻辑。
 """
 
 from __future__ import annotations
 
-import json
 import random
 import time
-from pathlib import Path
 from typing import Any
 
 from ...core.pace import FocusTimer, sample_gap, sample_speed, within_daily_window
 from ...core.playback import is_plausible_completion
 from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
 from ...log import get_logger
-from .selectors import QUIZ_SELECTORS
+from .pagejs import WATCHER_JS, build_watcher_js, match_chapter_id  # noqa: F401  (对外兼容导出)
+from .pagesync import current_task_title, find_frame_with, open_chapter_frame
 
 log = get_logger("chaoxing.study")
-
-WATCHER_JS = (Path(__file__).parent / "watcher.js").read_text(encoding="utf-8")
-
-
-def build_watcher_js(rate: float) -> str:
-    """按当前倍速与弹题选择器生成注入脚本。"""
-    return (WATCHER_JS
-            .replace("__XXT_RATE__", str(rate))
-            .replace("__XXT_QUIZ__", json.dumps(QUIZ_SELECTORS, ensure_ascii=False)))
-
-
-def find_frame_with(page, selector: str, timeout_s: int = 30):
-    """轮询所有 frame 直到某 frame 出现选择器（条件等待，非行为延时）。"""
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        for fr in page.frames:
-            try:
-                if fr.locator(selector).count() > 0:
-                    return fr
-            except Exception:
-                continue
-        page.wait_for_timeout(800)
-    return None
-
-
-def username_sniffer():
-    """课程页（fanyav3）会调 stu-base-info 接口，内含平台昵称——截获它，零额外请求。"""
-    holder: dict[str, str] = {}
-
-    def on_response(response) -> None:
-        if "stu-base-info" in response.url and "name" not in holder:
-            try:
-                holder["name"] = response.json().get("userInfo", {}).get("username") or ""
-            except Exception:
-                pass
-
-    return on_response, holder
-
-
-def open_chapter_frame(page, course_url: str):
-    """进入课程并定位章节树 frame（双版本兼容，2026-10-24 实测：
-    账号1=新版 fanyav3/stu 需点导航"章节"；账号2=旧版 mycourse/stu 可能直达）。
-    顺带截获平台昵称（page._xxt_name_holder）。"""
-    sniffer, holder = username_sniffer()
-    page.on("response", sniffer)
-    page._xxt_name_holder = holder
-    page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
-    page.wait_for_timeout(4_000)
-
-    # ① 章节树已在某个 frame（旧版直达 / 新版已展开）
-    tree_frame = find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=8)
-    if tree_frame is not None:
-        return tree_frame
-
-    # ② 在主 frame（fanyav3/stu 或 mycourse/stu）点导航"章节"
-    for fr in page.frames:
-        url = fr.url or ""
-        if "/stu?" not in url and not url.rstrip("/").endswith("/stu"):
-            continue
-        try:
-            loc = fr.locator("text=章节").first
-            if loc.count():
-                loc.click(timeout=10_000)
-                break
-        except Exception:
-            continue
-
-    tree_frame = find_frame_with(page, ".chapter_item[id^=cur]", timeout_s=25)
-    if tree_frame is None:
-        raise RuntimeError("未找到课程主页面（可能课程入口改版）")
-    return tree_frame
-
-
-def current_task_title(page) -> str:
-    """旧版知识点页当前任务点标题（.prev_title），拿不到返回空。"""
-    fr = find_frame_with(page, ".prev_title", timeout_s=3)
-    if fr is None:
-        return ""
-    try:
-        return fr.locator(".prev_title").first.inner_text(timeout=3_000).strip()
-    except Exception:
-        return ""
-
-
-def match_chapter_id(conn, course_id: int, title: str) -> int | None:
-    """用旧版页任务标题模糊匹配章节库记录（如"尽快适应大学生活（上）"→ 2.1 记录 id）。"""
-    if not title:
-        return None
-    row = conn.execute(
-        "SELECT id FROM chapters WHERE course_id = ? AND name LIKE ? LIMIT 1",
-        (course_id, f"%{title}%"),
-    ).fetchone()
-    return row["id"] if row else None
 
 
 class StudyRunner:
@@ -389,6 +300,11 @@ class StudyRunner:
                         if no_video_streak >= 3:
                             stats["stop_reason"] = "连续异常过多，中止"
                             break
+
+                    # 越窗后不必再点"下一节"（省一次页面推进 + 一个拟人间隔，同 astudy）
+                    if not window_ok():
+                        stats["stop_reason"] = "超出每日学习时段"
+                        break
 
                     # 切下一任务点（旧版页的"下一节"按钮）
                     # 每轮重取：切任务点后 iframe 会重建，缓存旧 frame 必然 detached，

@@ -1,7 +1,9 @@
 """async 版学习运行器（v0.13 决策：M4 一步到位 asyncio + async Playwright）。
 
 移植纪律（devlog 17）：同步版 study.py 保留至本模块通过同一套验收（整课实跑 + 测试全绿）后删除。
-策略纯逻辑（额度/节奏/标题同步）直接复用 study.py 的函数，仅执行层换 async API。
+策略纯逻辑（额度/节奏/标题同步）复用 `core/*` 与 `pagejs.py`——**只允许纯数据**；
+本模块绝不 import `study.py` / `pagesync.py`（同步 API 函数会静默返回协程，
+2026-10-25 账号#2 事故即由此产生，见 devlog 26；守护测试 tests/test_module_boundaries.py）。
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ import asyncio
 import json
 import random
 import time
-from pathlib import Path
 from typing import Any
 
 from ...core.accounts import effective_pace, effective_quota
@@ -18,7 +19,7 @@ from ...core.pace import sample_gap, sample_speed, within_daily_window
 from ...core.playback import is_plausible_completion
 from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
 from ...log import get_logger
-from .study import WATCHER_JS, match_chapter_id
+from .pagejs import WATCHER_JS, build_watcher_js, match_chapter_id  # noqa: F401
 
 log = get_logger("chaoxing.astudy")
 
@@ -149,8 +150,6 @@ class AsyncStudyRunner:
     async def _play_video(self, page, video_frame, label: str) -> bool | str:
         """播放一个视频。返回 True=真播完（可记账）；"already"=平台本就已完成；
         False=没播成（不记账）。三态区分是 2026-10-25 假 video-done 事故的修法。"""
-        from .study import build_watcher_js
-
         rate = sample_speed(self.rng, self.pace)
         js = build_watcher_js(rate)
         # 队列里可能残留上一节 watcher 的事件：watcher 每 3s 发 tick，点"下一节"后
@@ -340,6 +339,13 @@ class AsyncStudyRunner:
                         if no_video_streak >= 3:
                             stats["stop_reason"] = "连续异常过多，中止"
                             break
+
+                    # 越窗后不必再点"下一节"：一次真实页面推进 + 一个拟人间隔都是浪费。
+                    # 2026-10-25 实测：#1 23:02:25 播完后仍点了下一节、等满 69 秒间隔，
+                    # 23:03:36 才发现超窗——检查点前移即可省掉这两步。
+                    if not ignore_window and not within_daily_window(self.pace):
+                        stats["stop_reason"] = "超出每日学习时段"
+                        break
 
                     # 每轮重取：#prevNextFocusNext 在任务点/章节切换后 iframe 会重建，
                     # 缓存旧 frame 必然 detached。2026-10-25 实测：账号#2 因复用失效 frame，

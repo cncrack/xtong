@@ -587,7 +587,7 @@ def cmd_work(args: argparse.Namespace) -> int:
     """P2.5：进入指定账号的章节作业页并作答（默认半自动：只填不交）。"""
     from playwright.sync_api import sync_playwright
 
-    from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
+    from .adapters.chaoxing.pagesync import find_frame_with, open_chapter_frame
     from .adapters.chaoxing.work import answer_work
     from .core import accounts as acc
     from .core.accounts import account_state_path

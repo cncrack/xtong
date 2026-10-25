@@ -1154,6 +1154,7 @@ def create_app(settings: Settings) -> FastAPI:
             conn.close()
             return {"ok": False, "error": "账号不存在"}
         try:
+            cur = acc.find_account(conn, str(account_id))
             fields: dict = {}
             for k in ("label", "note", "valid_until", "window_start", "window_end",
                       "proxy", "start_at", "work_mode"):
@@ -1162,6 +1163,15 @@ def create_app(settings: Settings) -> FastAPI:
                     if k == "work_mode" and v not in (None, "", "ai", "owner", "reference"):
                         return {"ok": False, "error": "作业策略仅 ai/owner/reference"}
                     fields[k] = v or None  # 空串→None（跟随全局/清除覆盖）
+            # 学习窗口必须成对：core.effective_pace 只在两个都填时覆盖全局，
+            # 只填一侧会**静默**回退全局（2026-10-25 用户反馈"以为生效了"）→ 直接拦。
+            ws = fields.get("window_start", cur["window_start"])
+            we = fields.get("window_end", cur["window_end"])
+            if bool(ws) != bool(we):
+                bad = "开始" if not ws else "结束"
+                return {"ok": False,
+                        "error": f"学习窗口需同时填写开始与结束：{bad}时间缺失"
+                                 "（都留空=跟随全局设置）"}
             for k in ("daily_max_minutes", "daily_max_tasks"):
                 if k in body:
                     v = body[k]
@@ -1399,7 +1409,7 @@ def create_app(settings: Settings) -> FastAPI:
         # reference：只出参考答案（解析+AI，不填表单）
         try:
             from playwright.sync_api import sync_playwright
-            from ..adapters.chaoxing.study import find_frame_with, open_chapter_frame
+            from ..adapters.chaoxing.pagesync import find_frame_with, open_chapter_frame
             from ..adapters.chaoxing.work import parse_work_questions, _page_font_map
             from ..ai.llm import LLMClient
             from ..ai.quiz import build_messages
@@ -1579,9 +1589,11 @@ def create_app(settings: Settings) -> FastAPI:
         """判题回读（面板化 --review）：读已提交作业的每题得分 → 题库转正/清空。"""
         from playwright.sync_api import sync_playwright
 
-        from .adapters.chaoxing.study import find_frame_with, open_chapter_frame
-        from .adapters.chaoxing.work import review_work
-        from .core.accounts import account_state_path
+        # ⚠️ 2026-10-25 修复：原为 `.adapters...`（少一个点）→ 实际解析成
+        # xxt.panel.adapters（不存在），点"✔ 读判分"会直接 ImportError 500。
+        from ..adapters.chaoxing.pagesync import find_frame_with, open_chapter_frame
+        from ..adapters.chaoxing.work import review_work
+        from ..core.accounts import account_state_path
 
         chapter = body.get("chapter") or "2.12"
         state = account_state_path(settings, account_id)
