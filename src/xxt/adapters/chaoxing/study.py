@@ -241,48 +241,49 @@ class StudyRunner:
             stats["stop_reason"] = "超出每日学习时段"
             log.info("拒绝启动：%s", stats["stop_reason"])
             return stats
+        # 前置检查（全本地：待学章节 + 额度）——不达标即返回，零浏览器、零平台访问（与异步版一致）
+        pending = self.conn.execute(
+            """
+            SELECT platform_chapter_id, name FROM chapters
+            WHERE course_id = ? AND status = 'pending' ORDER BY idx LIMIT 1
+            """,
+            (course_row["id"],),
+        ).fetchone()
+        if pending is None:
+            stats["stop_reason"] = "无待学章节"
+            return stats
+        kid, leaf_name = pending["platform_chapter_id"], pending["name"]
+
+        # v0.10 额度口径：账号×天。任务数扣除当日已完成；时长跨会话累计待 P1 调度器
+        budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
+        today = time.strftime("%Y-%m-%d")
+        done_today = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
+            " AND account_id = ?",
+            (f"{today}%", self.account_id),
+        ).fetchone()["c"]
+        if budget_tasks:
+            budget_tasks = max(0, budget_tasks - done_today)
+            if budget_tasks == 0:
+                stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today} 个）"
+                log.info("拒绝启动：%s", stats["stop_reason"])
+                return stats
+        log.info("当日额度：时长 %s 分钟 / 任务 %s 个（任一达标即停，0 即不限）",
+                 f"{budget_minutes:.0f}" if budget_minutes else "不限",
+                 budget_tasks or "不限")
+
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            from ...core.stealth import hardened_context
+            from ...core.stealth import LAUNCH_ARGS, hardened_context
+
+            browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
             context = hardened_context(browser, storage_state=str(self.state_path))
             context.expose_binding("__xxtEvent", self._on_event)
             page = context.new_page()
             try:
                 tree_frame = open_chapter_frame(page, course_row["url"])
-
-                # 找首个待学叶子并点击（点击后本 frame 跳转到旧版知识点页）
-                pending = self.conn.execute(
-                    """
-                    SELECT platform_chapter_id, name FROM chapters
-                    WHERE course_id = ? AND status = 'pending' ORDER BY idx LIMIT 1
-                    """,
-                    (course_row["id"],),
-                ).fetchone()
-                if pending is None:
-                    stats["stop_reason"] = "无待学章节"
-                    return stats
-                kid, leaf_name = pending["platform_chapter_id"], pending["name"]
                 if not window_ok():
                     stats["stop_reason"] = "超出每日学习时段"
                     return stats  # 此处为会话中途越窗（browser 已开），交由 finally 收尾
-
-                # v0.10 额度口径：账号×天。任务数扣除当日已完成；时长跨会话累计待 P1 调度器
-                budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
-                today = time.strftime("%Y-%m-%d")
-                done_today = self.conn.execute(
-                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
-                    " AND account_id = ?",
-                    (f"{today}%", self.account_id),
-                ).fetchone()["c"]
-                if budget_tasks:
-                    budget_tasks = max(0, budget_tasks - done_today)
-                    if budget_tasks == 0:
-                        stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today} 个）"
-                        log.info("拒绝启动：%s", stats["stop_reason"])
-                        return stats
-                log.info("当日额度：时长 %s 分钟 / 任务 %s 个（任一达标即停，0 即不限）",
-                         f"{budget_minutes:.0f}" if budget_minutes else "不限",
-                         budget_tasks or "不限")
                 log.info("进入知识点：%s（%s）", leaf_name, kid)
                 tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 

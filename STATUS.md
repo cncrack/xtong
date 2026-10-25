@@ -2,7 +2,7 @@
 
 > **任何会话 / 任何开发工具接手前，先读本文件。**
 > 本文是"当前状态"的唯一真相；工作约定见 `AGENTS.md`，长期方案见 `docs/PLAN.md`，历史见 `docs/devlog/`。
-> 最近更新：2026-10-25（会话 21：修复 P0-1/P0-2，门禁加固；测试 45 全绿）
+> 最近更新：2026-10-25（会话 23：指纹加固方案 A、额度检查前置、面板额度显示；测试 46 全绿）
 
 ---
 
@@ -26,10 +26,10 @@
 
 ## 3. 交接字段（每次会话收尾必更）
 
-- **进行中**：等待重启面板后复测账号#2（新代码已就绪，旧进程仍跑旧逻辑）
-- **下一步第一个动作**：重启面板 → 两个号重新开始 → 看 `[#2]` 日志能否走到 `video-done`
+- **进行中**：面板已于 22:06 重启并加载"指纹加固"新代码；#2 正在跑第 3 个视频（额度已恢复 240/60），#1 已按额度停机（今日 2 个）
+- **下一步第一个动作**：看下一轮真实会话是否仍有登录异常提示（指纹加固效果）；等用户拍板"同步版是否统一到异步"
 - **阻塞点**：无
-- **等用户**：① 作业全链路实测与判分校准（最优先）② 弹题选择器实况 ③ 反检测效果观察 ④ ≥3 账号并发 ⑤ Docker 实机构建
+- **等用户**：① 作业全链路实测与判分校准（最优先）② 弹题选择器实况 ③ 指纹加固后的账号异常观察 ④ ≥3 账号并发 ⑤ Docker 实机构建 ⑥ 同步版取舍拍板
 
 ## 4. 已知未修问题
 
@@ -40,13 +40,15 @@
 | P0-1 | `src/xxt/session/login.py:30` 缩进错误 | `xxt login` 必然 `IndentationError`；`dist/xxt.exe`（18:58 构建）与 build 副本均已实证带此缺陷。由提交 `99ea2d3` 引入；因 login 为延迟导入且无测试覆盖，43 个测试全绿仍漏网 | ✅ 已修（devlog 21）；exe 待重建 |
 | P0-2 | `.venv/Lib/site-packages/__editable__.xxt-0.1.0.pth` → `E:\code\xxt\src` | 在 `E:\xxt` 跑 pytest / CLI / `scripts/push_check.py` 实际加载旧目录代码，测试与推送门禁结果不可信 | ✅ 已修（pth → `E:\xxt\src`），并有测试常驻守护 |
 
-### 实况监控发现并已修（2026-10-25 会话 22）
+### 实况监控发现并已修（2026-10-25 会话 22–23）
 
 | 缺陷 | 根因 | 状态 |
 |---|---|---|
 | 全局额度被账号级 0 覆盖（安全红线失效） | `effective_quota` 判 `is not None`，而面板"✎ 管理"保存过的账号两列为 **0** → 把全局 240/60 覆盖成"不限" | ✅ 改真值判断，0=跟随全局；新增三形态测试 |
 | 账号视频 0 个提前结束（"下一节按钮不可点"） | 缓存的 `next_frame` 在 iframe 重建后 detached，`click` 8s 超时被误判为"到课程末尾" | ✅ 每轮重取 + 失败重取重试一次（astudy / study 同步修） |
 | 两号并发时分不清日志归属 | 过程日志（进入知识点/播放/进度）无账号标识 | ✅ 关键 9 处加 `[#账号id]` 前缀 |
+| 额度被拒仍白跑一次平台访问（"视频 0 个"） | 额度/待学章节检查在 `_open_chapter_frame()` **之后**——被额度拦住时课程页已经打开 | ✅ 三项检查前置到浏览器启动前，被拒时零浏览器零请求（devlog 23） |
+| headless 指纹 6 处矛盾 | UA 写 131 而内核 156、`webdriver=undefined`、plugins 假数组、缺 userAgentData/mimeTypes、未关 AutomationControlled | ✅ 方案 A 加固：12 项指纹 9 项对齐真机；残留 WebGL SwiftShader 与 outer==inner（devlog 23） |
 
 ### P1（工程债，影响承诺兑现或安全边界）
 
@@ -54,7 +56,8 @@
 |---|---|
 | `adapters/chaoxing/astudy.py` + `study.py` | 每日**时长**额度仅在单次会话内累计（`study_start` 计时），多次启动可突破 `[quota].daily_minutes`；任务数额度已按当日 `run_logs` 正确扣减 |
 | `core/pace.py` `FocusTimer` | 已实现但**零引用**，"连续 25~60 分钟 → 休息 5~15 分钟"未生效 |
-| 同步 `StudyRunner` vs 异步 `run_accounts` | 双引擎并存；`xxt learn` 走同步版且**不写 `data/run/<id>.json` 标记** → 可绕过"同账号绝不双开"硬约束（面板无法感知） |
+| 同步 `StudyRunner` vs 异步 `run_accounts` | 双引擎并存；`xxt learn` 走同步版且**不写 `data/run/<id>.json` 标记** → 可绕过"同账号绝不双开"硬约束（面板无法感知）；两版本轮已**同步**修复 frame 失效问题，是否统一到异步待用户拍板（devlog 23 §5） |
+| `src/xxt/config.py` | DB 全局覆盖层读取失败时 `except: pass` 静默回退到 `settings.toml` 默认值——"改了额度却不生效"将完全无痕，排查成本极高 |
 | `config/settings.toml` | 死配置三处：`[learn].daily_max_minutes`（真额度在 `[quota]`）、`[stealth].headless`（全部 `launch()` 硬编码）、`[llm].api_key_env`（Key 已改为加密落库） |
 | `session/login.py:99` | 硬编码 `chaoxing.com` 域名，违反"平台细节只进 adapters/" |
 | `scripts/build_exe.py` | PyArmor 混淆失败仅打印一行后继续打包；叠加 `core/licensing.py` 默认签名密钥 → 可能产出"密钥公开可推断的裸源码包" |
@@ -84,6 +87,7 @@ AES-256-GCM 加密（`data/secret.key` 不入库）、无凭据写入代码/日�
 
 | 会话 | 摘要 |
 |---|---|
+| 23 | 指纹加固方案 A（UA/plugins/mimeTypes/userAgentData/webdriver/AutomationControlled，12 项 9 项对齐真机）；额度与待学章节检查前置（被拒时零平台访问）；面板卡片显示"今日 x / 上限 y（全局｜账号）"；额度实证生效（46 全绿） |
 | 22 | 实况监控发现并修 3 缺陷：全局额度被账号 0 覆盖、切节按钮误判致提前结束、日志无账号标识（46 全绿） |
 | 21 | 修复 P0-1（login 崩溃）/ P0-2（venv 指向）；push_check 增第 3 道语法门禁；新增全模块导入冒烟测试（45 全绿） |
 | 20 | 全面检查：发现 2 个 P0 + P1 清单；建立本状态文件；双目录/分支约定 |

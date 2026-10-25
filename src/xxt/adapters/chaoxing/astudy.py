@@ -183,46 +183,45 @@ class AsyncStudyRunner:
         if not ignore_window and not within_daily_window(self.pace):
             stats["stop_reason"] = "超出每日学习时段"  # 前置：零浏览器访问
             return stats
-        async with async_playwright() as p:
-            launch_kw: dict[str, Any] = {"headless": True}
-            browser = await p.chromium.launch(**launch_kw)
-            from ...core.stealth import CHROME_UA, STEALTH_JS
+        # 前置检查（全本地：待学章节 + 额度）——任一不达标即返回，零浏览器、零平台访问。
+        # 2026-10-25 实测：#1 额度已达标时仍先打开了课程页才判定（白跑一次真实访问），故前置。
+        pending = self.conn.execute(
+            "SELECT platform_chapter_id, name FROM chapters WHERE course_id=? "
+            "AND status='pending' ORDER BY idx LIMIT 1", (course_row["id"],)
+        ).fetchone()
+        if pending is None:
+            stats["stop_reason"] = "无待学章节"
+            return stats
+        kid, leaf_name = pending["platform_chapter_id"], pending["name"]
 
-            context_kw: dict[str, Any] = {"storage_state": str(self.state_path),
-                                          "user_agent": CHROME_UA, "locale": "zh-CN"}
+        budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.quota)
+        today = time.strftime("%Y-%m-%d")
+        done_today = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
+            " AND account_id = ?",
+            (f"{today}%", self.account_id),
+        ).fetchone()["c"]
+        if budget_tasks:
+            budget_tasks = max(0, budget_tasks - done_today)
+            if budget_tasks == 0:
+                stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today}）"
+                return stats
+        log.info("[#%s] 当日额度：%s 分钟 / %s 个（0 即不限）", self.account_id,
+                 f"{budget_minutes:.0f}" if budget_minutes else "不限",
+                 budget_tasks or "不限")
+
+        async with async_playwright() as p:
+            from ...core.stealth import LAUNCH_ARGS, hardened_context
+
+            browser = await p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+            ctx_kw: dict[str, Any] = {"storage_state": str(self.state_path)}
             if self.proxy:
-                context_kw["proxy"] = {"server": self.proxy}
-            context = await browser.new_context(**context_kw)
-            await context.add_init_script(STEALTH_JS)
+                ctx_kw["proxy"] = {"server": self.proxy}
+            context = hardened_context(browser, **ctx_kw)
             await context.expose_binding("__xxtEvent", self._on_event)
             page = await context.new_page()
             try:
                 tree_frame = await _open_chapter_frame(page, course_row["url"])
-                pending = self.conn.execute(
-                    "SELECT platform_chapter_id, name FROM chapters WHERE course_id=? "
-                    "AND status='pending' ORDER BY idx LIMIT 1", (course_row["id"],)
-                ).fetchone()
-                if pending is None:
-                    stats["stop_reason"] = "无待学章节"
-                    return stats
-                kid, leaf_name = pending["platform_chapter_id"], pending["name"]
-
-                budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.quota)
-                today = time.strftime("%Y-%m-%d")
-                done_today = self.conn.execute(
-                    "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
-                    " AND account_id = ?",
-                    (f"{today}%", self.account_id),
-                ).fetchone()["c"]
-                if budget_tasks:
-                    budget_tasks = max(0, budget_tasks - done_today)
-                    if budget_tasks == 0:
-                        stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today}）"
-                        return stats
-                log.info("[#%s] 当日额度：%s 分钟 / %s 个（0 即不限）", self.account_id,
-                         f"{budget_minutes:.0f}" if budget_minutes else "不限",
-                         budget_tasks or "不限")
-
                 log.info("[#%s] 进入知识点：%s（%s）", self.account_id, leaf_name, kid)
                 await tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 

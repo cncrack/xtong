@@ -25,8 +25,9 @@ def manual_login(login_url: str, state_path: Path, timeout_s: int = 600) -> bool
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        from ..core.stealth import hardened_context
+        from ..core.stealth import LAUNCH_ARGS, hardened_context
+
+        browser = p.chromium.launch(headless=False, args=LAUNCH_ARGS)
         context = hardened_context(browser)
         page = context.new_page()
         log.info("浏览器已启动，正在打开登录页：%s", login_url)
@@ -85,8 +86,9 @@ def probe_session(space_url: str, state_path: Path) -> tuple[str, str | None]:
                 pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        from ..core.stealth import hardened_context
+        from ..core.stealth import LAUNCH_ARGS, hardened_context
+
+        browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
         context = hardened_context(browser, storage_state=str(state_path))
         page = context.new_page()
         page.on("response", on_response)

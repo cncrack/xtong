@@ -346,10 +346,13 @@ function renderAccounts(){
     const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
     const wm=a.work_effective||'owner';
     const wmName={ai:'AI代答',reference:'参考答案',owner:'号主自理'};
-    const chips=[`今日 ${a.today_videos??0} 个`,a.today_min?`今日 ${a.today_min} 分钟`:'',
+    // 额度：今日已完成 / 上限（0 即不限）；上限来源（全局 or 账号单独）标在任务数后
+    const qt=a.quota_tasks||0, qm=a.quota_minutes||0;
+    const qtag=a.quota_from_global?'（全局）':'（账号）';
+    const chips=[`今日 ${a.today_videos??0} / ${qt?qt+' 个':'不限'}${qtag}`,
+                 `今日 ${a.today_min??0} / ${qm?qm+' 分':'不限'}`,
                  `作业=${wmName[wm]||'号主自理'}${a.work_from_global?'（跟随全局）':'（账号单独设置）'}`,
-                 a.window?`窗口 ${esc(a.window)}`:'',a.max_minutes?`时长 ${a.max_minutes}分`:'',
-                 a.max_tasks?`任务 ${a.max_tasks}个`:'',a.proxy?'代理':'',
+                 a.window?`窗口 ${esc(a.window)}`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
                  a.start_at?`定时 ${a.start_at}`:(AUTOPLAN.times[a.id]?`今日定时 ${AUTOPLAN.times[a.id]}`:'定时未设'),
                  a.renew_count?`续期${a.renew_count}次`:'',
@@ -757,11 +760,20 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             today = time.strftime("%Y-%m-%d")
             accounts = [dict(r) for r in list_accounts(conn)]
-            global_default = Settings(root=settings.root).quiz.get(
+            from ..core.accounts import days_left, effective_quota
+
+            fresh = Settings(root=settings.root)  # 每次请求重读 DB：改全局额度后无需重启面板
+            global_default = fresh.quiz.get(
                 "work_mode_default", "owner")  # 生效策略计算用（账号显式优先）
             for a in accounts:
                 state = settings.data_dir / "accounts" / str(a["id"]) / "state.json"
                 a["has_session"] = state.exists()
+                # 有效额度（账号级 > 全局；0/NULL = 跟随全局）——卡片显示"今日 x / 上限 y"
+                _q = effective_quota(fresh, a)
+                a["quota_minutes"] = _q["daily_minutes"]
+                a["quota_tasks"] = _q["daily_tasks"]
+                a["quota_from_global"] = not (a.get("daily_max_minutes")
+                                             or a.get("daily_max_tasks"))
                 # 生效策略 = 账号显式 > 全局默认（卡片显示"实际生效值"并标注来源）
                 eff = a.get("work_mode") or global_default
                 a["work_effective"] = eff
@@ -773,8 +785,6 @@ def create_app(settings: Settings) -> FastAPI:
                 )
                 a["max_minutes"] = a.pop("daily_max_minutes", None)
                 a["max_tasks"] = a.pop("daily_max_tasks", None)
-                from ..core.accounts import days_left
-
                 a["days_left"] = days_left(a)
                 a["courses"] = [
                     dict(r)
@@ -1398,8 +1408,8 @@ def create_app(settings: Settings) -> FastAPI:
                                           for i, q in enumerate(qs)]}
             else:  # 未缓存：浏览器解析一次 → 存库（后续永不再开浏览器取题）
                 with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
-                    from ..core.stealth import hardened_context
+                    from ..core.stealth import LAUNCH_ARGS, hardened_context
+                    browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
 
                     context = hardened_context(browser, storage_state=str(state))
                     page = context.new_page()
@@ -1552,8 +1562,8 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "error": "未找到课程/章节"}
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                from ..core.stealth import hardened_context
+                from ..core.stealth import LAUNCH_ARGS, hardened_context
+                browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
                 context = hardened_context(browser, storage_state=str(state))
                 page = context.new_page()
                 try:
