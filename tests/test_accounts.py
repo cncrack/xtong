@@ -64,6 +64,24 @@ class TestAccounts(unittest.TestCase):
         self.assertEqual(quota["daily_tasks"], 20)
         self.assertEqual(quota["daily_minutes"], DEFAULTS["quota"]["daily_minutes"])
 
+    def test_account_zero_quota_follows_global(self):
+        """账号级 0 必须跟随全局（2026-10-25 实测 bug：曾把 0 当显式覆盖，240/60 全失效）。"""
+        settings = Settings.__new__(Settings)
+        settings.quota = dict(DEFAULTS["quota"])
+        account_id = acc.add_account(self.conn, self.key, "E", "u", "p")
+        row = acc.find_account(self.conn, str(account_id))
+        self.assertEqual(acc.effective_quota(settings, row)["daily_minutes"],
+                         DEFAULTS["quota"]["daily_minutes"])   # 新建为 NULL → 跟随全局
+        acc.set_overrides(self.conn, str(account_id), daily_max_minutes=0, daily_max_tasks=0)
+        row = acc.find_account(self.conn, str(account_id))
+        self.assertEqual(row["daily_max_minutes"], 0)          # 面板保存过 0（实际数据形态）
+        quota = acc.effective_quota(settings, row)
+        self.assertEqual(quota["daily_minutes"], DEFAULTS["quota"]["daily_minutes"])
+        self.assertEqual(quota["daily_tasks"], DEFAULTS["quota"]["daily_tasks"])
+        acc.set_overrides(self.conn, str(account_id), daily_max_minutes=90)
+        row = acc.find_account(self.conn, str(account_id))
+        self.assertEqual(acc.effective_quota(settings, row)["daily_minutes"], 90)  # 非 0 才覆盖
+
     def test_remove(self):
         acc.add_account(self.conn, self.key, "C", "u", "p")
         self.assertTrue(acc.remove_account(self.conn, "C"))

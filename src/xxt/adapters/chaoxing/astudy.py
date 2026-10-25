@@ -140,9 +140,9 @@ class AsyncStudyRunner:
         rate = sample_speed(self.rng, self.pace)
         js = build_watcher_js(rate)
         if await video_frame.evaluate(js) != "ok":
-            log.warning("[%s] watcher 注入失败（跳过）", label)
+            log.warning("[#%s][%s] watcher 注入失败（跳过）", self.account_id, label)
             return False
-        log.info("[%s] 开始播放：倍速 %.2f", label, rate)
+        log.info("[#%s][%s] 开始播放：倍速 %.2f", self.account_id, label, rate)
         max_wait, ended, last_report, start = 600, False, 0.0, time.monotonic()
         last_dur = 0
         while time.monotonic() - start < max_wait:
@@ -161,7 +161,7 @@ class AsyncStudyRunner:
                         ended = True
                     if time.monotonic() - last_report > 30:
                         last_report = time.monotonic()
-                        log.info("[%s] 进度 %.0f/%.0fs", label, ev["cur"], ev["dur"])
+                        log.info("[#%s][%s] 进度 %.0f/%.0fs", self.account_id, label, ev["cur"], ev["dur"])
                         max_wait = min(max_wait, (time.monotonic() - start)
                                        + (ev["dur"] - ev["cur"]) / rate + 90)
             if ended:
@@ -172,7 +172,7 @@ class AsyncStudyRunner:
                 break
         self._drain()
         self._last_video_dur = last_dur
-        log.info("[%s] 播放结束（ended=%s）", label, ended)
+        log.info("[#%s][%s] 播放结束（ended=%s）", self.account_id, label, ended)
         return ended
 
     async def run(self, course_row: dict[str, Any], limit: int | None = None,
@@ -219,13 +219,15 @@ class AsyncStudyRunner:
                     if budget_tasks == 0:
                         stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today}）"
                         return stats
-                log.info("当日剩余额度：%.0f 分钟 / %s 个", budget_minutes, budget_tasks or "不限")
+                log.info("[#%s] 当日额度：%s 分钟 / %s 个（0 即不限）", self.account_id,
+                         f"{budget_minutes:.0f}" if budget_minutes else "不限",
+                         budget_tasks or "不限")
 
-                log.info("进入知识点：%s（%s）", leaf_name, kid)
+                log.info("[#%s] 进入知识点：%s（%s）", self.account_id, leaf_name, kid)
                 await tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 
                 study_start: float | None = None
-                no_video_streak, next_frame = 0, None
+                no_video_streak = 0
                 while limit is None or stats["videos"] < limit:
                     if not ignore_window and not within_daily_window(self.pace):
                         stats["stop_reason"] = "超出每日学习时段"
@@ -260,32 +262,45 @@ class AsyncStudyRunner:
                                 self.conn.commit()
                         else:
                             no_video_streak += 1
-                            log.info("跳过非视频任务点（第 %d 次，如作业/阅读）", no_video_streak)
+                            log.info("[#%s] 跳过非视频任务点（第 %d 次，如作业/阅读）", self.account_id, no_video_streak)
                             if no_video_streak >= 4:  # 连续4个无视频才认头（章节间的作业点应穿过）
                                 stats["stop_reason"] = "连续无视频任务点，本段结束"
                                 break
                     except RuntimeError:
                         raise
                     except Exception as exc:
-                        log.error("视频处理异常（跳过继续）：%r", exc)
+                        log.error("[#%s] 视频处理异常（跳过继续）：%r", self.account_id, exc)
                         no_video_streak += 1
                         if no_video_streak >= 3:
                             stats["stop_reason"] = "连续异常过多，中止"
                             break
 
-                    if next_frame is None:
-                        next_frame = await _find_frame_with(page, "#prevNextFocusNext", timeout_s=10)
+                    # 每轮重取：#prevNextFocusNext 在任务点/章节切换后 iframe 会重建，
+                    # 缓存旧 frame 必然 detached。2026-10-25 实测：账号#2 因复用失效 frame，
+                    # click 超时 8s 后抛异常，被误判为"到课程末尾"提前结束（视频 0 个）。
+                    next_frame = await _find_frame_with(page, "#prevNextFocusNext", timeout_s=10)
                     if next_frame is None:
                         stats["stop_reason"] = "找不到下一节按钮，结束"
                         break
-                    try:
-                        await next_frame.locator("#prevNextFocusNext").first.click(timeout=8_000)
-                    except Exception:
-                        stats["stop_reason"] = "下一节按钮不可点（可能已到课程末尾）"
+                    clicked = False
+                    for attempt in range(2):
+                        try:
+                            await next_frame.locator("#prevNextFocusNext").first.click(timeout=8_000)
+                            clicked = True
+                            break
+                        except Exception:
+                            if attempt:  # 第二次仍失败才算真不可点
+                                break
+                            next_frame = await _find_frame_with(page, "#prevNextFocusNext",
+                                                               timeout_s=10)
+                            if next_frame is None:
+                                break
+                    if not clicked:
+                        stats["stop_reason"] = "下一节按钮不可点（重取后仍失败，可能确已到末尾）"
                         break
 
                     gap = sample_gap(self.rng, self.pace)
-                    log.info("拟人间隔 %.0f 秒后继续", gap)
+                    log.info("[#%s] 拟人间隔 %.0f 秒后继续", self.account_id, gap)
                     waited = 0.0
                     while waited < gap:
                         step = min(1.0, gap - waited)

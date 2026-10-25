@@ -280,14 +280,15 @@ class StudyRunner:
                         stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today} 个）"
                         log.info("拒绝启动：%s", stats["stop_reason"])
                         return stats
-                log.info("当日剩余额度：时长 %.0f 分钟 / 任务 %s 个（任一达标即停）",
-                         budget_minutes, budget_tasks or "不限")
+                log.info("当日额度：时长 %s 分钟 / 任务 %s 个（任一达标即停，0 即不限）",
+                         f"{budget_minutes:.0f}" if budget_minutes else "不限",
+                         budget_tasks or "不限")
                 log.info("进入知识点：%s（%s）", leaf_name, kid)
                 tree_frame.locator(f"#cur{kid}").first.click(timeout=15_000)
 
                 # 旧版页循环：视频 → next → 视频 …（受 limit / 每日双额度 / 时段窗口三重约束）
                 study_start: float | None = None
-                no_video_streak, next_frame = 0, None
+                no_video_streak = 0
                 while limit is None or stats["videos"] < limit:
                     if not window_ok():
                         stats["stop_reason"] = "超出每日学习时段"
@@ -339,15 +340,26 @@ class StudyRunner:
                             break
 
                     # 切下一任务点（旧版页的"下一节"按钮）
-                    if next_frame is None:
-                        next_frame = find_frame_with(page, "#prevNextFocusNext", timeout_s=10)
+                    # 每轮重取：切任务点后 iframe 会重建，缓存旧 frame 必然 detached，
+                    # click 超时后会被误判为"到课程末尾"而提前结束（同 astudy 2026-10-25 修复）
+                    next_frame = find_frame_with(page, "#prevNextFocusNext", timeout_s=10)
                     if next_frame is None:
                         stats["stop_reason"] = "找不到下一节按钮，结束"
                         break
-                    try:
-                        next_frame.locator("#prevNextFocusNext").first.click(timeout=8_000)
-                    except Exception:
-                        stats["stop_reason"] = "下一节按钮不可点（可能已到课程末尾）"
+                    clicked = False
+                    for attempt in range(2):
+                        try:
+                            next_frame.locator("#prevNextFocusNext").first.click(timeout=8_000)
+                            clicked = True
+                            break
+                        except Exception:
+                            if attempt:  # 第二次仍失败才算真不可点
+                                break
+                            next_frame = find_frame_with(page, "#prevNextFocusNext", timeout_s=10)
+                            if next_frame is None:
+                                break
+                    if not clicked:
+                        stats["stop_reason"] = "下一节按钮不可点（重取后仍失败，可能确已到末尾）"
                         break
 
                     # 拟人切节间隔（三档加权抽样；轮询等待用 page.wait_for_timeout 实现）

@@ -155,9 +155,15 @@ def effective_pace(settings: Settings, row: sqlite3.Row) -> dict[str, Any]:
 
 
 def effective_quota(settings: Settings, row: sqlite3.Row) -> dict[str, Any]:
+    """账号级额度覆盖全局；0 表示跟随全局默认（与面板 ✎「0=用全局默认」一致）。
+
+    注意：判 0 而非判 None——账号表两列默认就是 0，若按 `is not None` 判断，
+    0 会被当成显式覆盖值，导致全局 quota.daily_minutes/daily_tasks 永远不生效
+    （2026-10-25 实测：全局 240/60 被账号 0 覆盖，实际额度=不限）。
+    """
     quota = dict(settings.quota)
-    if row["daily_max_minutes"] is not None:
+    if row["daily_max_minutes"]:
         quota["daily_minutes"] = row["daily_max_minutes"]
-    if row["daily_max_tasks"] is not None:
+    if row["daily_max_tasks"]:
         quota["daily_tasks"] = row["daily_max_tasks"]
     return quota
