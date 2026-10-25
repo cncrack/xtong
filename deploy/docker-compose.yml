@@ -1,0 +1,19 @@
+services:
+  xxt:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: xxt:latest
+    container_name: xxt
+    restart: always            # 宕机自愈（PLAN §4.1）
+    ports:
+      - "8300:8300"            # 管理面板（宿主机访问 http://服务器IP:8300）
+    volumes:
+      - ../data:/app/data      # 数据库/账号会话/日志/密钥（宿主机 data/ 持久化）
+      - ../config:/app/config  # settings.toml（宿主机编辑，容器只读使用）
+    environment:
+      - TZ=Asia/Shanghai
+      - XXT_LLM_API_KEY=${XXT_LLM_API_KEY:-}   # 从宿主机 .env 或环境注入；不填则面板里填
+      # 账号代理（P1 起 per-account 可在面板配，此处可给默认出口）：
+      # - HTTP_PROXY=http://host.docker.internal:7890
+    # GPU/shm：Chromium 需要>64MB shm，官方镜像已配置；低配机可加 shm_size: '256m'

@@ -3,11 +3,20 @@
 ## 构建（开发机）
 
 ```bash
-.venv/Scripts/python.exe scripts/build_exe.py
+.venv/Scripts/python.exe scripts/build_exe.py              # onedir：dist/xxt/ 目录（启动快）
+.venv/Scripts/python.exe scripts/build_exe.py --onefile   # 单文件：dist/xxt.exe（64MB，便携）
 ```
 
 流程：复制源码树 → **PyArmor 混淆 `core/` 与 `ai/`（核心策略与 AI 层不可读，壳层可用）** →
-PyInstaller onedir 打包 → 产物 `dist/xxt/xxt.exe`。
+PyInstaller 打包 → 产物见上。
+
+两种形态怎么选：**自用挂机选 onedir**（启动快、杀软误报率低）；**分发给别人选 onefile**
+（单文件拷走即用，首次启动稍慢）。混淆与授权路径两形态相同。
+
+## Docker 部署（服务器/NAS 长挂）
+
+见 [deploy/README.md](../deploy/README.md)——官方 Playwright 镜像，`docker compose up -d --build`
+即起，`data/` 卷持久化，`restart: always` 自愈。
 
 ## 部署到目标机
 

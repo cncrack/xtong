@@ -1,7 +1,8 @@
-"""P3 构建脚本：PyArmor 混淆 core/ai → PyInstaller 打包 onedir exe。
+"""P3 构建脚本：PyArmor 混淆 core/ai → PyInstaller 打包 exe。
 
-用法：.venv/Scripts/python.exe scripts/build_exe.py
-产物：dist/xxt/xxt.exe（首次在目标机运行前需 playwright install chromium，见 docs/BUILD.md）
+用法：.venv/Scripts/python.exe scripts/build_exe.py [--onefile]
+  默认 onedir（dist/xxt/ 目录，启动快）；--onefile 单文件（dist/xxt.exe，便携分发）。
+浏览器内核不打包——目标机需 `playwright install chromium` 或拷贝 ms-playwright（见 docs/BUILD.md）。
 """
 
 from __future__ import annotations
@@ -45,17 +46,24 @@ def main() -> None:
     (APP / "run.py").write_text(
         "from xxt.cli import main\nimport sys\nsys.exit(main())\n", encoding="utf-8")
 
-    # ④ PyInstaller onedir（playwright 全量收集，浏览器内核不打包）
+    # ④ PyInstaller（playwright 全量收集；onedir=目录启动快 / onefile=单文件便携）
+    onefile = "--onefile" in sys.argv
+    mode_args = ["--onefile"] if onefile else []
     run([str(VENVPY.parent / ("pyinstaller.exe" if sys.platform == "win32" else "pyinstaller")),
-         "--noconfirm", "--clean", "--name", "xxt",
+         "--noconfirm", "--clean", "--name", "xxt", *mode_args,
          "--paths", str(APP), "--collect-all", "playwright",
          "--distpath", str(ROOT / "dist"), "--workpath", str(BUILD / "pyi"),
          "--specpath", str(BUILD), str(APP / "run.py")])
 
     # ⑤ 附带运行说明与配置模板
-    dist = ROOT / "dist" / "xxt"
-    shutil.copy(BUILD / "settings.toml.template", dist / "settings.toml.template")
-    print(f"\n构建完成：{dist / 'xxt.exe'}")
+    if onefile:
+        dist = ROOT / "dist"
+        shutil.copy(BUILD / "settings.toml.template", dist / "settings.toml.template")
+        print(f"\n构建完成（单文件）：{dist / 'xxt.exe'}")
+    else:
+        dist = ROOT / "dist" / "xxt"
+        shutil.copy(BUILD / "settings.toml.template", dist / "settings.toml.template")
+        print(f"\n构建完成（目录）：{dist / 'xxt.exe'}")
 
 
 if __name__ == "__main__":
