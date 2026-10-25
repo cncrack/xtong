@@ -10,7 +10,12 @@ from pathlib import Path
 
 from xxt.adapters.chaoxing.study import match_chapter_id
 from xxt.config import DEFAULTS
-from xxt.core.quota import sample_daily_budget
+from xxt.core.quota import (
+    parse_duration_seconds,
+    remaining_minutes,
+    sample_daily_budget,
+    sum_done_seconds,
+)
 from xxt.store.db import connect
 
 
@@ -31,6 +36,26 @@ class TestQuota(unittest.TestCase):
         quota = dict(DEFAULTS["quota"], daily_minutes=0, daily_tasks=0)
         minutes, tasks = sample_daily_budget(rng, quota)
         self.assertEqual((minutes, tasks), (0.0, 0))
+
+
+class TestDurationQuota(unittest.TestCase):
+    """时长额度跨会话累计（2026-10-25 修正：不再用进程内计时）。"""
+
+    def test_parse_duration_from_video_done_detail(self):
+        self.assertEqual(parse_duration_seconds("课程A｜知识点1｜571s"), 571)
+        self.assertEqual(parse_duration_seconds("课｜2s 速成｜480s"), 480)  # 标题带 s 不误判
+        self.assertEqual(parse_duration_seconds("机制上线前的旧记录"), 0)
+        self.assertEqual(parse_duration_seconds(""), 0)
+
+    def test_sum_and_remaining_across_sessions(self):
+        details = ["课｜a｜600s", "课｜b｜300s", "课｜旧记录"]
+        self.assertEqual(sum_done_seconds(details), 900)  # 15 分钟
+        # 额度 30 分钟、今日已学 15 分钟 → 本会话还剩 15 分钟
+        self.assertAlmostEqual(remaining_minutes(30, 900), 15.0)
+        # 今日已学超过额度 → 拒绝启动
+        self.assertLessEqual(remaining_minutes(10, 900), 0)
+        # 0 表示不限：由调用方判断，函数返回 0
+        self.assertEqual(remaining_minutes(0, 900), 0.0)
 
 
 class TestMatchChapter(unittest.TestCase):

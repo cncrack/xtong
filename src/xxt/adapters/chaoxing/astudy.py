@@ -15,7 +15,7 @@ from typing import Any
 
 from ...core.accounts import effective_pace, effective_quota
 from ...core.pace import sample_gap, sample_speed, within_daily_window
-from ...core.quota import sample_daily_budget
+from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
 from ...log import get_logger
 from .study import WATCHER_JS, match_chapter_id
 
@@ -194,21 +194,33 @@ class AsyncStudyRunner:
             return stats
         kid, leaf_name = pending["platform_chapter_id"], pending["name"]
 
+        # 额度口径（2026-10-25 修正）：两项都按"今日已用"扣减，跨会话有效。
+        # 时长从 run_logs 的 video-done 详情累计秒数算，不再用进程内计时——
+        # 否则停掉再启动就多出一整份额度，"每天 N 分钟"名不副实。
         budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.quota)
         today = time.strftime("%Y-%m-%d")
-        done_today = self.conn.execute(
-            "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?"
-            " AND account_id = ?",
-            (f"{today}%", self.account_id),
-        ).fetchone()["c"]
+        rows = self.conn.execute(
+            "SELECT detail FROM run_logs WHERE event='video-done' AND account_id=?"
+            " AND ts LIKE ?", (self.account_id, f"{today}%"),
+        ).fetchall()
+        done_today = len(rows)
+        done_seconds = sum_done_seconds(r["detail"] or "" for r in rows)
         if budget_tasks:
             budget_tasks = max(0, budget_tasks - done_today)
             if budget_tasks == 0:
-                stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today}）"
+                stats["stop_reason"] = f"任务数额度达标（今日已完成 {done_today} 个）"
                 return stats
-        log.info("[#%s] 当日额度：%s 分钟 / %s 个（0 即不限）", self.account_id,
+        if budget_minutes:
+            left_minutes = remaining_minutes(budget_minutes, done_seconds)
+            if left_minutes <= 0:
+                stats["stop_reason"] = (
+                    f"时长额度达标（今日已学 {done_seconds // 60} 分钟）")
+                return stats
+            budget_minutes = left_minutes
+        log.info("[#%s] 当日剩余额度：%s 分钟 / %s 个（0 即不限；今日已学 %s 分钟 %s 个）",
+                 self.account_id,
                  f"{budget_minutes:.0f}" if budget_minutes else "不限",
-                 budget_tasks or "不限")
+                 budget_tasks or "不限", done_seconds // 60, done_today)
 
         async with async_playwright() as p:
             from ...core.stealth import LAUNCH_ARGS, hardened_context

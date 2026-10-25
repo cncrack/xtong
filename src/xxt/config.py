@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+# 配置层自己的 logger：Settings 常在 setup_logging 之前构造，此时 warning 走 stderr（仍可见）
+_log = logging.getLogger("xxt.config")
 
 DEFAULTS: dict[str, Any] = {
     "app": {"data_dir": "data"},
@@ -84,7 +88,8 @@ class Settings:
             with open(path, "rb") as f:
                 _deep_merge(data, tomllib.load(f))
         # DB 全局覆盖层（app_config 表，面板"设置"写入，v0.6 三层配置的第 2 层）
-        # 无库/无表时静默跳过——CLI 首次 init 前也能用
+        # 无库/无表时跳过——CLI 首次 init 前也能用。但**失败必须留痕**：
+        # 静默 pass 曾让"面板改了额度、实际没生效"无任何线索（devlog 24 排查耗掉十分钟）。
         try:
             import json
             import sqlite3
@@ -94,10 +99,14 @@ class Settings:
                 _conn = sqlite3.connect(db_file)
                 try:
                     for k, v in _conn.execute("SELECT key, value FROM app_config"):
-                        try:  # 单行坏值不中断整体覆盖层（历史裸字符串等）
+                        try:
                             parsed = json.loads(v)
                         except Exception:
-                            continue
+                            # 兼容裸字符串：面板早期/个别接口直接存原文（llm.base_url、llm.model、
+                            # llm.key_enc）。此前这里 continue 会让这些覆盖项**永久不生效**，
+                            # 表现为"面板切了 Provider，实际仍请求旧地址旧模型"（2026-10-25 定位）。
+                            parsed = v
+                            _log.debug("覆盖层键 %s 非 JSON，按裸字符串处理", k)
                         node: dict[str, Any] = data
                         parts = k.split(".")
                         for p in parts[:-1]:
@@ -105,8 +114,9 @@ class Settings:
                         node[parts[-1]] = parsed
                 finally:
                     _conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("DB 覆盖层读取失败，本次回退到 config/settings.toml + 内置默认值：%r",
+                         exc)
         self.raw = data
         self.data_dir = (self.root / data["app"]["data_dir"]).resolve()
         self.db_path = self.data_dir / "xxt.db"

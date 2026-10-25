@@ -753,18 +753,15 @@ def create_app(settings: Settings) -> FastAPI:
 
         def today_stats(conn: sqlite3.Connection, account_id: int, today: str) -> dict:
             """分钟数 = Σ 每个完成视频的真实时长（video-done 详情尾部"Ns"，纯观看时长）。
-            机制上线前的历史记录无时长后缀，不计入（宁少勿虚报）。"""
-            import re as _re
+            机制上线前的历史记录无时长后缀，不计入（宁少勿虚报）。
+            解析复用于 runner 的额度判定（core.quota.sum_done_seconds），口径只有一处。"""
+            from ..core.quota import sum_done_seconds
 
             rows = conn.execute(
                 "SELECT detail FROM run_logs WHERE event='video-done' "
                 "AND account_id=? AND ts LIKE ?", (account_id, f"{today}%"),
             ).fetchall()
-            seconds = sum(
-                int(m.group(1))
-                for r in rows
-                if (m := _re.search(r"｜(\d+)s$", r["detail"] or ""))
-            )
+            seconds = sum_done_seconds(r["detail"] or "" for r in rows)
             return {"today_videos": len(rows), "today_min": int(seconds // 60)}
 
         conn = db()
@@ -961,11 +958,13 @@ def create_app(settings: Settings) -> FastAPI:
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
             conn.execute(upsert, ("llm.providers", _json.dumps(saved, ensure_ascii=False)))
             conn.execute(upsert, ("llm.provider_name", _json.dumps(name, ensure_ascii=False)))
-            conn.execute(upsert, ("llm.base_url", base_url))
-            conn.execute(upsert, ("llm.model", model))
+            conn.execute(upsert, ("llm.base_url", _json.dumps(base_url)))
+            conn.execute(upsert, ("llm.model", _json.dumps(model)))
             if key:  # 方案B：Key 加密落 data/（AES-GCM，主密钥同账号凭据体系）
                 from ..core.crypto import encrypt, master_key
 
+                # 注意：key_enc 故意存裸 base64（不 json.dumps）——ai/llm.py 直接读该行做
+                # b64decode，加引号会解不开。它是独立字段，不进配置树。
                 conn.execute(upsert, ("llm.key_enc", base64.b64encode(
                     encrypt(master_key(settings.data_dir), key)).decode()))
             conn.commit()
@@ -1031,9 +1030,18 @@ def create_app(settings: Settings) -> FastAPI:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (_json.dumps(saved, ensure_ascii=False),))
             if fresh.llm.get("provider_name") == name:
-                conn.execute(
-                    "INSERT INTO app_config(key,value) VALUES('llm.provider_name','Agnès') "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+                # 删掉的是当前 Provider：名字、地址、模型要一起回落到内置默认，
+                # 否则会留下"名字是 Agnès、地址还是已删除那家"的错配（JSON 化写入）。
+                from ..config import DEFAULTS
+
+                _d = DEFAULTS["llm"]
+                for _k, _v in (("llm.provider_name", "Agnès"),
+                               ("llm.base_url", _d["base_url"]),
+                               ("llm.model", _d["model"])):
+                    conn.execute(
+                        "INSERT INTO app_config(key,value) VALUES(?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (_k, _json.dumps(_v, ensure_ascii=False)))
             conn.commit()
         finally:
             conn.close()
