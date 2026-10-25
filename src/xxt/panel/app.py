@@ -688,6 +688,17 @@ def _startup_cleanup(settings: Settings) -> dict:
     run_dir = settings.data_dir / "run"
     if run_dir.exists():
         for f in run_dir.glob("*.json"):
+            # 只清"进程已死"的孤儿标记：会话子进程由 subprocess 独立拉起，
+            # 面板重启不影响它。无条件删除会让面板误判账号空闲 → 同账号双开（红线）。
+            keep = False
+            try:
+                import json as _j
+
+                keep = _pid_alive(int(_j.loads(f.read_text(encoding="utf-8")).get("pid") or 0))
+            except Exception:
+                keep = False
+            if keep:
+                continue
             f.unlink(missing_ok=True)
             report["run_markers"] += 1
     try:
