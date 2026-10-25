@@ -88,6 +88,7 @@ class App(tk.Tk):
         ttk.Label(row, text="备注:").pack(side="left")
         self.ent_note = ttk.Entry(row, width=18); self.ent_note.pack(side="left", padx=4)
         ttk.Button(row, text="🎫 生成 lic", command=self._issue).pack(side="left", padx=8)
+        ttk.Button(row, text="📁 导出便携发牌器", command=self._export_issuer).pack(side="left")
         ttk.Label(issue, text="生成于项目根 xxt.lic——通过微信/网盘发给对方，放到 exe 同目录即可",
                   foreground="#555").pack(anchor="w", padx=8, pady=(0, 6))
 
@@ -139,6 +140,49 @@ class App(tk.Tk):
             self.after(0, self._refresh_status)
 
         threading.Thread(target=work, daemon=True).start()
+
+    _ISSUER_TMPL = '''"""便携发牌器（自包含：内嵌签名密钥，任何装有 Python 的电脑可用）：
+
+    python portable_issuer.py --mid 对方机器码 --days 30 [--note 备注]
+    → 在当前目录生成 xxt.lic，发给对方放在 exe 同目录。
+
+⚠ 内含私钥，只保存在你掌控的介质（U盘/私人网盘），不要外发/入库。
+"""
+import argparse, base64, hashlib, hmac, json, time
+
+_SIGN_KEY = {key!r}.encode()
+
+
+def make_license(mid, days, note=""):
+    expire = time.strftime("%Y-%m-%d", time.localtime(time.time() + days * 86400))
+    payload = json.dumps({{"mid": mid, "expire": expire, "note": note}}, ensure_ascii=False)
+    b = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return b + "." + hmac.new(_SIGN_KEY, b.encode(), hashlib.sha1).hexdigest()
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mid", required=True)
+    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--note", default="")
+    a = ap.parse_args()
+    lic = make_license(a.mid.upper(), a.days, a.note)
+    open("xxt.lic", "w", encoding="utf-8").write(lic)
+    print("xxt.lic 已生成（" + str(a.days) + " 天，绑定 " + a.mid.upper() + "）→ 发给对方放 exe 同目录")
+'''
+
+    def _export_issuer(self) -> None:
+        if not KEY_FILE.exists():
+            messagebox.showerror("无法导出", "签名密钥不存在（先完成一次构建）")
+            return
+        key = KEY_FILE.read_text(encoding="utf-8").strip()
+        out = ROOT / "data" / "portable_issuer.py"
+        out.write_text(self._ISSUER_TMPL.format(key=key), encoding="utf-8")
+        messagebox.showinfo(
+            "已导出便携发牌器",
+            f"{out}\n\n拷这一个文件到任何装有 Python 的电脑即可发牌：\n"
+            f"python portable_issuer.py --mid 对方机器码 --days 30\n\n"
+            f"⚠ 文件内含私钥，只存你掌控的介质，不要外发。")
 
     def _issue(self) -> None:
         mid = self.ent_mid.get().strip().upper()
