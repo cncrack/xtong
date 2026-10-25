@@ -32,14 +32,22 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_login(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
+    from .core.accounts import account_state_path
+    from .store.db import connect
 
     s = _settings(args)
     adapter = get_adapter(s)
-    if adapter.login(s.default_state_path):
-        log.info("登录成功，会话已保存：%s", s.default_state_path)
-        print(f"[OK] 会话已保存：{s.default_state_path}")
+    conn = connect(s.db_path)
+    try:
+        account_id = _account_id_of(conn, getattr(args, "account", None))
+    finally:
+        conn.close()
+    state_path = account_state_path(s, account_id)
+    if adapter.login(state_path):
+        log.info("账号#%s 登录成功，会话已保存：%s", account_id, state_path)
+        print(f"[OK] 账号#{account_id} 会话已保存：{state_path}")
         return 0
-    print("[FAIL] 登录超时或未完成，请重新执行 xxt login")
+    print(f"[FAIL] 账号#{account_id} 登录超时或未完成，请重试：xxt login --account {account_id}")
     return 1
 
 
@@ -716,7 +724,8 @@ def main(argv: list[str] | None = None) -> int:
         return 403
 
     sub.add_parser("init", help="初始化数据目录与数据库")
-    sub.add_parser("login", help="打开浏览器人工登录学习通，保存会话")
+    p_login = sub.add_parser("login", help="打开浏览器人工登录学习通，保存会话")
+    p_login.add_argument("--account", default=None, help="账号 id/标签（缺省 1=default）")
     sub.add_parser("status", help="检查已保存会话是否有效")
     p_cs = sub.add_parser("courses", help="抓取课程列表并入库（复用页面自身接口）")
     p_cs.add_argument("--account", default=None, help="账号 id/标签（缺省 default）")

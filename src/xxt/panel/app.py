@@ -149,10 +149,11 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .pbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.3rem;font-size:.78rem}
 .pbar input[type=text],.pbar input:not([type]){width:180px;padding:.2rem .45rem;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.78rem}
 .pbar .chk{display:flex;gap:.25rem;align-items:center;color:var(--muted);cursor:pointer}
-.trendbox{display:flex;gap:.3rem;align-items:flex-end;height:76px;padding:.3rem .1rem .1rem;
+.trendbox{display:flex;gap:.3rem;align-items:flex-end;height:112px;padding:.3rem .1rem .1rem;
  border-bottom:1px solid var(--line)}
 .tcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
-.tbar{width:70%;border-radius:6px 6px 2px 2px;background:var(--grad);min-height:3px}
+.tval{font-size:.62rem;color:var(--muted);line-height:1;margin-bottom:.1rem;min-height:.8rem;white-space:nowrap}
+.tbar{width:64%;border-radius:6px 6px 2px 2px;background:var(--grad);min-height:3px;transition:height .3s}
 .tlbl{font-size:.65rem;color:var(--muted);margin-top:.15rem;white-space:nowrap}
 .seg{display:inline-flex;gap:.2rem;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:.15rem}
 .segb{background:transparent;border:0;border-radius:8px;padding:.24rem .6rem;font:inherit;font-size:.78rem;
@@ -610,6 +611,7 @@ function renderAccounts(){
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
+        <button class="minibtn" title="为该账号登录/刷新会话：先试无头自动（用已存密码），失败可转手动扫码/过验证码" onclick="doLogin(${a.id})">🔑 ${a.has_session?'重新登录':'登录'}</button>
         <button class="minibtn" title="批量作业：遍历该账号全部未完成作业按策略执行（单门作业在下方课程列表的作业行里单独处理）"
           onclick="doWorkAll(${a.id})">📝 批量作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
@@ -794,14 +796,17 @@ function goProf(){
   if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
   const q=document.getElementById('profQ'); if(q)q.focus();
 }
-// 趋势：每日一根柱（柱高=当天观看时长占比，悬停看视频数/分钟/作业次数）
+// 趋势：每天一柱，柱高=当天观看分钟；柱顶标注分钟数，悬停看视频/作业明细
 function renderTrend(trend){
   const el=document.getElementById('statTrend'); if(!el)return;
-  if(!trend.length){el.innerHTML='';return;}
+  if(!trend.length){el.innerHTML='<div class="muted" style="margin:.4rem 0 .2rem">📅 每日趋势：所选范围内还没有数据（换个时间范围，或先刷几节课再看）</div>';return;}
   const max=Math.max(...trend.map(t=>t.minutes),1);
-  el.innerHTML='<div class="muted" style="margin:.4rem 0 .2rem">📅 每日趋势（柱高=时长占比，标注为视频数/分钟）</div>'
-    + `<div class="trendbox">` + trend.map(t=>`<div class="tcol" title="${esc(t.date)}｜${t.videos} 视频｜${t.minutes} 分｜作业 ${t.works}">
-        <div class="tbar" style="height:${Math.max(4,Math.round(t.minutes/max*100))}%"></div>
+  const total=trend.reduce((s,t)=>s+(t.minutes||0),0);
+  const sumV=trend.reduce((s,t)=>s+(t.videos||0),0);
+  el.innerHTML=`<div class="muted" style="margin:.4rem 0 .2rem">📅 每日趋势 · 峰值 ${Math.round(max*10)/10} 分 · 合计 ${Math.round(total*10)/10} 分 / ${sumV} 个视频（柱顶数字=当天分钟）</div>`
+    + '<div class="trendbox">' + trend.map(t=>`<div class="tcol" title="${esc(t.date)}｜${t.videos} 视频｜${t.minutes} 分｜作业 ${t.works} 次">
+        <span class="tval">${t.minutes?Math.round(t.minutes*10)/10:''}</span>
+        <div class="tbar" style="height:${t.minutes?Math.max(4,Math.round(t.minutes/max*100)):2}%"></div>
         <span class="tlbl">${esc(t.date.slice(5))}</span></div>`).join('') + '</div>';
 }
 let PROFILES=[];
@@ -815,13 +820,13 @@ function renderProfiles(){
   const el=document.getElementById('profBody'); if(!el)return;
   if(!PROFILES.length){el.innerHTML='<span class="muted">还没有账号</span>';return;}
   const q=(document.getElementById('profQ')?.value||'').trim().toLowerCase();
-  const rows=PROFILES.filter(p=>!q||[p.label,p.name,p.student_no,p.grade,p.major,p.term]
-    .join(' ').toLowerCase().includes(q));
+  const rows=PROFILES.filter(p=>!q||[p.label,p.name,p.display_name,p.platform_name,
+      p.student_no,p.grade,p.major,p.term].join(' ').toLowerCase().includes(q));
   if(!rows.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的账号</span>';return;}
   el.innerHTML=rows.map(p=>`<div class="profrow">
-      <b style="min-width:132px" title="账号 #${p.account_id}｜平台昵称：${esc(p.platform_name||'未知')}">#${p.account_id} ${esc(p.label)}
-        ${p.source==='platform'?'<span class="b-ok" style="font-size:.7rem">平台</span>':''}</b>
-      <input id="pf_n_${p.account_id}" class="pf pfname" placeholder="姓名" value="${esc(p.name)}">
+      <b style="min-width:150px" title="账号 #${p.account_id}｜备注名：${esc(p.label)}｜平台昵称：${esc(p.platform_name||'未知')}">#${p.account_id} ${esc(p.display_name||p.label)}
+        ${p.source==='platform'?'<span class="b-ok" style="font-size:.7rem">平台</span>':''}${(p.label&&p.display_name&&p.display_name!==p.label)?`<span class="muted" style="font-weight:400">（${esc(p.label)}）</span>`:''}</b>
+      <input id="pf_n_${p.account_id}" class="pf pfname" placeholder="姓名" value="${esc(p.display_name)}">
       <input id="pf_s_${p.account_id}" class="pf" placeholder="学号" value="${esc(p.student_no)}">
       <input id="pf_g_${p.account_id}" class="pf" placeholder="年级" value="${esc(p.grade)}">
       <input id="pf_m_${p.account_id}" class="pf" placeholder="专业" value="${esc(p.major)}">
@@ -829,7 +834,7 @@ function renderProfiles(){
       <button class="minibtn" onclick="saveProfile(${p.account_id})">保存</button>
       <button class="minibtn" title="只读访问一次个人中心，尝试抓取平台上的姓名/学号并回填（不覆盖你已手填的内容）"
         onclick="readProfileFromPlatform(${p.account_id})">⬇ 平台读取</button></div>`).join('')
-      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名留空则卡片显示平台昵称；例：2024123456 / 2024级 / 计算机科学与技术 / 2026秋。学号只用于本地面板识别，不上传</div>';
+      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名框预填“当前生效姓名”（你手填的优先，其次平台昵称）；点『保存』即把框中当前值写回。姓名留空则卡片显示平台昵称。例：2024123456 / 2024级 / 计算机科学与技术 / 2026秋。学号只用于本地面板识别，不上传</div>';
 }
 function saveProfile(id){
   const v=k=>{const el=document.getElementById(`pf_${k}_${id}`);return el?el.value.trim():'';};
@@ -883,7 +888,7 @@ function renderPlans(){
       <button class="minibtn" onclick="togglePlan(${p.id},${p.enabled?0:1})">${p.enabled?'⏸ 停用':'▶ 启用'}</button>
       <button class="minibtn danger" onclick="delPlan(${p.id})">🗑</button></div>`;}).join('');
 }
-let PLANSEL=new Set();   // 主弹窗当前已选账号（新建/编辑共用）
+let PLSEL=new Set();     // 主弹窗当前已选账号（新建/编辑共用）
 let PKSEL=new Set();     // 选择器弹窗内的临时勾选
 let PLBUSY={};           // 已在**其他**启用批次里的账号 → 批次名
 let PLANMODE=null;       // null=新建；否则=正在编辑的批次 id
@@ -913,7 +918,7 @@ function openPlan(planId){
   document.getElementById('pl_course').value=p?p.course_name:'';
   document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
   document.getElementById('planOk').textContent=p?'保存修改':'创建并启用';
-  PLANSEL=new Set(p?p.account_ids:[]);
+  PLSEL=new Set(p?p.account_ids:[]);
   loadPlanBusy();
   renderPicked();
   const names=[...new Set((ACCOUNTS||[]).reduce((s,a)=>s.concat((a.courses||[]).map(c=>c.name)),[]))];
@@ -1059,6 +1064,37 @@ function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
     e_vu.value=until;  // 弹窗内即时刷新有效期
     e_meta.textContent=`已续期，剩余 ${d.days_left} 天（至 ${until}）`;
     reload();});}
+function doLogin(id){
+  const a=ACCOUNTS.find(x=>x.id===id);
+  const who=a?(a.display_name||a.platform_username||a.label):('#'+id);
+  toast('⏳ 正在尝试无头自动登录 '+who+'…');
+  fetch(`/api/accounts/${id}/login`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({manual:false})})
+  .then(r=>r.json()).then(d=>{
+    if(d.ok){toast('✔ 登录成功：'+who+'（会话已保存）');syncRun();loadProfiles();return;}
+    const hint=d.hint?('建议：'+d.hint+'。'):'';
+    if(!confirm('自动登录未成功：'+(d.error||'未知')+'。'+hint+'是否打开浏览器窗口手动完成登录（扫码 / 验证码 / 短信）？'))return;
+    fetch(`/api/accounts/${id}/login`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({manual:true})})
+    .then(r=>r.json()).then(m=>{
+      if(!m.ok){toast('手动登录启动失败：'+(m.error||''),1);return;}
+      toast('🖥 已打开浏览器窗口，请在窗口中完成登录…（完成后自动刷新）');
+      pollLogin(id,Date.now()+180000);
+    }).catch(e=>toast('手动登录启动失败：'+e,1));
+  }).catch(e=>toast('登录请求失败：'+e,1));
+}
+async function pollLogin(id,deadline){
+  while(Date.now()<deadline){
+    await new Promise(r=>setTimeout(r,3000));
+    await syncRun();
+    const a=ACCOUNTS.find(x=>x.id===id);
+    if(a&&a.has_session){
+      toast('✔ 检测到已登录：'+(a.display_name||a.platform_username||a.label)+'（可点『⬇ 平台读取』补画像）');
+      loadProfiles();return;
+    }
+  }
+  toast('未检测到登录成功（窗口是否已关闭 / 超时），请稍后刷新或重试',1);
+}
 let WORK_ACC=null,WORK_CH='';
 function doWork(id,chapter,force=false,qidx=null){
   const a=ACCOUNTS.find(x=>x.id===id); if(!a)return;
@@ -1847,6 +1883,67 @@ def create_app(settings: Settings) -> FastAPI:
             return {**got, "merged": merged, "profile": statsmod.get_profile(conn, account_id)}
         finally:
             conn.close()
+
+    # 无头自动登录失败的转人工原因（面板据此提示"为什么不行 + 怎么办"）
+    _LOGIN_REASON = {
+        "captcha": ("平台要求验证码（无头浏览器无法自动通过）",
+                    "请改用手动登录：会打开一个可见浏览器窗口，你在窗口中过验证码/扫码"),
+        "wrong-password": ("账号或密码错误（平台返回密码错误）",
+                           "请在『✎ 管理』核对/重存账号密码，或先手动登录一次确认"),
+        "budget": ("今日无头自动登录尝试已达上限（2 次/天，安全底线）",
+                   "请改用手动登录，或明天再试"),
+        "no-cred": ("该账号未保存密码，无法无头自动登录",
+                    "请改用手动登录（或用『✎ 管理』重存账号密码后再试自动）"),
+        "unknown": ("自动登录异常或超时（可能网络/风控/登录页选择器变更）",
+                    "请改用手动登录；详情见『📜 日志』页"),
+    }
+
+    @app.post("/api/accounts/{account_id}/login")
+    def account_login_api(account_id: int, body: dict):
+        """账号登录：默认先试无头自动（用已存密码），失败可转手动（可见浏览器）。
+
+        - manual=false：headless 代填登录；返回 ok，或"失败原因 + 建议转人工"。
+        - manual=true：拉起子进程 `xxt login --account N`（有头浏览器），人工扫码/过验证码。
+        成功后会话落 accounts/<id>/state.json；面板再点『⬇ 平台读取』即可补画像。
+        """
+        manual = bool(body.get("manual"))
+        conn = db()
+        try:
+            # 凭据列不在公开列里，单独取（绝不外泄，只在本函数内用于自动登录）
+            creds = conn.execute(
+                "SELECT username_enc, password_enc FROM accounts WHERE id=?", (account_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if creds is None:
+            return {"ok": False, "error": "账号不存在"}
+
+        if manual:
+            proc = _spawn(str(settings.root), "login", "--account", str(account_id))
+            _log_event(account_id, "login-manual", "已打开浏览器窗口等待人工登录")
+            return {"ok": True, "started": True, "pid": proc.pid}
+
+        if not creds["username_enc"]:
+            _log_event(account_id, "login-auto", "无凭据，转人工")
+            reason, hint = _LOGIN_REASON["no-cred"]
+            return {"ok": False, "outcome": "no-cred", "error": reason, "hint": hint}
+        from ..core.accounts import account_state_path
+        from ..core.crypto import master_key
+        from ..session.relogin import auto_relogin
+
+        conn = db()
+        try:
+            outcome = auto_relogin(
+                conn, master_key(settings.data_dir), settings.platform["login_url"],
+                account_state_path(settings, account_id), account_id,
+                creds["username_enc"], creds["password_enc"])
+        finally:
+            conn.close()
+        if outcome == "ok":
+            _log_event(account_id, "login-auto", "无头自动登录成功")
+            return {"ok": True}
+        reason, hint = _LOGIN_REASON.get(outcome, (f"自动登录未成功（{outcome}）", "请改用手动登录"))
+        return {"ok": False, "outcome": outcome, "error": reason, "hint": hint}
 
     @app.post("/api/study/start")
     def study_start(body: dict):
