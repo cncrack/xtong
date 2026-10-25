@@ -2,7 +2,7 @@
 
 > **任何会话 / 任何开发工具接手前，先读本文件。**
 > 本文是"当前状态"的唯一真相；工作约定见 `AGENTS.md`，长期方案见 `docs/PLAN.md`，历史见 `docs/devlog/`。
-> 最近更新：2026-10-25（会话 26：修复异步引擎误用同步 API 导致的会话崩溃 + 子进程日志落盘；测试 52 全绿）
+> 最近更新：2026-10-25（会话 27：修"上一节 watcher 残留事件致 0 秒假完成/误报到末尾"；测试 57 全绿）
 
 ---
 
@@ -26,8 +26,8 @@
 
 ## 3. 交接字段（每次会话收尾必更）
 
-- **进行中**：#1（22:44 重启，新代码）与 #2（21:33 起，运行内存中旧代码）都在刷课。修复了 22:42 的崩溃：异步引擎误用同步 `hardened_context`（`'coroutine' object has no attribute 'add_init_script'`）；#2 未受影响是因为它在改动前启动、进程内仍是旧模块
-- **下一步第一个动作**：观察 #1 连续多个视频无新的 `RuntimeWarning`；下次起会话确认昵称截获生效；等用户拍板"同步版是否统一到异步"（建议保留，见 devlog 24 §5）
+- **进行中**：#1 在刷课（22:44 启动，跑修复前代码）；#2 已停、数据已复原（假记录删除 + 4.2（下）回 pending），按用户要求今晚不跑
+- **下一步第一个动作**：重启 #2 观察是否正常进入 `4.2 正确认识自我（下）`；若再出现"一上来就在末尾"应有明确 warning 而非假记录
 - **阻塞点**：无
 - **等用户**：① 作业全链路实测与判分校准（最优先）② 弹题选择器实况 ③ 指纹加固后的账号异常观察 ④ ≥3 账号并发 ⑤ Docker 实机构建 ⑥ 同步版取舍拍板
 
@@ -44,6 +44,7 @@
 
 | 缺陷 | 根因 | 状态 |
 |---|---|---|
+| 0 秒假完成 + 误报"到末尾"（47 节待学时停掉） | 点"下一节"后旧文档的 watcher tick（3s 一次）残留在事件队列，新一轮 drain 把"上一节 495/495s"当成新视频播完 | ✅ 注入前后清队列 + `core/playback.is_plausible_completion` 可信判定 + "到末尾"改查 `chapters` 表（devlog 27）；被污染数据已复原 |
 | 点开始无反应、进程已死（`coroutine … add_init_script`） | 异步引擎调用**同步版** `hardened_context`：async 下 `browser.new_context()` 返回协程，未 await 就 `.add_init_script()` | ✅ 新增 `async_hardened_context`（devlog 26）；同源的 `username_sniffer` 一并改异步；源码级测试守护 |
 | 子进程 traceback 完全不可见（哑故障放大器） | `_spawn` 把 stdout/stderr 重定向到 `DEVNULL` | ✅ 落盘 `data/logs/sub-<cmd>-<时间>.log` + 强制 UTF-8（devlog 26） |
 | 一个账号崩溃连坐兄弟账号 | `asyncio.TaskGroup` 中子任务未捕获异常会取消其余任务 | ✅ `supervise()` 加 per-account `try/except` + `exc_info=True`（devlog 26） |
@@ -93,6 +94,7 @@ AES-256-GCM 加密（`data/secret.key` 不入库）、无凭据写入代码/日�
 
 | 会话 | 摘要 |
 |---|---|
+| 27 | 修"0 秒假完成：上一节 watcher 残留 tick 被当成新视频播完"——注入前后清事件队列、新增 `core/playback.is_plausible_completion`（需见过真实进度或耗时匹配才记额度）、"到末尾"改查 `chapters` 表；被污染的 1 条假 `video-done` 与 1 个章节状态已复原（57 全绿） |
 | 26 | 修会话崩溃：异步引擎误用同步 `hardened_context`（`coroutine … add_init_script`）；`_spawn` 输出从 DEVNULL 改为落盘 `sub-*.log`（本次排查的最大盲区）；昵称截获改异步处理器；`TaskGroup` 加 per-account 异常兜底（一个号崩不连累兄弟）；源码级测试守护 sync/async 不得混用（52 全绿） |
 | 25 | 账号级额度核查：面板/mlearn/auto 链路本就正确（含"只覆盖一项、另一项跟随全局"）；修 `xxt learn` 漏用账号级额度与时段窗口（`StudyRunner` 增 quota/pace 参数）；端到端实测 #1 设 1 个任务 → 26 秒零访问拦截（49 全绿） |
 | 24 | 每日**时长**额度改跨会话（读 `run_logs` 累计秒数），两次实测：22:13 任务数拦截、22:22 时长拦截，均零平台访问；加日志捞出 P0——`llm.base_url`/`llm.model` 裸串写入被 `json.loads` 丢弃，切 Provider 从来没生效过（48 全绿） |

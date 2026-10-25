@@ -15,6 +15,7 @@ from typing import Any
 
 from ...core.accounts import effective_pace, effective_quota
 from ...core.pace import sample_gap, sample_speed, within_daily_window
+from ...core.playback import is_plausible_completion
 from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
 from ...log import get_logger
 from .study import WATCHER_JS, match_chapter_id
@@ -145,17 +146,28 @@ class AsyncStudyRunner:
         out, self.events = self.events, []
         return out
 
-    async def _play_video(self, page, video_frame, label: str) -> bool:
+    async def _play_video(self, page, video_frame, label: str) -> bool | str:
+        """播放一个视频。返回 True=真播完（可记账）；"already"=平台本就已完成；
+        False=没播成（不记账）。三态区分是 2026-10-25 假 video-done 事故的修法。"""
         from .study import build_watcher_js
 
         rate = sample_speed(self.rng, self.pace)
         js = build_watcher_js(rate)
+        # 队列里可能残留上一节 watcher 的事件：watcher 每 3s 发 tick，点"下一节"后
+        # 旧文档还在发，拟人间隔期间一直往队列里写。不清掉就会把"上一节 495/495s"
+        # 当成新视频已播完 → 0 秒写一条假 video-done 并把章节误标 done
+        # （2026-10-25 账号#2 实证：22:49:53 与 22:50:01 两条记录时长完全相同）。
+        self._drain()
         if await video_frame.evaluate(js) != "ok":
             log.warning("[#%s][%s] watcher 注入失败（跳过）", self.account_id, label)
             return False
+        self._drain()  # 注入瞬间到达的 watcher-ready 等也属"旧状态"，一并丢弃
+        injected = time.monotonic()
         log.info("[#%s][%s] 开始播放：倍速 %.2f", self.account_id, label, rate)
         max_wait, ended, last_report, start = 600, False, 0.0, time.monotonic()
         last_dur = 0
+        saw_progress = False   # 是否见过"明确未播完"的进度（可信播放的必要证据）
+        at_end_streak = 0      # 连续"一上来就在末尾"的 tick 数
         while time.monotonic() - start < max_wait:
             got = self._drain()
             if not got and time.monotonic() - max(self._last_event_at, start) > 90:
@@ -167,14 +179,32 @@ class AsyncStudyRunner:
                 elif t == "quiz-popup":
                     await self._handle_quiz(video_frame, ev)
                 elif t == "tick" and ev.get("dur"):
-                    last_dur = int(ev["dur"])
-                    if ev["cur"] >= ev["dur"] - 0.5:
-                        ended = True
+                    dur, cur = int(ev["dur"]), float(ev["cur"])
+                    last_dur = dur
+                    if cur < dur - 5:
+                        saw_progress = True
+                        at_end_streak = 0
+                    if cur >= dur - 0.5:
+                        at_end_streak += 1
+                        # 只有"确实播过"或"耗时与时长匹配"才算完成，否则视为播放器
+                        # 还没换到新视频（残留状态），继续观察而不是宣布完成。
+                        if is_plausible_completion(
+                                saw_progress=saw_progress,
+                                wall_seconds=time.monotonic() - injected,
+                                duration=dur, rate=rate):
+                            ended = True
                     if time.monotonic() - last_report > 30:
                         last_report = time.monotonic()
-                        log.info("[#%s][%s] 进度 %.0f/%.0fs", self.account_id, label, ev["cur"], ev["dur"])
+                        log.info("[#%s][%s] 进度 %.0f/%.0fs", self.account_id, label, cur, dur)
                         max_wait = min(max_wait, (time.monotonic() - start)
-                                       + (ev["dur"] - ev["cur"]) / rate + 90)
+                                       + (dur - cur) / rate + 90)
+            if at_end_streak >= 5 and not saw_progress:
+                # 约 15 秒（每 3s 一 tick）始终停在末尾且从未见过进度：
+                # 判定"平台侧本来就已完成"，只标章节不记额度，避免额度虚增与死循环。
+                log.warning("[#%s][%s] 一上来就在末尾（%.0fs），判为平台已完成，不记账",
+                            self.account_id, label, last_dur)
+                self._last_video_dur = 0
+                return "already"
             if ended:
                 break
             try:
@@ -274,7 +304,9 @@ class AsyncStudyRunner:
                             if study_start is None:
                                 study_start = time.monotonic()
                             title = await _current_task_title(page) or leaf_name
-                            if await self._play_video(page, video_frame, title):
+                            played = await self._play_video(page, video_frame, title)
+                            cid = match_chapter_id(self.conn, course_row["id"], title)
+                            if played is True:
                                 stats["videos"] += 1
                                 self.conn.execute(
                                     "INSERT INTO run_logs(ts, level, event, detail, account_id)"
@@ -283,11 +315,17 @@ class AsyncStudyRunner:
                                      "video-done",
                                      f"{course_row['name']}｜{title}｜{getattr(self, '_last_video_dur', 0)}s",
                                      self.account_id))
-                                cid = match_chapter_id(self.conn, course_row["id"], title)
                                 if cid is not None:
                                     self.conn.execute(
                                         "UPDATE chapters SET status='done' WHERE id=?", (cid,))
                                 self.conn.commit()
+                            elif played == "already":
+                                # 平台侧本来就已完成：只标章节，不写 video-done（免得额度虚增），
+                                # 也不加视频数——但必须标 done，否则下次又选中它而死循环。
+                                if cid is not None:
+                                    self.conn.execute(
+                                        "UPDATE chapters SET status='done' WHERE id=?", (cid,))
+                                    self.conn.commit()
                         else:
                             no_video_streak += 1
                             log.info("[#%s] 跳过非视频任务点（第 %d 次，如作业/阅读）", self.account_id, no_video_streak)
@@ -324,7 +362,17 @@ class AsyncStudyRunner:
                             if next_frame is None:
                                 break
                     if not clicked:
-                        stats["stop_reason"] = "下一节按钮不可点（重取后仍失败，可能确已到末尾）"
+                        # "没下一节"不等于"课程到头了"：2026-10-25 账号#2 在还有 47 节
+                        # 待学时被误报"确已到末尾"，账号就白白停了一晚。以本地章节表为准。
+                        left = self.conn.execute(
+                            "SELECT COUNT(*) AS c FROM chapters WHERE course_id=?"
+                            " AND status='pending'", (course_row["id"],)).fetchone()["c"]
+                        if left:
+                            stats["stop_reason"] = (
+                                f"下一节按钮不可点（页面未就绪），本地仍有 {left} 节待学"
+                                "——重新启动会话即可继续")
+                        else:
+                            stats["stop_reason"] = "全部章节已学完（无下一节）"
                         break
 
                     gap = sample_gap(self.rng, self.pace)
