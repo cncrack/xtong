@@ -149,12 +149,12 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .pbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.3rem;font-size:.78rem}
 .pbar input[type=text],.pbar input:not([type]){width:180px;padding:.2rem .45rem;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.78rem}
 .pbar .chk{display:flex;gap:.25rem;align-items:center;color:var(--muted);cursor:pointer}
-.trendbox{display:flex;gap:.3rem;align-items:flex-end;height:112px;padding:.3rem .1rem .1rem;
- border-bottom:1px solid var(--line)}
-.tcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
-.tval{font-size:.62rem;color:var(--muted);line-height:1;margin-bottom:.1rem;min-height:.8rem;white-space:nowrap}
-.tbar{width:64%;border-radius:6px 6px 2px 2px;background:var(--grad);min-height:3px;transition:height .3s}
-.tlbl{font-size:.65rem;color:var(--muted);margin-top:.15rem;white-space:nowrap}
+.hbar{display:flex;flex-direction:column;gap:.3rem;margin:.25rem 0 .35rem}
+.hrow{display:flex;align-items:center;gap:.55rem;font-size:.76rem}
+.hd{flex:0 0 46px;color:var(--muted);white-space:nowrap}
+.htrack{flex:1;height:15px;background:var(--bg);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.htrack i{display:block;height:100%;background:var(--grad);border-radius:8px;transition:width .3s}
+.hv{flex:0 0 120px;text-align:right;color:var(--muted);white-space:nowrap}
 .seg{display:inline-flex;gap:.2rem;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:.15rem}
 .segb{background:transparent;border:0;border-radius:8px;padding:.24rem .6rem;font:inherit;font-size:.78rem;
  color:var(--muted);cursor:pointer}
@@ -197,6 +197,9 @@ box-shadow:0 3px 8px rgba(70,80,220,.3)}
 font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink)}
 .minibtn:hover{border-color:var(--accent);color:var(--accent)}
 .minibtn.danger:hover{border-color:var(--bad);color:var(--bad)}
+.minibtn.ghost{opacity:.55;font-weight:400}
+.minibtn.ghost:hover{opacity:1}
+.minibtn.primary{border-color:var(--accent);color:var(--accent);font-weight:700}
 .badge{font-size:.68rem;border-radius:99px;padding:.14rem .6rem;font-weight:700;white-space:nowrap}
 .b-ok{background:#e3f6ec;color:var(--ok)}.b-warn{background:#fdf2df;color:var(--warn)}
 .b-info{background:#e8edff;color:#4353d8}
@@ -433,8 +436,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   </div>
   <div id="pl_picked" class="picked muted">还没有选择账号 —— 点「＋ 选择账号」从列表里挑</div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
-    <button class="primary" id="planOk" onclick="doPlan()">创建并启用</button></div>
-  <div class="hint">批次只管"刷哪门课"，不管"几点开"——开跑仍按各账号的定时/学习窗口错峰。</div>
+    <button class="primary" id="planOk" onclick="doPlan()">创建（默认停用）</button></div>
+  <div class="hint">批次只管"刷哪门课"，不管"几点开"——开跑仍按各账号的定时/学习窗口错峰。新建后默认「已停用」，确认无误再点该批次「▶ 启用」。</div>
 </dialog>
 
 <dialog id="pickDlg"><h3>选择账号</h3>
@@ -611,7 +614,9 @@ function renderAccounts(){
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
       <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
         ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        <button class="minibtn" title="为该账号登录/刷新会话：先试无头自动（用已存密码），失败可转手动扫码/过验证码" onclick="doLogin(${a.id})">🔑 ${a.has_session?'重新登录':'登录'}</button>
+        ${a.has_session
+              ? `<button class="minibtn ghost" title="本账号已登录（无需重新登录）。仅当会话失效时才点此刷新：先无头自动，失败可转手动扫码" onclick="doLogin(${a.id})">🔑 会话</button>`
+              : `<button class="minibtn primary" title="为该账号登录：先试无头自动（用已存密码），失败可转手动扫码/过验证码" onclick="doLogin(${a.id})">🔑 登录</button>`}
         <button class="minibtn" title="批量作业：遍历该账号全部未完成作业按策略执行（单门作业在下方课程列表的作业行里单独处理）"
           onclick="doWorkAll(${a.id})">📝 批量作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
@@ -796,18 +801,19 @@ function goProf(){
   if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
   const q=document.getElementById('profQ'); if(q)q.focus();
 }
-// 趋势：每天一柱，柱高=当天观看分钟；柱顶标注分钟数，悬停看视频/作业明细
+// 趋势：每天一行横向条（条长=当天观看分钟），右侧标分钟/视频数；天数多少都好读
 function renderTrend(trend){
   const el=document.getElementById('statTrend'); if(!el)return;
   if(!trend.length){el.innerHTML='<div class="muted" style="margin:.4rem 0 .2rem">📅 每日趋势：所选范围内还没有数据（换个时间范围，或先刷几节课再看）</div>';return;}
+  const r1=x=>Math.round(x*10)/10;
   const max=Math.max(...trend.map(t=>t.minutes),1);
   const total=trend.reduce((s,t)=>s+(t.minutes||0),0);
   const sumV=trend.reduce((s,t)=>s+(t.videos||0),0);
-  el.innerHTML=`<div class="muted" style="margin:.4rem 0 .2rem">📅 每日趋势 · 峰值 ${Math.round(max*10)/10} 分 · 合计 ${Math.round(total*10)/10} 分 / ${sumV} 个视频（柱顶数字=当天分钟）</div>`
-    + '<div class="trendbox">' + trend.map(t=>`<div class="tcol" title="${esc(t.date)}｜${t.videos} 视频｜${t.minutes} 分｜作业 ${t.works} 次">
-        <span class="tval">${t.minutes?Math.round(t.minutes*10)/10:''}</span>
-        <div class="tbar" style="height:${t.minutes?Math.max(4,Math.round(t.minutes/max*100)):2}%"></div>
-        <span class="tlbl">${esc(t.date.slice(5))}</span></div>`).join('') + '</div>';
+  el.innerHTML=`<div class="muted" style="margin:.4rem 0 .1rem">📅 每日趋势 · 峰值 ${r1(max)} 分 · 合计 ${r1(total)} 分 / ${sumV} 个视频</div>`
+    + '<div class="hbar">' + trend.map(t=>`<div class="hrow" title="${esc(t.date)}｜${t.videos} 视频｜${t.minutes} 分｜作业 ${t.works} 次">
+        <span class="hd">${esc(t.date.slice(5))}</span>
+        <div class="htrack"><i style="width:${t.minutes?Math.max(2,Math.round(t.minutes/max*100)):0}%"></i></div>
+        <span class="hv">${r1(t.minutes)} 分 · ${t.videos} 视频</span></div>`).join('') + '</div>';
 }
 let PROFILES=[];
 function loadProfiles(){
@@ -886,7 +892,7 @@ function renderPlans(){
       <span style="flex:1"></span>
       <button class="minibtn" title="改名/换课程/增删账号（不影响已完成的刷课）" onclick="openPlan(${p.id})">✎ 编辑</button>
       <button class="minibtn" onclick="togglePlan(${p.id},${p.enabled?0:1})">${p.enabled?'⏸ 停用':'▶ 启用'}</button>
-      <button class="minibtn danger" onclick="delPlan(${p.id})">🗑</button></div>`;}).join('');
+      <button class="minibtn danger" onclick="delPlan(${p.id})">🗑 删除</button></div>`;}).join('');
 }
 let PLSEL=new Set();     // 主弹窗当前已选账号（新建/编辑共用）
 let PKSEL=new Set();     // 选择器弹窗内的临时勾选
@@ -917,7 +923,7 @@ function openPlan(planId){
   document.getElementById('pl_name').value=p?p.name:'';
   document.getElementById('pl_course').value=p?p.course_name:'';
   document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
-  document.getElementById('planOk').textContent=p?'保存修改':'创建并启用';
+  document.getElementById('planOk').textContent=p?'保存修改':'创建（默认停用）';
   PLSEL=new Set(p?p.account_ids:[]);
   loadPlanBusy();
   renderPicked();
@@ -1009,7 +1015,7 @@ function doPlan(){
     if(!d.ok){toast('保存失败：'+d.error,1);return;}
     document.getElementById('planDlg').close();loadPlans();
     toast(PLANMODE?`✔ 批次 #${PLANMODE} 已更新（${ids.length} 个账号）`
-                 :`✔ 已创建并启用（${ids.length} 个账号）——到点由定时调度按各账号时间错峰开刷`);
+                 :`✔ 已创建（默认为“已停用”）——点该批次「▶ 启用」后才会到点开刷（${ids.length} 个账号）`);
     PLANMODE=null;});
 }
 function togglePlan(id,en){
@@ -1763,7 +1769,7 @@ def create_app(settings: Settings) -> FastAPI:
             r = planmod.create_plan(conn, str(body.get("name") or ""),
                                     str(body.get("course_name") or ""),
                                     [int(a) for a in (body.get("account_ids") or [])],
-                                    enabled=bool(body.get("enabled", True)))
+                                    enabled=bool(body.get("enabled", False)))
             if r.get("ok"):
                 _log_event(0, "plan-create",
                            f"{body.get('name')}｜{body.get('course_name')}｜"

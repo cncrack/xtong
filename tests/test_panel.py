@@ -48,6 +48,15 @@ class TestPanel(unittest.TestCase):
         self.assertFalse(acc["has_session"])  # 临时目录无 state.json
         self.assertEqual(acc["courses"][0]["total"], 2)
 
+    def test_plan_created_disabled_by_default(self):
+        r = self.client.post("/api/plans", json={
+            "name": "测试批次", "course_name": "测试课", "account_ids": [1]})
+        self.assertTrue(r.json()["ok"])
+        pid = r.json()["id"]
+        plans = self.client.get("/api/plans").json()["plans"]
+        row = next(p for p in plans if p["id"] == pid)
+        self.assertFalse(row["enabled"])  # 新建批次默认不启用，需手动启用
+
     def test_settings_roundtrip(self):
         r = self.client.put("/api/settings", json={
             "quiz_enabled": True, "window_start": "09:30", "window_end": "22:30",
