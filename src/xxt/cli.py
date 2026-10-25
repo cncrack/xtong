@@ -430,6 +430,8 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
 
 
 def cmd_panel(args: argparse.Namespace) -> int:
+    import threading
+
     import uvicorn
 
     from .panel.app import create_app
@@ -438,7 +440,13 @@ def cmd_panel(args: argparse.Namespace) -> int:
     app = create_app(s)
     host = s.raw.get("panel", {}).get("host", "127.0.0.1")
     port = int(s.raw.get("panel", {}).get("port", 8300))
-    print(f"[OK] 面板启动：http://{host}:{port}（Ctrl+C 停止）")
+    url = f"http://{host}:{port}"
+    print(f"[OK] 面板启动：{url}（Ctrl+C 停止）")
+    # exe 双击场景：服务就绪后自动打开默认浏览器
+    if getattr(sys, "frozen", False):
+        import webbrowser
+
+        threading.Timer(2.5, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
 
@@ -660,6 +668,9 @@ def cmd_machine_id(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # exe 双击（无参数）：默认启动面板并自动开浏览器——分发友好
+    if argv is None and not sys.argv[1:]:
+        argv = ["panel"]
     parser = argparse.ArgumentParser(prog="xxt", description="网课自动化学习助手（超星学习通）")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     sub = parser.add_subparsers(dest="command", required=True)
