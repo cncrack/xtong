@@ -53,14 +53,25 @@ def main() -> None:
     print(">> 授权签名密钥已注入构建副本（原源码不动）")
 
     # ② PyArmor 混淆 core/ai（核心策略与 AI 层不可读；适配层壳保留）
+    #    输入必须是【已注入密钥的副本】——若直接用 src/ 原码，注入结果会被覆盖回默认密钥
+    obf_in = BUILD / "obf_in"
+    if obf_in.exists():
+        shutil.rmtree(obf_in)
+    shutil.copytree(APP / "xxt" / "core", obf_in / "core")
+    shutil.copytree(APP / "xxt" / "ai", obf_in / "ai")
     res = subprocess.run([str(VENVPY.parent / ("pyarmor.exe" if sys.platform == "win32" else "pyarmor")),
                           "gen", "-O", str(APP / "xxt"), "-r",
-                          str(ROOT / "src/xxt/core"), str(ROOT / "src/xxt/ai")],
+                          str(obf_in / "core"), str(obf_in / "ai")],
                          cwd=str(ROOT), capture_output=True, text=True)
     if res.returncode != 0:
         print("!! PyArmor 混淆失败（trial 限制？）——回退为仅 PyInstaller 打包\n", res.stdout, res.stderr)
     else:
         print(">> PyArmor 混淆完成（core/ai）")
+        # 混淆产物是加密字节码，PyInstaller 静态分析看不到其 runtime 依赖——
+        # 把 pyarmor_runtime_* 提升到 APP 顶层并显式 hidden-import（否则 exe 启动即崩）
+        for d in list((APP / "xxt").glob("pyarmor_runtime_*")):
+            shutil.move(str(d), APP / d.name)
+        print(">> PyArmor runtime 已提升至构建顶层")
 
     # ③ 入口
     (APP / "run.py").write_text(
@@ -69,8 +80,9 @@ def main() -> None:
     # ④ PyInstaller（playwright 全量收集；onedir=目录启动快 / onefile=单文件便携）
     onefile = "--onefile" in sys.argv
     mode_args = ["--onefile"] if onefile else []
+    hidden = [f"--hidden-import={d.name}" for d in APP.glob("pyarmor_runtime_*")]
     run([str(VENVPY.parent / ("pyinstaller.exe" if sys.platform == "win32" else "pyinstaller")),
-         "--noconfirm", "--clean", "--name", "xxt", *mode_args,
+         "--noconfirm", "--clean", "--name", "xxt", *mode_args, *hidden,
          "--paths", str(APP), "--collect-all", "playwright",
          "--distpath", str(ROOT / "dist"), "--workpath", str(BUILD / "pyi"),
          "--specpath", str(BUILD), str(APP / "run.py")])
