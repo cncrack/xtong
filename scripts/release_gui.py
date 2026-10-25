@@ -181,7 +181,7 @@ if "--selftest" in sys.argv:
 
 root = tk.Tk()
 root.title("发牌器")
-root.geometry("480x340")
+root.geometry("520x640")
 frm = ttk.Frame(root, padding=14)
 frm.pack(fill="both", expand=True)
 
@@ -199,6 +199,8 @@ def load_key():
         _sign_key = Path(p).read_text(encoding="utf-8").strip().encode()
         if len(_sign_key) < 16:
             raise ValueError("文件内容太短，不像是密钥")
+        _key_path[0] = p
+        save_cfg()  # 记住位置（只记路径不记密钥）
     except Exception as e:
         _sign_key = None
         messagebox.showerror("导入失败", str(e))
@@ -247,6 +249,87 @@ def issue():
 
 btn_issue = ttk.Button(frm, text="🎫 生成 xxt.lic", command=issue, state="disabled")
 btn_issue.pack()
+
+
+# ---------- 发牌记录（exe 旁 issuer_records.json，跟发牌器走） ----------
+BASE = Path(sys.executable if getattr(sys, "frozen", False) else __file__).parent
+REC = BASE / "issuer_records.json"
+CFG = BASE / "issuer.cfg"
+
+
+def load_recs():
+    return json.loads(REC.read_text(encoding="utf-8")) if REC.exists() else []
+
+
+def save_recs(rs):
+    REC.write_text(json.dumps(rs, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+recfrm = ttk.LabelFrame(root, text="发牌记录（保存在本程序旁 issuer_records.json）")
+recfrm.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+cols = ("time", "mid_tail", "days", "expire", "key", "note")
+tree = ttk.Treeview(recfrm, columns=cols, show="headings", height=6)
+for c, w, t in zip(cols, (130, 80, 45, 85, 55, 150),
+                   ("签发时间", "机器码尾4", "天数", "到期", "钥匙", "备注")):
+    tree.heading(c, text=t)
+    tree.column(c, width=w)
+tree.pack(fill="both", expand=True, padx=8, pady=6)
+
+
+def refresh_recs():
+    tree.delete(*tree.get_children())
+    for r in load_recs():
+        tree.insert("", "end", values=(r["time"], r["mid_tail"], r["days"], r["expire"], r["key"], r["note"]))
+
+
+def del_rec():
+    sel = tree.selection()
+    if not sel:
+        return
+    v = tree.item(sel[0], "values")
+    save_recs([r for r in load_recs() if not (r["time"] == v[0] and r["mid_tail"] == v[1])])
+    refresh_recs()
+
+
+ttk.Button(recfrm, text="🗑 删除选中记录", command=del_rec).pack(anchor="e", padx=8, pady=(0, 6))
+refresh_recs()
+
+# 记录钩进签牌动作
+_issue_orig = issue
+
+
+def issue_with_record():
+    import time as _t
+    m = mid.get().strip().upper()
+    try:
+        d = int(days.get().strip())
+    except Exception:
+        return _issue_orig()
+    _issue_orig()
+    rs = load_recs()
+    rs.append({"time": _t.strftime("%Y-%m-%d %H:%M"), "mid_tail": m[-4:], "days": d,
+               "expire": _t.strftime("%Y-%m-%d", _t.localtime(_t.time() + d * 86400)),
+               "key": _tag(), "note": note.get().strip()})
+    save_recs(rs)
+    refresh_recs()
+
+
+btn_issue.config(command=issue_with_record)
+
+# ---------- 密钥位置记忆（issuer.cfg 记路径不记密钥；U盘不在则提示重导） ----------
+def save_cfg():
+    CFG.write_text(json.dumps({"key_path": _key_path[0]}), encoding="utf-8")
+
+
+_key_path = [""]
+if CFG.exists():
+    try:
+        p = json.loads(CFG.read_text(encoding="utf-8")).get("key_path", "")
+        if p and Path(p).exists():
+            _sign_key = Path(p).read_text(encoding="utf-8").strip().encode()
+            _key_path[0] = p
+    except Exception:
+        pass
 refresh_key()
 root.mainloop()
 '''
