@@ -90,6 +90,23 @@ def scan_diff(diff: str, needles: list[str]) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
+def run_syntax_check() -> tuple[bool, str]:
+    """全量语法检查（AST 解析，不产生 .pyc）：语法错误必须在 push 前暴露。
+
+    教训（2026-10-25）：login.py 缩进错误因延迟导入 + 无测试覆盖，43 个测试全绿仍漏到分发 exe。
+    """
+    import ast
+
+    bad: list[str] = []
+    for pattern in ("src/**/*.py", "scripts/**/*.py"):
+        for p in sorted(ROOT.glob(pattern)):
+            try:
+                ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
+            except SyntaxError as exc:
+                bad.append(f"{p.relative_to(ROOT)}:{exc.lineno}: {exc.msg}")
+    return not bad, "\n".join(bad)
+
+
 def run_pytest() -> tuple[bool, str]:
     venv_py = ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     py = str(venv_py) if venv_py.exists() else sys.executable
@@ -117,14 +134,21 @@ def main() -> int:
     diff = outgoing_diff()
     p2, warnings = scan_diff(diff, extra_needles())
     problems += p2
-    print(f"[1/3] 敏感扫描: 待审 diff {len(diff)} 字符, 拦截 {len(p2)}, 告警 {len(warnings)}")
+    print(f"[1/4] 敏感扫描: 待审 diff {len(diff)} 字符, 拦截 {len(p2)}, 告警 {len(warnings)}")
     for w in warnings[:5]:
         print(f"      ⚠️ {w}")
 
-    # 3) 测试
+    # 3) 语法检查（AST，覆盖延迟导入模块）
+    syn_ok, syn_tail = run_syntax_check()
+
+    # 4) 测试
     ok, tail = run_pytest()
-    print(f"[2/3] 防护检查: tracked 禁止路径 {'✅ 无' if not bad else '❌ ' + str(bad)}")
-    print(f"[3/3] pytest: {'✅ 通过' if ok else '❌ 失败'}")
+    print(f"[2/4] 防护检查: tracked 禁止路径 {'✅ 无' if not bad else '❌ ' + str(bad)}")
+    print(f"[3/4] 语法检查: {'✅ 通过' if syn_ok else '❌ 失败'}")
+    print(f"[4/4] pytest: {'✅ 通过' if ok else '❌ 失败'}")
+    if not syn_ok:
+        problems.append("语法检查未通过（延迟导入模块也在此暴露）")
+        print("      " + syn_tail.replace("\n", "\n      "))
     if not ok:
         problems.append("pytest 未通过（含环境缺依赖）")
         print("      " + tail.replace("\n", "\n      "))

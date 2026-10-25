@@ -27,7 +27,7 @@ def manual_login(login_url: str, state_path: Path, timeout_s: int = 600) -> bool
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         from ..core.stealth import hardened_context
-    context = hardened_context(browser)
+        context = hardened_context(browser)
         page = context.new_page()
         log.info("浏览器已启动，正在打开登录页：%s", login_url)
         page.goto(login_url)

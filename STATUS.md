@@ -2,7 +2,7 @@
 
 > **任何会话 / 任何开发工具接手前，先读本文件。**
 > 本文是"当前状态"的唯一真相；工作约定见 `AGENTS.md`，长期方案见 `docs/PLAN.md`，历史见 `docs/devlog/`。
-> 最近更新：2026-10-25（会话 20：全面检查 + 状态入口建立）
+> 最近更新：2026-10-25（会话 21：修复 P0-1/P0-2，门禁加固；测试 45 全绿）
 
 ---
 
@@ -18,16 +18,16 @@
 |---|---|---|
 | 主目录 | `E:\xxt` | **唯一开发/提交 main 的目录** |
 | 旧目录 | `E:\code\xxt` | 迁移前副本，用户保留作备用开发（建议切 `dev-alt`，只推自己分支） |
-| venv | `E:\xxt\.venv` | ⚠ 当前 pth 仍指向旧目录，见 P0-2 |
+| venv | `E:\xxt\.venv` | 已修正：pth 指向 `E:\xxt\src`（2026-10-25，见 devlog 21） |
 | 真实数据 | `E:\xxt\data` | 账号/进度/题库/Key **只此一份**，旧目录不得双活 |
 | 面板 | `http://127.0.0.1:8300` | 默认仅本机 |
-| 构建产物 | `dist/`（`xxt.exe`、`portable_issuer.exe`） | ⚠ 现有 exe 含 P0-1，不可分发 |
+| 构建产物 | `dist/`（`xxt.exe`、`portable_issuer.exe`） | ⚠ 现有 exe 构建于 P0-1 修复前，**对外分发前必须重建** |
 | 远端 | `cncrack/xtong`（SSH） | main 共约 150 提交 |
 
 ## 3. 交接字段（每次会话收尾必更）
 
-- **进行中**：无活跃开发（本轮只做检查与文档落盘）
-- **下一步第一个动作**：修 P0-1（`login.py` 缩进）+ P0-2（venv 指向），然后重建 exe
+- **进行中**：无（2 个 P0 已修，测试 45 全绿）
+- **下一步第一个动作**：重建 exe 验证 `login` 恢复；或按用户点名进入 P1 工程债
 - **阻塞点**：无
 - **等用户**：① 作业全链路实测与判分校准（最优先）② 弹题选择器实况 ③ 反检测效果观察 ④ ≥3 账号并发 ⑤ Docker 实机构建
 
@@ -37,8 +37,8 @@
 
 | 编号 | 位置 | 影响 | 状态 |
 |---|---|---|---|
-| P0-1 | `src/xxt/session/login.py:30` 缩进错误 | `xxt login` 必然 `IndentationError`；`dist/xxt.exe`（18:58 构建）与 build 副本均已实证带此缺陷。由提交 `99ea2d3` 引入；因 login 为延迟导入且无测试覆盖，43 个测试全绿仍漏网 | 未修 |
-| P0-2 | `.venv/Lib/site-packages/__editable__.xxt-0.1.0.pth` → `E:\code\xxt\src` | 在 `E:\xxt` 跑 pytest / CLI / `scripts/push_check.py` 实际加载旧目录代码，测试与推送门禁结果不可信 | 未修 |
+| P0-1 | `src/xxt/session/login.py:30` 缩进错误 | `xxt login` 必然 `IndentationError`；`dist/xxt.exe`（18:58 构建）与 build 副本均已实证带此缺陷。由提交 `99ea2d3` 引入；因 login 为延迟导入且无测试覆盖，43 个测试全绿仍漏网 | ✅ 已修（devlog 21）；exe 待重建 |
+| P0-2 | `.venv/Lib/site-packages/__editable__.xxt-0.1.0.pth` → `E:\code\xxt\src` | 在 `E:\xxt` 跑 pytest / CLI / `scripts/push_check.py` 实际加载旧目录代码，测试与推送门禁结果不可信 | ✅ 已修（pth → `E:\xxt\src`），并有测试常驻守护 |
 
 ### P1（工程债，影响承诺兑现或安全边界）
 
@@ -76,6 +76,7 @@ AES-256-GCM 加密（`data/secret.key` 不入库）、无凭据写入代码/日�
 
 | 会话 | 摘要 |
 |---|---|
+| 21 | 修复 P0-1（login 崩溃）/ P0-2（venv 指向）；push_check 增第 3 道语法门禁；新增全模块导入冒烟测试（45 全绿） |
 | 20 | 全面检查：发现 2 个 P0 + P1 清单；建立本状态文件；双目录/分支约定 |
 | 19 | 技术债与待办全面登记（双运行器统一方案 A 已设计待点名） |
 | 18 | 撤销系统环境变量 Key → 加密落库；Key 状态提示改迁移引导 |
