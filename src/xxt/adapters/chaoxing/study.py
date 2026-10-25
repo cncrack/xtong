@@ -119,13 +119,18 @@ class StudyRunner:
     """单账号、单课程的一次学习会话（长会话模式：一次浏览器上下文跑到底）。"""
 
     def __init__(self, settings, state_path: Path, conn, seed: int | None = None,
-                 account_id: int = 1) -> None:
+                 account_id: int = 1, quota: dict[str, Any] | None = None,
+                 pace: dict[str, Any] | None = None) -> None:
         self.settings = settings
         self.state_path = state_path
         self.conn = conn
         self.account_id = account_id
         self.rng = random.Random(seed)
-        self.pace = settings.pace
+        # quota / pace 由调用方传"账号级覆盖后的生效值"（core.accounts.effective_*）。
+        # 2026-10-25 修：此前直接吃 settings.quota/pace，CLI `xxt learn` 因而
+        # 完全忽略账号管理里设的额度与时段窗口（面板/mlearn 走异步版，一直是对的）。
+        self.pace = pace or settings.pace
+        self.quota = quota or settings.quota
         self.events: list[dict[str, Any]] = []
         self._last_event_at = 0.0
         self.focus = FocusTimer(self.rng, self.pace)
@@ -256,7 +261,7 @@ class StudyRunner:
 
         # v0.10 额度口径：账号×天。两项都按"今日已用"扣减（时长取 video-done 累计秒数，
         # 跨会话有效；2026-10-25 起不再用进程内计时，否则重启一次就多一份额度）
-        budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.settings.quota)
+        budget_minutes, budget_tasks = sample_daily_budget(self.rng, self.quota)
         today = time.strftime("%Y-%m-%d")
         rows = self.conn.execute(
             "SELECT detail FROM run_logs WHERE event='video-done' AND account_id=?"

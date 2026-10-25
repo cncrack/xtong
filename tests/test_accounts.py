@@ -109,5 +109,31 @@ class TestAccounts(unittest.TestCase):
         self.assertTrue(acc.find_account(self.conn, "D")["last_expired_at"])
 
 
+class TestRunnerQuotaOverride(unittest.TestCase):
+    """账号级额度/窗口必须能传到引擎（2026-10-25：CLI learn 曾经被漏掉）。"""
+
+    def test_study_runner_accepts_effective_overrides(self):
+        from xxt.adapters.chaoxing.study import StudyRunner
+
+        settings = Settings.__new__(Settings)
+        settings.pace = dict(DEFAULTS["pace"])
+        settings.quota = dict(DEFAULTS["quota"])
+        with tempfile.TemporaryDirectory() as td:
+            conn = connect(Path(td) / "t.db")
+            try:
+                quota = dict(DEFAULTS["quota"], daily_minutes=30, daily_tasks=5)
+                pace = dict(DEFAULTS["pace"], daily_window=["09:00", "10:00"])
+                overridden = StudyRunner(settings, Path(td) / "s.json", conn,
+                                         quota=quota, pace=pace)
+                self.assertEqual(overridden.quota["daily_tasks"], 5)
+                self.assertEqual(overridden.pace["daily_window"], ["09:00", "10:00"])
+                # 不传则回落到全局 settings（其他调用方）
+                plain = StudyRunner(settings, Path(td) / "s.json", conn)
+                self.assertEqual(plain.quota["daily_tasks"],
+                                 DEFAULTS["quota"]["daily_tasks"])
+            finally:
+                conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

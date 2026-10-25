@@ -236,7 +236,16 @@ def cmd_learn(args: argparse.Namespace) -> int:
                 return 1
             course = picks[0]
             print(f"[轮换选课] 今日主学：《{course['name']}》")
-        runner = StudyRunner(s, s.default_state_path, conn)
+        # 账号级覆盖对 CLI 同样生效：learn 固定用 #1 的会话文件，故按 #1 的账号行合并。
+        # 2026-10-25 修：此前 StudyRunner 直接吃 settings.quota/pace，完全忽略账号管理里的设置。
+        from .core.accounts import effective_pace, effective_quota, find_account
+
+        acc_row = find_account(conn, "1")
+        runner = StudyRunner(
+            s, s.default_state_path, conn, account_id=1,
+            quota=effective_quota(s, acc_row) if acc_row else None,
+            pace=effective_pace(s, acc_row) if acc_row else None,
+        )
         stats = runner.run(dict(course), limit=args.limit, ignore_window=args.ignore_window)
         summary = f"学习会话结束：视频 {stats['videos']} 个；原因：{stats['stop_reason'] or '达到 limit'}"
         get_logger("cli").info("%s", summary)
