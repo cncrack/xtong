@@ -24,13 +24,33 @@ def run(cmd: list[str], **kw) -> None:
 
 
 def main() -> None:
-    # ① 组装干净源码树
+    # ① 组装干净源码树（复印式：原项目 src/ 永不改动，一切操作在 build/app 副本）
     if BUILD.exists():
         shutil.rmtree(BUILD)
     APP.mkdir(parents=True)
     shutil.copytree(ROOT / "src" / "xxt", APP / "xxt",
                     ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(ROOT / "config" / "settings.toml", BUILD / "settings.toml.template")
+
+    # ①b 授权密钥注入：本机 data/lic_sign.key（无则生成随机）→ 写入副本 licensing.py
+    #    原源码保持默认值；密钥文件本机保管（不入库），make_lic.py 同源读取。
+    import secrets
+
+    key_file = ROOT / "data" / "lic_sign.key"
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    if key_file.exists():
+        sign_key = key_file.read_text(encoding="utf-8").strip()
+    else:
+        sign_key = secrets.token_hex(32)
+        key_file.write_text(sign_key, encoding="utf-8")
+        print(f">> 已生成本机签名密钥：{key_file}（请备份，丢失将无法续发 lic）")
+    lic_src = APP / "xxt" / "core" / "licensing.py"
+    lic_src.write_text(
+        lic_src.read_text(encoding="utf-8").replace(
+            b"xxt-default-lic-key-CHANGE-ME-2026".decode(),
+            sign_key),
+        encoding="utf-8")
+    print(">> 授权签名密钥已注入构建副本（原源码不动）")
 
     # ② PyArmor 混淆 core/ai（核心策略与 AI 层不可读；适配层壳保留）
     res = subprocess.run([str(VENVPY.parent / ("pyarmor.exe" if sys.platform == "win32" else "pyarmor")),

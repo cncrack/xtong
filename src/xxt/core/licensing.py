@@ -17,7 +17,9 @@ import subprocess
 import time
 from pathlib import Path
 
-# 分发方签名密钥（构建时请自行更换为新随机串——保持私密）
+# 分发方签名密钥：默认值仅自用/评估——正式分发前用 scripts/build_exe.py 构建时会自动
+# 生成随机密钥并注入构建副本（data/lic_sign.key 保存于本机，不入库不进 git），
+# scripts/make_lic.py 读同一密钥发牌；原项目源码保持默认值不动（复印式隔离）。
 _SIGN_KEY = b"xxt-default-lic-key-CHANGE-ME-2026"
 
 
