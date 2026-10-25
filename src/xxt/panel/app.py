@@ -458,7 +458,7 @@ function loadSettings(){
     s_lkeyv.value='';s_lkeyv.dataset.hasKey=(window.LLM_KEY_STORED||d.llm_key_env_set)?'1':'0';    window.LLM_NAME=d.llm_provider_name||'Agnès';
     window.LLM_KEY_STORED=!!d.llm_key_stored;
     window.LLM_KEY_ENV=!!d.llm_key_env_set;
-    const hint=d.llm_key_stored?'✓ Key 已加密存本机':(d.llm_key_env_set?'✓ Key 来自环境变量':'⚠ 未配置 Key——下方粘贴后点保存');
+    const hint=d.llm_key_stored?'✓ Key 已加密保存，可直接使用':(d.llm_key_env_set?'⚠ Key 仅在环境变量（旧方式，建议粘贴到上方保存为加密存储）':'⚠ 未配置 Key——下方粘贴后点保存');
     const h2=document.getElementById('s_lhint2'); if(h2)h2.textContent=hint;
     renderProviders();
     window.QUIZ=d;});
@@ -485,7 +485,7 @@ function renderProviders(){
   if(s){
     const keyStat=window.LLM_KEY_STORED
       ?'✓ Key 已加密保存，可直接使用'
-      :(window.LLM_KEY_ENV?'✓ Key 来自环境变量，可直接使用':'⚠ 尚无可用 Key——粘贴 Key 后点保存');
+      :(window.LLM_KEY_ENV?'⚠ Key 仅在环境变量（旧方式）——建议粘贴保存为加密存储':'⚠ 尚无可用 Key——粘贴 Key 后点保存');
     s.innerHTML=`当前使用：<b style="color:var(--accent)">${esc(PROV.current)}</b>`+
       (cur?`（${esc(cur.base_url)} / ${esc(cur.model)}）`:'')+`<br>${keyStat}`+
       (PROV.current===document.getElementById('s_lname').value.trim()
