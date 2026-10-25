@@ -15,10 +15,11 @@ class TestPlans(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = connect(Path(self.tmp.name) / "t.db")
-        for label in ("甲", "乙", "丙"):
+        self.conn.execute("DELETE FROM accounts")  # connect() 会种一个 default 账号
+        for aid, label in ((1, "甲"), (2, "乙"), (3, "丙")):
             self.conn.execute(
-                "INSERT INTO accounts(label, status, created_at, priority)"
-                " VALUES(?, 'active', datetime('now'), 1.0)", (label,))
+                "INSERT INTO accounts(id, label, status, created_at, priority)"
+                " VALUES(?, ?, 'active', datetime('now'), 1.0)", (aid, label))
         self.conn.commit()
 
     def tearDown(self):

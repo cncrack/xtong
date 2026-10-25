@@ -113,6 +113,13 @@ box-shadow:inset 0 1px 3px rgba(0,0,0,.12)}
 background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);transition:.15s}
 .btn:hover{background:rgba(255,255,255,.34);transform:translateY(-1px)}
 .toolbar{display:flex;align-items:center;gap:.7rem;margin:1.05rem 0 .85rem;flex-wrap:wrap}
+.viewbar{display:flex;align-items:center;gap:.6rem;margin:1.05rem 0 .85rem;flex-wrap:wrap}
+.vtabs{display:flex;gap:.25rem;background:rgba(255,255,255,.5);border:1px solid var(--line);border-radius:12px;padding:.22rem}
+.vtab{background:transparent;border:0;border-radius:9px;padding:.36rem .85rem;font:inherit;font-size:.86rem;
+ color:var(--muted);cursor:pointer;transition:.15s}
+.vtab:hover{color:var(--ink)}
+.vtab.active{background:var(--card);color:var(--ink);font-weight:700;box-shadow:0 1px 4px rgba(30,36,52,.12)}
+.vtab b{font-weight:600;color:var(--accent);margin-left:.25rem;font-size:.78rem}
 .batch{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.65rem .85rem;margin-bottom:.9rem}
 .bhead{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;font-size:.85rem}
 .bhead .spacer{flex:1}
@@ -120,6 +127,17 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .prow:first-child{border-top:0}
 .paccs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.3rem .8rem;max-height:220px;overflow:auto;margin-top:.3rem}
 .paccs label{font-size:.8rem;display:flex;gap:.35rem;align-items:center}
+.seg{display:inline-flex;gap:.2rem;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:.15rem}
+.segb{background:transparent;border:0;border-radius:8px;padding:.24rem .6rem;font:inherit;font-size:.78rem;
+ color:var(--muted);cursor:pointer}
+.segb.on{background:var(--card);color:var(--ink);font-weight:700}
+.bar{height:8px;border-radius:6px;background:var(--grad);min-width:2px}
+.statrow{display:grid;grid-template-columns:minmax(90px,1.2fr) 4fr 46px 60px 60px;gap:.5rem;
+ align-items:center;padding:.3rem 0;border-bottom:1px dashed var(--line);font-size:.8rem}
+.statrow b{font-weight:600}
+.profrow{display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;padding:.3rem 0;
+ border-bottom:1px dashed var(--line);font-size:.8rem}
+.profrow input{width:110px;padding:.18rem .4rem;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.78rem}
 .toolbar .muted{font-size:.85rem}
 #synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
 .flash{animation:flash 1.2s ease}
@@ -248,21 +266,61 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <button class="btn" id="autoBtn" title="定时调度：各账号每天在设定/随机的时刻自动开刷（额度内自停）" onclick="toggleAuto()">⏱ 定时调度</button>
   <button class="btn" title="全局设置：弹题开关/学习窗口/每日双额度（账号可在✎管理里单独覆盖）" onclick="document.getElementById('dlg').showModal()">⚙ 设置</button>
 </div>
-<div class="toolbar">
-  <select id="psize"><option value="10">每页 10 张</option><option value="20" selected>每页 20 张</option><option value="50">每页 50 张</option></select>
-  <span class="muted" id="accInfo"></span>
+<div class="viewbar">
+  <div class="vtabs">
+    <button class="vtab active" data-view="accounts" onclick="switchView('accounts')"
+      title="每个账号一张卡：额度、课程、作业与刷课控制">📇 账号卡片<b id="vtabAccN"></b></button>
+    <button class="vtab" data-view="plans" onclick="switchView('plans')"
+      title="把某门课一次性排给多个账号；开跑时间仍按各账号定时/窗口错峰">📚 批次<b id="vtabPlanN"></b></button>
+    <button class="vtab" data-view="stats" onclick="switchView('stats')"
+      title="按年级/专业/学期/账号统计刷课战果（数据来源：本地日志，不访问平台）">📈 统计</button>
+  </div>
+  <span style="flex:1"></span>
   <span id="synced">自动刷新中…</span>
 </div>
-<section class="batch">
-  <div class="bhead"><b>📚 批次</b>
-    <span class="muted">统一指定课程；开跑时间仍按各账号自己的定时/窗口错峰（不会同时开刷，也不会重复多开）</span>
-    <span class="spacer"></span>
-    <button class="minibtn" title="把某门课一次性排给多个账号" onclick="openPlan()">＋ 新建批次</button>
+<div id="viewAccounts">
+  <div class="toolbar">
+    <select id="psize"><option value="10">每页 10 张</option><option value="20" selected>每页 20 张</option><option value="50">每页 50 张</option></select>
+    <span class="muted" id="accInfo"></span>
   </div>
-  <div id="planList" class="muted" style="font-size:.8rem">加载中…</div>
-</section>
-<div class="grid" id="accounts"><div class="card muted">加载中…</div></div>
-<div class="pager" id="pager"></div>
+  <div class="grid" id="accounts"><div class="card muted">加载中…</div></div>
+  <div class="pager" id="pager"></div>
+</div>
+<div id="viewPlans" style="display:none">
+  <section class="batch">
+    <div class="bhead"><b>📚 批次</b>
+      <span class="muted">统一指定课程；开跑时间仍按各账号自己的定时/窗口错峰（不会同时开刷，也不会重复多开）</span>
+      <span class="spacer"></span>
+      <button class="minibtn" title="把某门课一次性排给多个账号" onclick="openPlan()">＋ 新建批次</button>
+    </div>
+    <div id="planList" class="muted" style="font-size:.8rem">加载中…</div>
+  </section>
+</div>
+<div id="viewStats" style="display:none">
+  <section class="batch">
+    <div class="bhead"><b>📈 学习统计</b>
+      <span class="muted">数据全部来自本地日志（不访问平台）；口径与额度一致：视频数 / 观看分钟</span>
+      <span class="spacer"></span>
+      <span class="seg" id="statBy">
+        <button class="segb on" data-by="grade" onclick="setStatBy('grade')">年级</button>
+        <button class="segb" data-by="major" onclick="setStatBy('major')">专业</button>
+        <button class="segb" data-by="term" onclick="setStatBy('term')">学期</button>
+        <button class="segb" data-by="account" onclick="setStatBy('account')">账号</button>
+      </span>
+      <select id="statDays" onchange="loadStats()">
+        <option value="1">今日</option><option value="7" selected>最近 7 天</option>
+        <option value="30">最近 30 天</option><option value="0">全部</option>
+      </select>
+    </div>
+    <div id="statBody" class="muted" style="font-size:.82rem">加载中…</div>
+  </section>
+  <section class="batch">
+    <div class="bhead"><b>🏷 画像设置</b>
+      <span class="muted">填了年级/专业/学期后，「统计」才能按这些维度分组；留空归入「未标注」</span>
+    </div>
+    <div id="profBody" class="muted" style="font-size:.82rem">加载中…</div>
+  </section>
+</div>
 <section><h2>最近日志 <span class="muted" style="font-weight:400;font-size:.75rem">（全部动态已存档于 data/logs/xxt.log 与数据库）</span></h2>
 <div id="logs" class="muted">加载中…</div>
 <div style="text-align:center;margin-top:.6rem">
@@ -385,6 +443,7 @@ function renderAccounts(){
   const pages=Math.max(1,Math.ceil(list.length/ps)); PAGE=Math.min(PAGE,pages);
   const slice=list.slice((PAGE-1)*ps,PAGE*ps);
   document.getElementById('accN').textContent=ACCOUNTS.length;
+  document.getElementById('vtabAccN').textContent=ACCOUNTS.length?String(ACCOUNTS.length):'';
   document.getElementById('accInfo').textContent=`匹配 ${list.length} 个账号 · 第 ${PAGE}/${pages} 页`;
   document.getElementById('accounts').innerHTML=slice.map(({a,hits})=>{
     const status=a.status==='active'?'b-ok':'b-warn';
@@ -595,10 +654,71 @@ function doAdd(){
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
 let PLANS=[];
+// 视图切换（2026-10-26：批次原先压在账号卡片上方，占位又挡视线 → 改成标签页；
+// 选择记在 localStorage，刷新/重开面板后停在上次看的页）
+let VIEW=(()=>{try{return localStorage.getItem('xxt.view')||'accounts';}catch(e){return 'accounts';}})();
+function switchView(v){
+  VIEW=v; try{localStorage.setItem('xxt.view',v);}catch(e){}
+  const a=document.getElementById('viewAccounts'), p=document.getElementById('viewPlans'),
+        s=document.getElementById('viewStats');
+  if(a)a.style.display=(v==='accounts'?'':'none');
+  if(p)p.style.display=(v==='plans'?'':'none');
+  if(s)s.style.display=(v==='stats'?'':'none');
+  document.querySelectorAll('.vtab').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
+  if(v==='plans')renderPlans();
+  if(v==='stats'){loadStats();loadProfiles();}
+}
+// ---- 统计（数据可视页）----
+let STATBY='grade';
+function setStatBy(b){
+  STATBY=b;
+  document.querySelectorAll('#statBy .segb').forEach(x=>x.classList.toggle('on',x.dataset.by===b));
+  loadStats();
+}
+function loadStats(){
+  const days=+document.getElementById('statDays').value;
+  fetch(`/api/stats?by=${STATBY}&days=${days}`).then(r=>r.json()).then(d=>{
+    const el=document.getElementById('statBody');
+    if(!d.ok){el.innerHTML='<span class="muted">统计失败：'+esc(d.error||'')+'</span>';return;}
+    if(!d.rows.length){el.innerHTML='<span class="muted">这段时间还没有刷课记录（'+esc(d.since)+' 起）</span>';return;}
+    const max=Math.max(...d.rows.map(r=>r.minutes),1);
+    el.innerHTML=
+      `<div class="muted" style="margin:.35rem 0 .2rem">按「${esc(d.by_name)}」分组 · 范围 ${esc(d.since)} 起 · 合计 ${d.total.accounts} 个账号 / ${d.total.videos} 个视频 / ${d.total.minutes} 分钟 / 作业 ${d.total.works} 次</div>`
+      + d.rows.map(r=>`<div class="statrow"><b title="${esc(r.key)}">${esc(r.key)}</b>
+          <div class="bar" style="width:${Math.max(2,Math.round(r.minutes/max*100))}%"></div>
+          <span>${r.accounts} 号</span><span>${r.videos} 视频</span><span>${r.minutes} 分</span></div>`).join('')
+      + `<div class="muted" style="margin-top:.35rem;font-size:.75rem">条长 = 观看时长占比（作业次数不在条上）</div>`;
+  }).catch(e=>{document.getElementById('statBody').textContent='统计加载失败：'+e;});
+}
+function loadProfiles(){
+  fetch('/api/profiles').then(r=>r.json()).then(d=>{
+    const el=document.getElementById('profBody');
+    if(!d.ok){el.textContent='画像加载失败';return;}
+    if(!d.profiles.length){el.innerHTML='<span class="muted">还没有账号</span>';return;}
+    el.innerHTML=d.profiles.map(p=>`<div class="profrow">
+      <b style="min-width:120px">#${p.account_id} ${esc(p.label)}</b>
+      <input id="pf_g_${p.account_id}" class="pf" placeholder="年级" value="${esc(p.grade)}">
+      <input id="pf_m_${p.account_id}" class="pf" placeholder="专业" value="${esc(p.major)}">
+      <input id="pf_t_${p.account_id}" class="pf" placeholder="学期" value="${esc(p.term)}">
+      <button class="minibtn" onclick="saveProfile(${p.account_id})">保存</button></div>`).join('')
+      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">例：2024级 / 计算机科学与技术 / 2026秋</div>';
+  });
+}
+function saveProfile(id){
+  const v=k=>document.getElementById(`pf_${k}_${id}`).value.trim();
+  fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({account_id:id,grade:v('g'),major:v('m'),term:v('t')})})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('保存失败：'+d.error);return;}
+    loadStats();loadProfiles();});
+}
 function loadPlans(){
   fetch('/api/plans').then(r=>r.json()).then(d=>{PLANS=d.plans||[];renderPlans();});}
 function renderPlans(){
   const el=document.getElementById('planList'); if(!el)return;
+  const on=PLANS.filter(p=>p.enabled).length;
+  const cnt=document.getElementById('vtabPlanN');
+  if(cnt)cnt.textContent=PLANS.length?`${on}/${PLANS.length}`:'';
   if(!PLANS.length){el.innerHTML='<span class="muted">暂无批次 —— 想把同一门课一次性排给多个账号，点右上「＋ 新建批次」</span>';return;}
   el.innerHTML=PLANS.map(p=>{
     const accs=p.account_ids.map(id=>{const a=(ACCOUNTS||[]).find(x=>x.id===id);
@@ -768,9 +888,11 @@ function doSave(){fetch('/api/accounts/'+EDIT.id,{method:'PUT',
 function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度数据保留'))return;
   fetch('/api/accounts/'+EDIT.id,{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
-document.getElementById('q').addEventListener('input',()=>{PAGE=1;renderAccounts();});
+document.getElementById('q').addEventListener('input',()=>{PAGE=1;
+  if(VIEW!=='accounts')switchView('accounts');  // 搜索只作用于账号卡片，自动切回
+  renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
-renderLogs();loadSettings();loadProviders();loadPlans();syncRun();setInterval(()=>{syncRun();loadPlans();},15000);
+renderLogs();loadSettings();loadProviders();loadPlans();switchView(VIEW);syncRun();setInterval(()=>{syncRun();loadPlans();},15000);
 </script></body></html>"""
 
 
@@ -1376,6 +1498,42 @@ def create_app(settings: Settings) -> FastAPI:
             planmod.delete_plan(conn, plan_id)
             _log_event(0, "plan-delete", f"#{plan_id}")
             return {"ok": True}
+        finally:
+            conn.close()
+
+    # ---------- 统计（数据可视页：按年级/专业/学期/账号聚合） ----------
+
+    @app.get("/api/stats")
+    def stats_api(by: str = "grade", days: int = 7):
+        from ..core import stats as statsmod
+
+        conn = db()
+        try:
+            return statsmod.aggregate(conn, by=by, days=days)
+        finally:
+            conn.close()
+
+    @app.get("/api/profiles")
+    def profiles_api():
+        from ..core import stats as statsmod
+
+        conn = db()
+        try:
+            return {"ok": True, "profiles": statsmod.list_profiles(conn)}
+        finally:
+            conn.close()
+
+    @app.post("/api/profiles")
+    def profiles_set_api(body: dict):
+        from ..core import stats as statsmod
+
+        conn = db()
+        try:
+            r = statsmod.set_profile(conn, int(body.get("account_id") or 0),
+                                     grade=str(body.get("grade") or ""),
+                                     major=str(body.get("major") or ""),
+                                     term=str(body.get("term") or ""))
+            return r
         finally:
             conn.close()
 

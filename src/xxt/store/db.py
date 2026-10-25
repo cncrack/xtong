@@ -131,6 +131,15 @@ CREATE TABLE IF NOT EXISTS plan_accounts (
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     PRIMARY KEY (plan_id, account_id)
 );
+-- 账号画像（2026-10-26 用户要求统计能按"年级/专业/开学期"分组）：
+-- 单独成列而不是塞进 note，否则没法按维度聚合。
+CREATE TABLE IF NOT EXISTS account_profiles (
+    account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    grade      TEXT,
+    major      TEXT,
+    term       TEXT,
+    updated_at TEXT
+);
 """
 
 
