@@ -22,49 +22,89 @@ UNSET = "未标注"
 
 
 def get_profile(conn: sqlite3.Connection, account_id: int) -> dict[str, Any]:
+    """画像。`name` 是手填姓名（空则前端回退到平台昵称），`platform_name` 只读。"""
+    plt = conn.execute("SELECT platform_username FROM accounts WHERE id=?",
+                       (account_id,)).fetchone()
+    platform_name = (plt["platform_username"] or "") if plt else ""
     row = conn.execute(
-        "SELECT student_no, grade, major, term, source FROM account_profiles"
+        "SELECT name, student_no, grade, major, term, source FROM account_profiles"
         " WHERE account_id=?", (account_id,)).fetchone()
+    base = {"account_id": account_id, "name": "", "platform_name": platform_name,
+            "student_no": "", "grade": "", "major": "", "term": "", "source": ""}
     if row is None:
-        return {"account_id": account_id, "student_no": "", "grade": "", "major": "",
-                "term": "", "source": ""}
-    return {"account_id": account_id, "student_no": row["student_no"] or "",
-            "grade": row["grade"] or "", "major": row["major"] or "",
-            "term": row["term"] or "", "source": row["source"] or ""}
+        base["display_name"] = platform_name
+        return base
+    out = {**base, "name": row["name"] or "", "student_no": row["student_no"] or "",
+           "grade": row["grade"] or "", "major": row["major"] or "",
+           "term": row["term"] or "", "source": row["source"] or ""}
+    out["display_name"] = out["name"] or platform_name
+    return out
 
 
-def set_profile(conn: sqlite3.Connection, account_id: int, *, student_no: str = "",
-                grade: str = "", major: str = "", term: str = "",
-                source: str = "manual") -> dict[str, Any]:
+def set_profile(conn: sqlite3.Connection, account_id: int, *, name: str = "",
+                student_no: str = "", grade: str = "", major: str = "",
+                term: str = "", source: str = "manual") -> dict[str, Any]:
     """写入/更新画像（留空即清空该维度，统计里会归入"未标注"）。"""
     if conn.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
         return {"ok": False, "error": f"账号 #{account_id} 不存在"}
     conn.execute(
-        "INSERT INTO account_profiles(account_id, student_no, grade, major, term,"
-        " source, updated_at) VALUES(?,?,?,?,?,?,datetime('now'))"
-        " ON CONFLICT(account_id) DO UPDATE SET student_no=excluded.student_no,"
-        " grade=excluded.grade, major=excluded.major, term=excluded.term,"
-        " source=excluded.source, updated_at=excluded.updated_at",
-        (account_id, (student_no or "").strip() or None,
+        "INSERT INTO account_profiles(account_id, name, student_no, grade, major, term,"
+        " source, updated_at) VALUES(?,?,?,?,?,?,?,datetime('now'))"
+        " ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,"
+        " student_no=excluded.student_no, grade=excluded.grade, major=excluded.major,"
+        " term=excluded.term, source=excluded.source, updated_at=excluded.updated_at",
+        (account_id, (name or "").strip() or None,
+         (student_no or "").strip() or None,
          (grade or "").strip() or None, (major or "").strip() or None,
          (term or "").strip() or None, source or "manual"))
     conn.commit()
     return {"ok": True, **get_profile(conn, account_id)}
 
 
+def merge_platform_profile(conn: sqlite3.Connection, account_id: int,
+                           data: dict[str, Any]) -> dict[str, Any]:
+    """把平台读到的画像**只补空、不覆盖手填**。
+
+    用户手改过的姓名/学号是他自己确认过的真值，平台值（可能旧/错）不得悄悄覆盖。
+    返回 `{"ok", "filled": [...], "skipped": [...]}`；有任何字段来自平台则标 source=platform。
+    """
+    if conn.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
+        return {"ok": False, "error": f"账号 #{account_id} 不存在"}
+    cur = get_profile(conn, account_id)
+    filled, skipped = [], []
+    merged = {"name": cur["name"], "student_no": cur["student_no"],
+              "grade": cur["grade"], "major": cur["major"], "term": cur["term"]}
+    for field in ("name", "student_no", "grade", "major", "term"):
+        val = (data.get(field) or "").strip()
+        if not val:
+            continue
+        if merged[field]:
+            skipped.append(field)
+        else:
+            merged[field] = val
+            filled.append(field)
+    if not filled:
+        return {"ok": True, "filled": [], "skipped": skipped}
+    res = set_profile(conn, account_id, source="platform", **merged)
+    return {"ok": res.get("ok", False), "filled": filled, "skipped": skipped,
+            "error": res.get("error"), "profile": res}
+
+
 def list_profiles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """全部账号 + 画像（未填的返回空串，前端可直接编辑）。"""
     out = []
     for r in conn.execute(
-            "SELECT a.id, a.label, a.status, a.platform_username, p.student_no,"
+            "SELECT a.id, a.label, a.status, a.platform_username, p.name, p.student_no,"
             " p.grade, p.major, p.term, p.source"
             " FROM accounts a LEFT JOIN account_profiles p ON p.account_id = a.id"
             " ORDER BY a.id"):
+        name, student_no = r["name"] or "", r["student_no"] or ""
+        platform_name = r["platform_username"] or ""
         out.append({"account_id": r["id"], "label": r["label"], "status": r["status"],
-                    "name": r["platform_username"] or "",
-                    "student_no": r["student_no"] or "", "grade": r["grade"] or "",
-                    "major": r["major"] or "", "term": r["term"] or "",
-                    "source": r["source"] or ""})
+                    "name": name, "platform_name": platform_name,
+                    "display_name": name or platform_name, "student_no": student_no,
+                    "grade": r["grade"] or "", "major": r["major"] or "",
+                    "term": r["term"] or "", "source": r["source"] or ""})
     return out
 
 
@@ -104,8 +144,11 @@ def aggregate(conn: sqlite3.Connection, *, by: str = "grade", days: int = 7,
         else:
             key = (prof.get(by) or "").strip() or UNSET
         if ql:
+            # 关键字命中：维度值 / 备注 / 姓名（手填或平台昵称）/ 学号
             hay = " ".join([key, str(prof.get("label") or ""),
+                            str(prof.get("display_name") or ""),
                             str(prof.get("name") or ""),
+                            str(prof.get("platform_name") or ""),
                             str(prof.get("student_no") or "")]).lower()
             if ql not in hay:
                 continue

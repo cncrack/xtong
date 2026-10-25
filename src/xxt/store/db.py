@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS plan_accounts (
 -- 单独成列而不是塞进 note，否则没法按维度聚合。
 CREATE TABLE IF NOT EXISTS account_profiles (
     account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    name       TEXT,
     student_no TEXT,
     grade      TEXT,
     major      TEXT,
@@ -169,7 +170,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     if "account_id" not in lcols:
         conn.execute("ALTER TABLE run_logs ADD COLUMN account_id INTEGER DEFAULT 1")
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(account_profiles)")}
-    for name, decl in (("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
+    for name, decl in (("name", "TEXT"),            # 姓名（默认取平台昵称，可手改）
+                       ("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
                        ("grade", "TEXT"), ("major", "TEXT"), ("term", "TEXT"),
                        ("source", "TEXT")):          # source: manual | platform
         if name not in pcols:

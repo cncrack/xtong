@@ -125,6 +125,22 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .bhead .spacer{flex:1}
 .bhead input{width:190px;padding:.22rem .5rem;border:1px solid var(--line);border-radius:9px;
  font:inherit;font-size:.78rem;background:var(--bg)}
+.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);opacity:0;
+ background:rgba(38,150,90,.96);color:#fff;padding:.5rem 1rem;border-radius:11px;
+ font-size:.85rem;box-shadow:0 6px 22px rgba(0,0,0,.18);pointer-events:none;z-index:99;
+ transition:opacity .18s,transform .18s}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast.bad{background:rgba(190,60,60,.96)}
+.picked{display:flex;flex-direction:column;gap:.2rem;max-height:150px;overflow:auto;
+ margin:.3rem 0;font-size:.8rem}
+.picked .pkrow{display:flex;align-items:center;gap:.4rem;background:var(--bg);
+ border:1px solid var(--line);border-radius:9px;padding:.2rem .45rem}
+.picked .pkrow b{font-weight:600}
+.picked .pkrow .x{margin-left:auto;cursor:pointer;color:var(--muted);font-weight:700;
+ padding:0 .25rem}
+.picked .pkrow .x:hover{color:#c0392b}
+.pbar select{padding:.2rem .4rem;border:1px solid var(--line);border-radius:8px;
+ font:inherit;font-size:.78rem;background:var(--bg)}
 .prow{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.35rem 0;border-top:1px dashed var(--line);font-size:.8rem}
 .prow:first-child{border-top:0}
 .paccs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.3rem .8rem;max-height:220px;overflow:auto;margin-top:.3rem}
@@ -150,6 +166,7 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .profrow{display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;padding:.3rem 0;
  border-bottom:1px dashed var(--line);font-size:.8rem}
 .profrow input{width:110px;padding:.18rem .4rem;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.78rem}
+.profrow .pfname{width:88px}
 .toolbar .muted{font-size:.85rem}
 #synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
 .flash{animation:flash 1.2s ease}
@@ -349,7 +366,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <div class="bhead"><b>📜 日志</b>
       <span class="muted">全部动态已存档于 data/logs/xxt.log 与数据库；本页只读本地记录，不访问平台</span>
       <span class="spacer"></span>
-      <select id="logAcc" onchange="renderLogs()"><option value="">全部账号</option></select>
+      <select id="logAcc" onchange="renderLogs()"><option value="">全部账号（不筛选）</option></select>
       <select id="logN" onchange="renderLogs(+this.value)">
         <option value="20" selected>最近 20 条</option>
         <option value="50">最近 50 条</option>
@@ -404,21 +421,35 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
 </dialog>
 
-<dialog id="planDlg"><h3>📚 新建批次</h3>
+<dialog id="planDlg"><h3 id="planTitle">📚 新建批次</h3>
   <div class="frow"><label>批次名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
   <div class="frow"><label>课程名</label><input type="text" id="pl_course" style="width:240px" list="pl_courses" placeholder="填该账号课程列表里的课名"></div>
-  <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label></div>
-  <div class="pbar">
-    <input id="pl_q" placeholder="🔍 搜姓名/备注/学号" oninput="renderPlanAccs()">
-    <label class="chk"><input type="checkbox" id="pl_onlyfree" checked onchange="renderPlanAccs()">只看未排</label>
-    <button class="minibtn" onclick="planSelectAll(1)">全选可见</button>
-    <button class="minibtn" onclick="planSelectAll(0)">清空</button>
+  <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label>
+    <span style="flex:1"></span>
+    <button class="minibtn" title="打开账号选择器：可按姓名/备注/学号搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
+    <button class="minibtn" onclick="clearPicked()">清空</button>
     <span class="muted" id="pl_count">已选 0 个</span>
   </div>
-  <div id="pl_accs" class="paccs"></div>
+  <div id="pl_picked" class="picked muted">还没有选择账号 —— 点「＋ 选择账号」从列表里挑</div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
-    <button class="primary" onclick="doPlan()">创建并启用</button></div>
+    <button class="primary" id="planOk" onclick="doPlan()">创建并启用</button></div>
   <div class="hint">批次只管"刷哪门课"，不管"几点开"——开跑仍按各账号的定时/学习窗口错峰。</div>
+</dialog>
+
+<dialog id="pickDlg"><h3>选择账号</h3>
+  <div class="pbar">
+    <input id="pk_q" placeholder="🔍 搜姓名/备注/学号" oninput="renderPick()">
+    <label class="chk"><input type="checkbox" id="pk_onlyfree" checked onchange="renderPick()">只看未排</label>
+    <select id="pk_grade" onchange="renderPick()"><option value="">全部年级</option></select>
+    <select id="pk_major" onchange="renderPick()"><option value="">全部专业</option></select>
+    <button class="minibtn" onclick="pickAll(true)">全选可见</button>
+    <button class="minibtn" onclick="pickAll(false)">清空</button>
+    <span class="muted" id="pk_count">已选 0 个</span>
+  </div>
+  <div id="pk_list" class="paccs"></div>
+  <div class="dlgbtns"><button class="ghost" onclick="document.getElementById('pickDlg').close()">取消</button>
+    <button class="primary" onclick="pickApply()">确定添加</button></div>
+  <div class="hint">勾选只是"加进批次"，不会立刻开刷；开跑仍按各账号定时/窗口错峰。</div>
 </dialog>
 <datalist id="pl_courses"></datalist>
 
@@ -478,8 +509,8 @@ function filtered(){
   const q=document.getElementById('q').value.trim().toLowerCase();
   if(!q)return ACCOUNTS.map(a=>({a,hits:[]}));
   return ACCOUNTS.map(a=>({a,hits:matchCourses(a,q)})).filter(x=>
-    x.hits.length||[x.a.platform_username,x.a.label,x.a.status,String(x.a.id),
-      x.a.student_no,x.a.note].some(
+    x.hits.length||[x.a.platform_username,x.a.display_name,(x.a.profile&&x.a.profile.name),
+      x.a.label,x.a.status,String(x.a.id),x.a.student_no,x.a.note].some(
       v=>String(v??'').toLowerCase().includes(q)));
 }
 function renderAccounts(){
@@ -568,12 +599,12 @@ function renderAccounts(){
         <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
     const stopBtn=run?`<button class="minibtn danger pulse" title="停止该账号正在刷的课：已完成视频全部保留，下次点▶从断点续播" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
     const bad=a.days_left!==null&&a.days_left<0;
-    const avatar=(a.platform_username||'?').trim().charAt(0);
+    const avatar=String(a.display_name||a.platform_username||'?').trim().charAt(0)||'?';
     return `<div class="card${run?' running':''}${hits.length?' hit':''}">
     <div class="head">
       <div class="avatar">${esc(avatar)}</div>
-      <div class="names"><div class="who">${hl(a.platform_username||'—',q)}</div>
-        <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}</div>
+      <div class="names"><div class="who">${hl(a.display_name||a.platform_username||'—',q)}</div>
+        <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}${(a.profile&&a.profile.name&&a.platform_username&&a.profile.name!==a.platform_username)?' · 平台昵称 '+esc(a.platform_username):''}</div>
         ${(a.student_no||(a.profile&&(a.profile.grade||a.profile.major||a.profile.term)))?`<div class="sub">
           🎓 ${a.student_no?`学号 ${hl(a.student_no,q)}`:''}${a.student_no&&a.profile&&(a.profile.grade||a.profile.major||a.profile.term)?' · ':''}${a.profile?[a.profile.grade,a.profile.major,a.profile.term].filter(Boolean).map(x=>esc(x)).join(' / '):''}
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
@@ -599,9 +630,9 @@ let LOGN=20;
 function fillLogAccounts(){
   const sel=document.getElementById('logAcc'); if(!sel)return;
   const cur=sel.value;
-  sel.innerHTML='<option value="">全部账号</option>'+(ACCOUNTS||[]).map(a=>
-    `<option value="${a.id}">#${a.id} ${esc(a.label)}</option>`).join('');
-  sel.value=cur;
+  sel.innerHTML='<option value="">全部账号（不筛选）</option>'+(ACCOUNTS||[]).map(a=>
+    `<option value="${a.id}">#${a.id} ${esc(a.display_name||a.label)}</option>`).join('');
+  if([...sel.options].some(o=>o.value===cur))sel.value=cur;  // 账号被删则回退到"全部"
 }
 function renderLogs(n){if(n)LOGN=n;
   const acc=document.getElementById('logAcc')?.value||'';
@@ -788,22 +819,41 @@ function renderProfiles(){
     .join(' ').toLowerCase().includes(q));
   if(!rows.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的账号</span>';return;}
   el.innerHTML=rows.map(p=>`<div class="profrow">
-      <b style="min-width:150px" title="平台姓名：${esc(p.name||'未知')}">#${p.account_id} ${esc(p.label)}
-        <span class="muted" style="font-weight:400">${esc(p.name||'')}</span>${p.source==='platform'?' <span class="b-ok" style="font-size:.7rem">平台</span>':''}</b>
+      <b style="min-width:132px" title="账号 #${p.account_id}｜平台昵称：${esc(p.platform_name||'未知')}">#${p.account_id} ${esc(p.label)}
+        ${p.source==='platform'?'<span class="b-ok" style="font-size:.7rem">平台</span>':''}</b>
+      <input id="pf_n_${p.account_id}" class="pf pfname" placeholder="姓名" value="${esc(p.name)}">
       <input id="pf_s_${p.account_id}" class="pf" placeholder="学号" value="${esc(p.student_no)}">
       <input id="pf_g_${p.account_id}" class="pf" placeholder="年级" value="${esc(p.grade)}">
       <input id="pf_m_${p.account_id}" class="pf" placeholder="专业" value="${esc(p.major)}">
       <input id="pf_t_${p.account_id}" class="pf" placeholder="学期" value="${esc(p.term)}">
-      <button class="minibtn" onclick="saveProfile(${p.account_id})">保存</button></div>`).join('')
-      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">例：2024123456 / 2024级 / 计算机科学与技术 / 2026秋；学号只用于本地面板识别，不上传</div>';
+      <button class="minibtn" onclick="saveProfile(${p.account_id})">保存</button>
+      <button class="minibtn" title="只读访问一次个人中心，尝试抓取平台上的姓名/学号并回填（不覆盖你已手填的内容）"
+        onclick="readProfileFromPlatform(${p.account_id})">⬇ 平台读取</button></div>`).join('')
+      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名留空则卡片显示平台昵称；例：2024123456 / 2024级 / 计算机科学与技术 / 2026秋。学号只用于本地面板识别，不上传</div>';
 }
 function saveProfile(id){
-  const v=k=>document.getElementById(`pf_${k}_${id}`).value.trim();
+  const v=k=>{const el=document.getElementById(`pf_${k}_${id}`);return el?el.value.trim():'';};
   fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({account_id:id,student_no:v('s'),grade:v('g'),major:v('m'),term:v('t')})})
+    body:JSON.stringify({account_id:id,name:v('n'),student_no:v('s'),grade:v('g'),
+      major:v('m'),term:v('t')})})
   .then(r=>r.json()).then(d=>{
-    if(!d.ok){alert('保存失败：'+d.error);return;}
-    loadStats();loadProfiles();});
+    if(!d.ok){toast('保存失败：'+d.error,1);return;}
+    toast('✔ 画像已保存（姓名/学号/年级/专业/学期）');
+    syncRun();loadStats();loadProfiles();});
+}
+const FIELD_CN={name:'姓名',student_no:'学号',grade:'年级',major:'专业',term:'学期'};
+function readProfileFromPlatform(id){
+  if(!confirm('将从平台只读访问一次个人中心，尝试抓取姓名/学号并回填（不覆盖已手填内容；需该账号已登录）。继续？'))return;
+  toast('⏳ 正在从平台读取（约 5–15 秒）…');
+  fetch(`/api/accounts/${id}/profile_from_platform`,{method:'POST'})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){toast('平台读取失败：'+(d.error||'未知'),1);return;}
+    const f=(d.merged&&d.merged.filled)||[], s=(d.merged&&d.merged.skipped)||[];
+    const fp=f.length?'回填 '+f.map(k=>FIELD_CN[k]||k).join('/'):'没有可回填的新字段';
+    const sp=s.length?'；保留手填 '+s.map(k=>FIELD_CN[k]||k).join('/'):'';
+    toast('✔ 平台读取完成：'+fp+sp);
+    syncRun();loadProfiles();
+  }).catch(e=>toast('平台读取失败：'+e,1));
 }
 function loadPlans(){
   fetch('/api/plans').then(r=>r.json()).then(d=>{PLANS=d.plans||[];renderPlans();});}
@@ -829,74 +879,144 @@ function renderPlans(){
       <span>课程《${esc(p.course_name)}》</span>
       <span class="muted">${p.account_ids.length} 个账号：${esc(accs)}</span>
       <span style="flex:1"></span>
+      <button class="minibtn" title="改名/换课程/增删账号（不影响已完成的刷课）" onclick="openPlan(${p.id})">✎ 编辑</button>
       <button class="minibtn" onclick="togglePlan(${p.id},${p.enabled?0:1})">${p.enabled?'⏸ 停用':'▶ 启用'}</button>
       <button class="minibtn danger" onclick="delPlan(${p.id})">🗑</button></div>`;}).join('');
 }
-let PLANSEL=new Set();   // 弹窗内的勾选状态：与筛选解耦，搜走再搜回不会丢
-let PLBUSY={};           // 已启用批次里的账号 → 批次名
-function openPlan(){
-  document.getElementById('pl_name').value='';
-  document.getElementById('pl_course').value='';
-  document.getElementById('pl_q').value='';
-  PLSEL=new Set();
-  PLBUSY={}; PLANS.filter(p=>p.enabled).forEach(p=>p.account_ids.forEach(i=>PLBUSY[i]=p.name));
-  renderPlanAccs();
+let PLANSEL=new Set();   // 主弹窗当前已选账号（新建/编辑共用）
+let PKSEL=new Set();     // 选择器弹窗内的临时勾选
+let PLBUSY={};           // 已在**其他**启用批次里的账号 → 批次名
+let PLANMODE=null;       // null=新建；否则=正在编辑的批次 id
+function toast(msg,bad){
+  let el=document.getElementById('toast');
+  if(!el){el=document.createElement('div');el.id='toast';document.body.appendChild(el);}
+  el.textContent=msg;el.className='toast show'+(bad?' bad':'');
+  clearTimeout(window._tT);window._tT=setTimeout(()=>{el.className='toast';},3000);
+}
+function accName(a){return (a.profile&&a.profile.name)||a.platform_username||a.label||('#'+a.id);}
+function accDesc(a){
+  const p=a.profile||{}, bits=[];
+  if(a.platform_username)bits.push(a.platform_username);
+  if(p.student_no)bits.push('学号 '+p.student_no);
+  [p.grade,p.major,p.term].filter(Boolean).forEach(v=>bits.push(v));
+  if(a.note)bits.push('📝'+a.note);
+  return bits.join(' · ');
+}
+function loadPlanBusy(){
+  PLBUSY={};
+  PLANS.filter(p=>p.enabled&&p.id!==PLANMODE).forEach(p=>p.account_ids.forEach(i=>PLBUSY[i]=p.name));
+}
+function openPlan(planId){
+  PLANMODE=planId||null;
+  const p=planId?PLANS.find(x=>x.id===planId):null;
+  document.getElementById('pl_name').value=p?p.name:'';
+  document.getElementById('pl_course').value=p?p.course_name:'';
+  document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
+  document.getElementById('planOk').textContent=p?'保存修改':'创建并启用';
+  PLANSEL=new Set(p?p.account_ids:[]);
+  loadPlanBusy();
+  renderPicked();
   const names=[...new Set((ACCOUNTS||[]).reduce((s,a)=>s.concat((a.courses||[]).map(c=>c.name)),[]))];
   document.getElementById('pl_courses').innerHTML=names.map(n=>`<option value="${esc(n)}">`).join('');
   document.getElementById('planDlg').showModal();
 }
-function planVisible(){
-  const q=(document.getElementById('pl_q')?.value||'').trim().toLowerCase();
-  const onlyFree=document.getElementById('pl_onlyfree')?.checked;
+function renderPicked(){
+  const box=document.getElementById('pl_picked'); if(!box)return;
+  const ids=[...PLSEL];
+  document.getElementById('pl_count').textContent=`已选 ${ids.length} 个`;
+  box.className='picked'+(ids.length?'':' muted');
+  box.innerHTML=ids.length?ids.map(id=>{
+    const a=(ACCOUNTS||[]).find(x=>x.id===id);
+    const b=PLBUSY[id];
+    return `<div class="pkrow"><b>#${id} ${esc(a?accName(a):'（账号已删）')}</b>
+      <span class="muted">${esc(a?accDesc(a):'')}</span>
+      ${b?`<span class="b-warn" style="font-size:.7rem">已在《${esc(b)}》</span>`:''}
+      <span class="x" title="从本批次移除" onclick="pickedRemove(${id})">✕</span></div>`;}).join('')
+    :'还没有选择账号 —— 点「＋ 选择账号」从列表里挑';
+}
+function pickedRemove(id){PLSEL.delete(+id);renderPicked();}
+function clearPicked(){PLSEL=new Set();renderPicked();}
+// ---- 账号选择器（多条件 + 多选）----
+function openPicker(){
+  PKSEL=new Set(PLSEL);
+  loadPlanBusy();
+  fillPickFilters();
+  document.getElementById('pk_q').value='';
+  document.getElementById('pickDlg').showModal();
+  renderPick();
+}
+function fillPickFilters(){
+  const uniq=k=>[...new Set((ACCOUNTS||[]).map(a=>((a.profile||{})[k]||'')).filter(Boolean))].sort();
+  for(const [id,k] of [['pk_grade','grade'],['pk_major','major']]){
+    const sel=document.getElementById(id), cur=sel.value;
+    sel.innerHTML=`<option value="">全部${k==='grade'?'年级':'专业'}</option>`+
+      uniq(k).map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    sel.value=cur;
+  }
+}
+function pickVisible(){
+  const q=(document.getElementById('pk_q').value||'').trim().toLowerCase();
+  const onlyFree=document.getElementById('pk_onlyfree').checked;
+  const g=document.getElementById('pk_grade').value, m=document.getElementById('pk_major').value;
   return (ACCOUNTS||[]).filter(a=>{
+    const p=a.profile||{};
     if(onlyFree&&PLBUSY[a.id])return false;
+    if(g&&(p.grade||'')!==g)return false;
+    if(m&&(p.major||'')!==m)return false;
     if(!q)return true;
-    return [a.label,a.platform_username,a.student_no,a.note]
+    return [a.label,a.platform_username,p.name,p.student_no,p.grade,p.major,p.term,a.note]
       .filter(Boolean).join(' ').toLowerCase().includes(q);
   });
 }
-function renderPlanAccs(){
-  const box=document.getElementById('pl_accs'); if(!box)return;
-  const rows=planVisible();
+function renderPick(){
+  const box=document.getElementById('pk_list'); if(!box)return;
+  const rows=pickVisible();
   box.innerHTML=rows.map(a=>{
     const b=PLBUSY[a.id];
-    return `<label class="${b?'off':''}" title="${b?'已在批次《'+esc(b)+'》里，需先停用原批次':'勾选后到点按批次刷这门课'}">
-      <input type="checkbox" value="${a.id}" ${b?'disabled':''} ${PLSELECTED(a.id)?'checked':''}
-        onchange="planToggle(${a.id},this.checked)">#${a.id} ${esc(a.label)}
-      ${a.platform_username?`<span class="muted">${esc(a.platform_username)}</span>`:''}
-      ${a.student_no?`<span class="muted">学号 ${esc(a.student_no)}</span>`:''}
-      ${b?'<span class="muted">(已排)</span>':''}</label>`;
-  }).join('')||`<span class="muted">${(ACCOUNTS||[]).length?'没有匹配的账号（试试清空搜索或取消"只看未排"）':'还没有账号'}</span>`;
-  planCount();
+    return `<label class="${b?'off':''}" title="${b?'已在《'+esc(b)+'》里，需先停用原批次':'勾选后点「确定添加」加入批次'}">
+      <input type="checkbox" value="${a.id}" ${b?'disabled':''} ${PKSEL.has(a.id)?'checked':''}
+        onchange="pickToggle(${a.id},this.checked)">#${a.id} ${esc(accName(a))}
+      <span class="muted">${esc(accDesc(a))}</span>${b?'<span class="muted">(已排)</span>':''}</label>`;
+  }).join('')||`<span class="muted">${(ACCOUNTS||[]).length?'没有匹配的账号（试试清空搜索或取消筛选）':'还没有账号'}</span>`;
+  document.getElementById('pk_count').textContent=`已选 ${PKSEL.size} 个`;
 }
-function PLSELECTED(id){return PLSEL.has(+id);}
-function planToggle(id,on){ if(on)PLSEL.add(+id); else PLSEL.delete(+id); planCount(); }
-function planSelectAll(on){
-  const rows=planVisible().filter(a=>!PLBUSY[a.id]);
-  rows.forEach(a=>{ if(on)PLSEL.add(a.id); else PLSEL.delete(a.id); });
-  renderPlanAccs();
+function pickToggle(id,on){if(on)PKSEL.add(+id);else PKSEL.delete(+id);
+  document.getElementById('pk_count').textContent=`已选 ${PKSEL.size} 个`;}
+function pickAll(on){
+  pickVisible().filter(a=>!PLBUSY[a.id]).forEach(a=>{if(on)PKSEL.add(a.id);else PKSEL.delete(a.id);});
+  renderPick();
 }
-function planCount(){
-  const el=document.getElementById('pl_count');
-  if(el)el.textContent=`已选 ${PLSEL.size} 个`+(PLSEL.size?`（${[...PLSEL].map(i=>'#'+i).join(' ')}）`:'');
+function pickApply(){
+  PLSEL=new Set(PKSEL);
+  document.getElementById('pickDlg').close();
+  renderPicked();
 }
 function doPlan(){
+  const name=document.getElementById('pl_name').value.trim();
+  const course=document.getElementById('pl_course').value.trim();
   const ids=[...PLSEL];
-  fetch('/api/plans',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name:document.getElementById('pl_name').value.trim(),
-      course_name:document.getElementById('pl_course').value.trim(),account_ids:ids})})
+  if(!name||!course){toast('批次名与课程名都不能为空',1);return;}
+  if(!ids.length){toast('至少选择一个账号',1);return;}
+  const url=PLANMODE?`/api/plans/${PLANMODE}/update`:'/api/plans';
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,course_name:course,account_ids:ids})})
   .then(r=>r.json()).then(d=>{
-    if(!d.ok){alert('创建失败：'+d.error);return;}
+    if(!d.ok){toast('保存失败：'+d.error,1);return;}
     document.getElementById('planDlg').close();loadPlans();
-    alert('已创建并启用 —— 到点后由「⏱ 定时调度」按各账号自己的时间错峰开刷（不会同时开，也不会重复多开）');});
+    toast(PLANMODE?`✔ 批次 #${PLANMODE} 已更新（${ids.length} 个账号）`
+                 :`✔ 已创建并启用（${ids.length} 个账号）——到点由定时调度按各账号时间错峰开刷`);
+    PLANMODE=null;});
 }
 function togglePlan(id,en){
   fetch(`/api/plans/${id}/toggle`,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({enabled:!!en})}).then(r=>r.json()).then(d=>{
-    if(!d.ok)alert('失败：'+d.error); loadPlans();});}
+    if(!d.ok){toast('操作失败：'+d.error,1);loadPlans();return;}
+    toast(en?'✔ 批次已启用（到点按各账号时间错峰开刷）':'✔ 批次已停用');
+    loadPlans();});}
 function delPlan(id){
   if(!confirm('删除该批次？（不影响已完成的刷课与作业）'))return;
-  fetch(`/api/plans/${id}`,{method:'DELETE'}).then(r=>r.json()).then(()=>loadPlans());}
+  fetch(`/api/plans/${id}`,{method:'DELETE'}).then(r=>r.json()).then(()=>{
+    toast('✔ 批次已删除');loadPlans();});}
 let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
 function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
 function startGrind(id,course){
@@ -917,7 +1037,7 @@ async function syncRun(){
     document.getElementById('today').textContent=d.today_videos;
     if(prev!=='-'&&prev!==String(d.today_videos)){  // 有新战果→指标闪烁
       const m=document.getElementById('today');m.classList.remove('flash');void m.offsetWidth;m.classList.add('flash');}
-    ACCOUNTS=d.accounts;}catch(e){}
+    ACCOUNTS=d.accounts;fillLogAccounts();}catch(e){}
   const btn=document.getElementById('autoBtn');
   const runN=Object.values(RUNNING).filter(j=>j.running).length;
   const el=document.getElementById('runN'); if(el)el.textContent=runN;
@@ -1121,6 +1241,7 @@ def create_app(settings: Settings) -> FastAPI:
             today = time.strftime("%Y-%m-%d")
             accounts = [dict(r) for r in list_accounts(conn)]
             from ..core.accounts import days_left, effective_quota
+            from ..core.stats import get_profile
 
             fresh = Settings(root=settings.root)  # 每次请求重读 DB：改全局额度后无需重启面板
             global_default = fresh.quiz.get(
@@ -1146,13 +1267,11 @@ def create_app(settings: Settings) -> FastAPI:
                 a["max_minutes"] = a.pop("daily_max_minutes", None)
                 a["max_tasks"] = a.pop("daily_max_tasks", None)
                 a["days_left"] = days_left(a)
-                # 画像（学号/年级/专业/学期）：卡片与批次弹窗都要显示，一并下发
-                _prof = conn.execute(
-                    "SELECT student_no, grade, major, term FROM account_profiles"
-                    " WHERE account_id=?", (a["id"],)).fetchone()
-                a["student_no"] = (dict(_prof)["student_no"] or "") if _prof else ""
-                a["profile"] = ({k: (dict(_prof)[k] or "") for k in
-                                 ("grade", "major", "term")} if _prof else {})
+                # 画像（姓名/学号/年级/专业/学期）：卡片与批次弹窗都要显示，一并下发
+                a["profile"] = {k: (get_profile(conn, a["id"]).get(k) or "") for k in
+                                ("name", "student_no", "grade", "major", "term")}
+                a["student_no"] = a["profile"]["student_no"]
+                a["display_name"] = a["profile"]["name"] or (a.get("platform_username") or "")
                 a["courses"] = [
                     dict(r)
                     for r in conn.execute(
@@ -1631,6 +1750,29 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
+    @app.post("/api/plans/{plan_id}/update")
+    def plans_update_api(plan_id: int, body: dict):
+        """编辑已建批次：改名 / 换课程 / 增删账号（None = 不变）。"""
+        from ..core import plans as planmod
+
+        ids = body.get("account_ids")
+        conn = db()
+        try:
+            r = planmod.update_plan(
+                conn, plan_id,
+                name=None if body.get("name") is None else str(body.get("name")),
+                course_name=None if body.get("course_name") is None
+                else str(body.get("course_name")),
+                account_ids=None if ids is None else [int(a) for a in ids],
+                enabled=None if body.get("enabled") is None else bool(body.get("enabled")))
+            if r.get("ok"):
+                _log_event(0, "plan-update",
+                           f"#{plan_id}｜{body.get('name')}｜{body.get('course_name')}｜"
+                           f"{len(ids) if ids is not None else '账号未改'} 个账号")
+            return r
+        finally:
+            conn.close()
+
     @app.delete("/api/plans/{plan_id}")
     def plans_delete_api(plan_id: int):
         from ..core import plans as planmod
@@ -1672,11 +1814,37 @@ def create_app(settings: Settings) -> FastAPI:
         conn = db()
         try:
             r = statsmod.set_profile(conn, int(body.get("account_id") or 0),
+                                     name=str(body.get("name") or ""),
                                      student_no=str(body.get("student_no") or ""),
                                      grade=str(body.get("grade") or ""),
                                      major=str(body.get("major") or ""),
                                      term=str(body.get("term") or ""))
             return r
+        finally:
+            conn.close()
+
+    @app.post("/api/accounts/{account_id}/profile_from_platform")
+    def profile_from_platform(account_id: int):
+        """从平台读一次画像（姓名/学号/学校/院系），**只补空不覆盖手填**。
+
+        走 `adapters/chaoxing/profile_read.py`（平台细节只在那）；一次访问，
+        复用页面自身的 stu-base-info 响应。抓不到就如实报错，绝不猜。
+        """
+        from ..adapters.chaoxing.profile_read import read_profile
+        from ..core import stats as statsmod
+
+        state_path = settings.data_dir / "accounts" / str(account_id) / "state.json"
+        got = read_profile(state_path, settings.platform["space_url"])
+        conn = db()
+        try:
+            if not got.get("ok"):
+                return {**got, "profile": statsmod.get_profile(conn, account_id)}
+            merged = statsmod.merge_platform_profile(conn, account_id, got)
+            # 学校/院系/班级平台给了也一并留档（面板只展示，不进统计维度）
+            _log_event(account_id, "profile-read",
+                       f"平台画像：字段 {len(got.get('fields') or [])} 个，回填 "
+                       f"{merged.get('filled') or '无'}，保留手填 {merged.get('skipped') or '无'}")
+            return {**got, "merged": merged, "profile": statsmod.get_profile(conn, account_id)}
         finally:
             conn.close()
 

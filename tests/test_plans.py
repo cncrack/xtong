@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from xxt.core.plans import (busy_accounts, course_for_account, create_plan,
-                            delete_plan, list_plans, set_enabled)
+                            delete_plan, list_plans, set_enabled, update_plan)
 from xxt.store.db import connect
 
 
@@ -87,6 +87,46 @@ class TestPlans(unittest.TestCase):
         self.assertTrue(r["ok"])
         cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(plans)")}
         self.assertFalse({"start_at", "start_time", "begin_at"} & cols)
+
+    # ---- update_plan（编辑已建批次：改名 / 换课程 / 增删账号）----
+
+    def test_update_plan_rename_and_course(self):
+        pid = create_plan(self.conn, "A", "数据结构", [1])["id"]
+        r = update_plan(self.conn, pid, name="B", course_name="操作系统")
+        self.assertTrue(r["ok"])
+        p = list_plans(self.conn)[0]
+        self.assertEqual(p["name"], "B")
+        self.assertEqual(p["course_name"], "操作系统")
+        self.assertEqual(p["account_ids"], [1])  # 未传 account_ids → 保持不变
+        self.assertEqual(course_for_account(self.conn, 1), "操作系统")
+
+    def test_update_plan_change_accounts(self):
+        pid = create_plan(self.conn, "A", "数据结构", [1])["id"]
+        r = update_plan(self.conn, pid, account_ids=[2, 3])
+        self.assertTrue(r["ok"])
+        self.assertEqual(list_plans(self.conn)[0]["account_ids"], [2, 3])
+        self.assertIsNone(course_for_account(self.conn, 1))  # 移出后回归轮转
+        self.assertEqual(course_for_account(self.conn, 2), "数据结构")
+
+    def test_update_plan_reject_empty_name_or_accounts(self):
+        pid = create_plan(self.conn, "A", "数据结构", [1])["id"]
+        self.assertFalse(update_plan(self.conn, pid, name="")["ok"])
+        self.assertFalse(update_plan(self.conn, pid, course_name="")["ok"])
+        self.assertFalse(update_plan(self.conn, pid, account_ids=[])["ok"])
+        self.assertEqual(list_plans(self.conn)[0]["account_ids"], [1])  # 均未改动
+
+    def test_update_plan_missing(self):
+        self.assertFalse(update_plan(self.conn, 999, name="X")["ok"])
+
+    def test_update_plan_conflict_excludes_self(self):
+        a = create_plan(self.conn, "A", "数据结构", [1])["id"]
+        create_plan(self.conn, "B", "操作系统", [2])
+        # 把 A 的账号改成 [1,2]：2 已在启用批次 B 里 → 拒绝
+        r = update_plan(self.conn, a, account_ids=[1, 2])
+        self.assertFalse(r["ok"])
+        self.assertIn("已在其他启用中的批次里", r["error"])
+        # 仅调整 A 自己的账号（仍含自己批次的 #1）→ 排除自身，不与自己冲突
+        self.assertTrue(update_plan(self.conn, a, account_ids=[1])["ok"])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ import time
 import unittest
 from pathlib import Path
 
-from xxt.core.stats import aggregate, get_profile, list_profiles, set_profile, today_summary
+from xxt.core.stats import (aggregate, get_profile, list_profiles,
+                            merge_platform_profile, set_profile, today_summary)
 from xxt.store.db import connect
 
 
@@ -163,6 +164,66 @@ class TestStats(unittest.TestCase):
         # 趋势按日期升序（前端直接画柱）
         self.assertEqual([t["date"] for t in d["trend"]],
                          ["2026-10-24", "2026-10-25"])
+
+    # ---- 姓名画像（2026-10-26：平台昵称升级为可编辑字段）----
+
+    def test_name_profile_roundtrip(self):
+        r = set_profile(self.conn, 1, name="林锦阳", student_no="2024123456")
+        self.assertTrue(r["ok"])
+        p = get_profile(self.conn, 1)
+        self.assertEqual(p["name"], "林锦阳")
+        self.assertEqual(p["display_name"], "林锦阳")  # 有手填姓名 → 用它
+        rows = {x["account_id"]: x for x in list_profiles(self.conn)}
+        self.assertEqual(rows[1]["name"], "林锦阳")
+        self.assertEqual(rows[1]["display_name"], "林锦阳")
+        # 清空姓名 → display_name 回退（本账号无平台昵称 → 空）
+        set_profile(self.conn, 1, name="", student_no="2024123456")
+        self.assertEqual(get_profile(self.conn, 1)["display_name"], "")
+
+    def test_display_name_falls_back_to_platform(self):
+        self.conn.execute("UPDATE accounts SET platform_username='林鑫阳' WHERE id=1")
+        self.conn.commit()
+        self.assertEqual(get_profile(self.conn, 1)["display_name"], "林鑫阳")
+        self.assertEqual(get_profile(self.conn, 1)["platform_name"], "林鑫阳")
+        # 手填姓名优先于平台昵称
+        set_profile(self.conn, 1, name="林锦阳")
+        p = get_profile(self.conn, 1)
+        self.assertEqual(p["display_name"], "林锦阳")
+        self.assertEqual(p["platform_name"], "林鑫阳")
+
+    def test_merge_platform_only_fills_empty(self):
+        set_profile(self.conn, 1, name="手填名", grade="2024级")  # 手填值不许被覆盖
+        res = merge_platform_profile(
+            self.conn, 1,
+            {"name": "平台名", "student_no": "2024800000",
+             "grade": "平台级", "major": "平台专业"})
+        self.assertTrue(res["ok"])
+        self.assertIn("student_no", res["filled"])
+        self.assertIn("major", res["filled"])
+        self.assertIn("name", res["skipped"])   # 手填姓名 → 跳过
+        self.assertIn("grade", res["skipped"])  # 手填年级 → 跳过
+        p = get_profile(self.conn, 1)
+        self.assertEqual(p["name"], "手填名")
+        self.assertEqual(p["grade"], "2024级")
+        self.assertEqual(p["student_no"], "2024800000")
+        self.assertEqual(p["major"], "平台专业")
+        self.assertEqual(p["source"], "platform")  # 有回填 → 标注来源平台
+
+    def test_merge_platform_nothing_new(self):
+        set_profile(self.conn, 1, name="甲")
+        res = merge_platform_profile(self.conn, 1, {"name": "平台甲"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["filled"], [])
+        self.assertEqual(get_profile(self.conn, 1)["name"], "甲")
+        self.assertEqual(get_profile(self.conn, 1)["source"], "manual")  # 未回填不标平台
+
+    def test_keyword_search_hits_name(self):
+        set_profile(self.conn, 1, name="林锦阳")
+        self._log(1, "video-done", "课A｜一｜60s")
+        self._log(2, "video-done", "课B｜二｜60s")
+        d = aggregate(self.conn, by="account", days=0, q="林锦阳")
+        self.assertEqual([r["key"] for r in d["rows"]], ["#1 甲"])
+        self.assertEqual(d["total"]["videos"], 1)
 
 
 if __name__ == "__main__":

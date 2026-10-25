@@ -96,6 +96,52 @@ def set_enabled(conn: sqlite3.Connection, plan_id: int, enabled: bool) -> dict[s
     return {"ok": True}
 
 
+def update_plan(conn: sqlite3.Connection, plan_id: int, *, name: str | None = None,
+                course_name: str | None = None, account_ids: list[int] | None = None,
+                enabled: bool | None = None) -> dict[str, Any]:
+    """改已建批次：名称 / 课程 / 账号清单 / 启停（None = 该项不变）。
+
+    账号是关键：用户在"编辑批次"里加号减号都走这里。启用态下要重查冲突，
+    但**排除自己**（否则自己批次里的账号会跟自己撞车）。
+    """
+    row = conn.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
+    if row is None:
+        return {"ok": False, "error": "批次不存在"}
+    new_name = row["name"] if name is None else (name or "").strip()
+    new_course = row["course_name"] if course_name is None else (course_name or "").strip()
+    if not new_name or not new_course:
+        return {"ok": False, "error": "批次名与课程名都不能为空"}
+    if account_ids is None:
+        ids = [r["account_id"] for r in conn.execute(
+            "SELECT account_id FROM plan_accounts WHERE plan_id=?", (plan_id,))]
+    else:
+        ids = sorted({int(a) for a in account_ids})
+        if not ids:
+            return {"ok": False, "error": "至少保留一个账号（要清空请直接删除批次）"}
+        exist = {r["id"] for r in conn.execute(
+            f"SELECT id FROM accounts WHERE id IN ({','.join('?' * len(ids))})", ids)}
+        missing = [i for i in ids if i not in exist]
+        if missing:
+            return {"ok": False, "error": f"账号不存在：{missing}"}
+    new_enabled = bool(row["enabled"]) if enabled is None else bool(enabled)
+    if new_enabled:
+        busy = busy_accounts(conn, exclude_plan=plan_id)
+        clash = {i: busy[i] for i in ids if i in busy}
+        if clash:
+            detail = "、".join(f"#{i}（已在《{n}》）" for i, n in clash.items())
+            return {"ok": False,
+                    "error": f"这些账号已在其他启用中的批次里：{detail}。"
+                             "请先停用原批次，或把它们从本批次剔除"}
+    conn.execute("UPDATE plans SET name=?, course_name=?, enabled=? WHERE id=?",
+                 (new_name, new_course, 1 if new_enabled else 0, plan_id))
+    if account_ids is not None:
+        conn.execute("DELETE FROM plan_accounts WHERE plan_id=?", (plan_id,))
+        conn.executemany("INSERT OR IGNORE INTO plan_accounts(plan_id, account_id)"
+                         " VALUES(?,?)", [(plan_id, i) for i in ids])
+    conn.commit()
+    return {"ok": True, "id": plan_id, "account_ids": ids}
+
+
 def delete_plan(conn: sqlite3.Connection, plan_id: int) -> bool:
     conn.execute("DELETE FROM plans WHERE id=?", (plan_id,))  # 关联行由外键级联删除
     conn.commit()
