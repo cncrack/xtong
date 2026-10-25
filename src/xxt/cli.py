@@ -532,9 +532,16 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 未登录，今日跳过")
                     continue
                 conn = connect(s.db_path)
+                plan_course = None
                 try:
-                    picks = pick_courses(conn, _random.Random(), s.rotation,
-                                         account_id=aid, count=1)
+                    # 批次优先：启用中的批次指定了课程 → 用它；否则走课程轮转。
+                    # 批次不含时间字段，开跑时刻仍由本账号 start_at/窗口决定（天然错峰）。
+                    from .core import plans as _plans
+
+                    plan_course = _plans.course_for_account(conn, aid)
+                    picks = ([{"name": plan_course}] if plan_course
+                             else pick_courses(conn, _random.Random(), s.rotation,
+                                               account_id=aid, count=1))
                 finally:
                     conn.close()
                 if not picks:
@@ -542,14 +549,16 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
                     continue
                 course_name = picks[0]["name"]
-                # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试
+                # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试。
+                # ⚠ 与账号卡片 ▶ 走的是同一个 /api/study/start，共用防双开锁
+                #   （进程内 _JOBS + data/run/<id>.json 标记），因此不会重复多开。
                 try:
                     import httpx as _httpx
 
                     r = _httpx.post(
                         f"http://127.0.0.1:{panel_port}/api/study/start",
                         json={"account_id": aid, "course": course_name,
-                              "source": "定时"}, timeout=10,
+                              "source": "批次" if plan_course else "定时"}, timeout=10,
                     )
                     ok = bool(r.json().get("ok"))
                     reason = r.json().get("error", "")

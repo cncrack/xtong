@@ -116,6 +116,21 @@ CREATE TABLE IF NOT EXISTS work_questions (
     updated_at TEXT,
     UNIQUE (cache_key, idx)
 );
+-- 批次（2026-10-26）：把"某门课"统一排给一批账号。**不含时间字段**——
+-- 开跑时刻仍由每账号自己的 start_at / 学习窗口决定，天然错峰。
+CREATE TABLE IF NOT EXISTS plans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    course_name TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    extra_json  TEXT,
+    created_at  TEXT
+);
+CREATE TABLE IF NOT EXISTS plan_accounts (
+    plan_id    INTEGER NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    PRIMARY KEY (plan_id, account_id)
+);
 """
 
 

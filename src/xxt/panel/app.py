@@ -113,6 +113,13 @@ box-shadow:inset 0 1px 3px rgba(0,0,0,.12)}
 background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);transition:.15s}
 .btn:hover{background:rgba(255,255,255,.34);transform:translateY(-1px)}
 .toolbar{display:flex;align-items:center;gap:.7rem;margin:1.05rem 0 .85rem;flex-wrap:wrap}
+.batch{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.65rem .85rem;margin-bottom:.9rem}
+.bhead{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;font-size:.85rem}
+.bhead .spacer{flex:1}
+.prow{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.35rem 0;border-top:1px dashed var(--line);font-size:.8rem}
+.prow:first-child{border-top:0}
+.paccs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.3rem .8rem;max-height:220px;overflow:auto;margin-top:.3rem}
+.paccs label{font-size:.8rem;display:flex;gap:.35rem;align-items:center}
 .toolbar .muted{font-size:.85rem}
 #synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
 .flash{animation:flash 1.2s ease}
@@ -246,6 +253,14 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <span class="muted" id="accInfo"></span>
   <span id="synced">自动刷新中…</span>
 </div>
+<section class="batch">
+  <div class="bhead"><b>📚 批次</b>
+    <span class="muted">统一指定课程；开跑时间仍按各账号自己的定时/窗口错峰（不会同时开刷，也不会重复多开）</span>
+    <span class="spacer"></span>
+    <button class="minibtn" title="把某门课一次性排给多个账号" onclick="openPlan()">＋ 新建批次</button>
+  </div>
+  <div id="planList" class="muted" style="font-size:.8rem">加载中…</div>
+</section>
 <div class="grid" id="accounts"><div class="card muted">加载中…</div></div>
 <div class="pager" id="pager"></div>
 <section><h2>最近日志 <span class="muted" style="font-weight:400;font-size:.75rem">（全部动态已存档于 data/logs/xxt.log 与数据库）</span></h2>
@@ -294,6 +309,16 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <button class="primary" onclick="saveSettings()">保存</button></div>
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
 </dialog>
+
+<dialog id="planDlg"><h3>📚 新建批次</h3>
+  <div class="frow"><label>批次名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
+  <div class="frow"><label>课程名</label><input type="text" id="pl_course" style="width:240px" list="pl_courses" placeholder="填该账号课程列表里的课名"></div>
+  <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label><div id="pl_accs" class="paccs"></div></div>
+  <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
+    <button class="primary" onclick="doPlan()">创建并启用</button></div>
+  <div class="hint">批次只管"刷哪门课"，不管"几点开"——开跑仍按各账号的定时/学习窗口错峰。</div>
+</dialog>
+<datalist id="pl_courses"></datalist>
 
 <dialog id="addDlg"><h3>＋ 添加账号</h3>
   <div class="frow"><label>备注名（唯一）</label><input type="text" id="a_label" style="width:180px"></div>
@@ -452,6 +477,8 @@ function renderAccounts(){
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
+    ${(()=>{const bp=(PLANS||[]).find(p=>p.enabled&&p.account_ids.includes(a.id));
+      return bp?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📚 批次《${esc(bp.name)}》→ 课程《${esc(bp.course_name)}》（开跑时间仍按本账号定时/窗口）</div>`:'';})()}
     <div class="chips">${chips}</div>${courses}</div>`;
   }).join('')||'<div class="card muted">无匹配</div>';
   document.getElementById('pager').innerHTML=
@@ -567,6 +594,54 @@ function doAdd(){
       password:a_pw.value,priority:+a_pri.value||1})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
+let PLANS=[];
+function loadPlans(){
+  fetch('/api/plans').then(r=>r.json()).then(d=>{PLANS=d.plans||[];renderPlans();});}
+function renderPlans(){
+  const el=document.getElementById('planList'); if(!el)return;
+  if(!PLANS.length){el.innerHTML='<span class="muted">暂无批次 —— 想把同一门课一次性排给多个账号，点右上「＋ 新建批次」</span>';return;}
+  el.innerHTML=PLANS.map(p=>{
+    const accs=p.account_ids.map(id=>{const a=(ACCOUNTS||[]).find(x=>x.id===id);
+      return '#'+id+(a?' '+esc(a.label):'');}).join('、')||'—';
+    const st=p.enabled?badge('启用中','b-ok'):badge('已停用','b-warn');
+    return `<div class="prow"><b>${esc(p.name)}</b>${st}
+      <span>课程《${esc(p.course_name)}》</span>
+      <span class="muted">${p.account_ids.length} 个账号：${esc(accs)}</span>
+      <span style="flex:1"></span>
+      <button class="minibtn" onclick="togglePlan(${p.id},${p.enabled?0:1})">${p.enabled?'⏸ 停用':'▶ 启用'}</button>
+      <button class="minibtn danger" onclick="delPlan(${p.id})">🗑</button></div>`;}).join('');
+}
+function openPlan(){
+  document.getElementById('pl_name').value='';
+  document.getElementById('pl_course').value='';
+  const busy={}; PLANS.filter(p=>p.enabled).forEach(p=>p.account_ids.forEach(i=>busy[i]=p.name));
+  const box=document.getElementById('pl_accs');
+  box.innerHTML=(ACCOUNTS||[]).map(a=>{
+    const b=busy[a.id];
+    return `<label title="${b?'已在批次《'+esc(b)+'》里，需先停用原批次':'勾选后到点按批次刷这门课'}">
+      <input type="checkbox" value="${a.id}" ${b?'disabled':''}>#${a.id} ${esc(a.label)}${b?' <span class="muted">(已排)</span>':''}</label>`;
+  }).join('')||'<span class="muted">还没有账号</span>';
+  const names=[...new Set((ACCOUNTS||[]).reduce((s,a)=>s.concat((a.courses||[]).map(c=>c.name)),[]))];
+  document.getElementById('pl_courses').innerHTML=names.map(n=>`<option value="${esc(n)}">`).join('');
+  document.getElementById('planDlg').showModal();
+}
+function doPlan(){
+  const ids=[...document.querySelectorAll('#pl_accs input:checked')].map(i=>+i.value);
+  fetch('/api/plans',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:document.getElementById('pl_name').value.trim(),
+      course_name:document.getElementById('pl_course').value.trim(),account_ids:ids})})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('创建失败：'+d.error);return;}
+    document.getElementById('planDlg').close();loadPlans();
+    alert('已创建并启用 —— 到点后由「⏱ 定时调度」按各账号自己的时间错峰开刷（不会同时开，也不会重复多开）');});
+}
+function togglePlan(id,en){
+  fetch(`/api/plans/${id}/toggle`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({enabled:!!en})}).then(r=>r.json()).then(d=>{
+    if(!d.ok)alert('失败：'+d.error); loadPlans();});}
+function delPlan(id){
+  if(!confirm('删除该批次？（不影响已完成的刷课与作业）'))return;
+  fetch(`/api/plans/${id}`,{method:'DELETE'}).then(r=>r.json()).then(()=>loadPlans());}
 let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
 function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
 function startGrind(id,course){
@@ -695,7 +770,7 @@ function doDel(){if(!confirm('确定删除账号 '+EDIT.label+'？课程/进度�
     if(d.ok){document.getElementById('editDlg').close();reload();}else alert('失败');});}
 document.getElementById('q').addEventListener('input',()=>{PAGE=1;renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
-renderLogs();loadSettings();loadProviders();syncRun();setInterval(syncRun,15000);
+renderLogs();loadSettings();loadProviders();loadPlans();syncRun();setInterval(()=>{syncRun();loadPlans();},15000);
 </script></body></html>"""
 
 
@@ -1248,6 +1323,62 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
+    # ---------- 批次（统一排课，开跑时间仍按各账号定时/窗口错峰） ----------
+
+    @app.get("/api/plans")
+    def plans_api():
+        from ..core import plans as planmod
+
+        conn = db()
+        try:
+            return {"ok": True, "plans": planmod.list_plans(conn)}
+        finally:
+            conn.close()
+
+    @app.post("/api/plans")
+    def plans_create_api(body: dict):
+        from ..core import plans as planmod
+
+        conn = db()
+        try:
+            r = planmod.create_plan(conn, str(body.get("name") or ""),
+                                    str(body.get("course_name") or ""),
+                                    [int(a) for a in (body.get("account_ids") or [])],
+                                    enabled=bool(body.get("enabled", True)))
+            if r.get("ok"):
+                _log_event(0, "plan-create",
+                           f"{body.get('name')}｜{body.get('course_name')}｜"
+                           f"{len(body.get('account_ids') or [])} 个账号")
+            return r
+        finally:
+            conn.close()
+
+    @app.post("/api/plans/{plan_id}/toggle")
+    def plans_toggle_api(plan_id: int, body: dict):
+        from ..core import plans as planmod
+
+        conn = db()
+        try:
+            enabled = bool(body.get("enabled"))
+            r = planmod.set_enabled(conn, plan_id, enabled)
+            if r.get("ok"):
+                _log_event(0, "plan-toggle", f"#{plan_id}→{'启用' if enabled else '停用'}")
+            return r
+        finally:
+            conn.close()
+
+    @app.delete("/api/plans/{plan_id}")
+    def plans_delete_api(plan_id: int):
+        from ..core import plans as planmod
+
+        conn = db()
+        try:
+            planmod.delete_plan(conn, plan_id)
+            _log_event(0, "plan-delete", f"#{plan_id}")
+            return {"ok": True}
+        finally:
+            conn.close()
+
     @app.post("/api/study/start")
     def study_start(body: dict):
         """为账号启动一门课的学习会话（子进程 xxt mlearn --accounts <id>）。"""
@@ -1272,6 +1403,11 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "error": "该账号还没有课程数据，先为其抓取课程（xxt courses --account）"}
         root = pathlib.Path(settings.root)
         proc = _spawn(str(root), "mlearn", course, "--accounts", str(account_id))
+        # 立刻写运行标记（子进程自己写前有 1~2 秒空窗，期间再点一次就会双开）。
+        # 标记内容与子进程一致：pid=子进程 pid，退出时由子进程清理。
+        from ..core.runmark import write_marker
+
+        write_marker(settings.data_dir, account_id, course, pid=proc.pid)
         _JOBS[account_id] = {"proc": proc, "course": course, "since": time.strftime("%H:%M")}
         _log_event(account_id, "session-start", f"{course}｜{body.get('source', '手动')}启动")
         return {"ok": True}
