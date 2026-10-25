@@ -164,10 +164,21 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
  align-items:center;padding:.3rem 0;border-bottom:1px dashed var(--line);font-size:.8rem}
 .statrow b{font-weight:600}
 .statrow .flag{font-size:.65rem;color:var(--warn,#b8860b);margin-left:.25rem;cursor:pointer;white-space:nowrap}
-.profrow{display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;padding:.3rem 0;
- border-bottom:1px dashed var(--line);font-size:.8rem}
-.profrow input{width:110px;padding:.18rem .4rem;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.78rem}
-.profrow .pfname{width:88px}
+#profBody{overflow-x:auto;margin-top:.3rem}
+.ptable{width:100%;border-collapse:collapse;font-size:.75rem;background:var(--card);
+ border:1px solid var(--line);border-radius:12px;overflow:hidden;min-width:1050px}
+.ptable th,.ptable td{border-bottom:1px solid var(--line);padding:.3rem .4rem;text-align:left;
+ vertical-align:middle;white-space:nowrap}
+.ptable thead th{background:#f7f9fd;color:var(--muted);font-weight:600;font-size:.72rem}
+.ptable tr:last-child td{border-bottom:none}
+.ptable tbody tr:hover td{background:#f7f9fd}
+.ptable .pf{width:100%;min-width:70px;padding:.16rem .35rem;border:1px solid var(--line);
+ border-radius:7px;font:inherit;font-size:.74rem;background:var(--bg)}
+.ptable .ro{color:var(--muted)}
+.ptable .cellops{display:flex;gap:.3rem}
+.ptable.pick label{display:flex;align-items:center;gap:.35rem;cursor:pointer}
+.ptable.pick tr.off td{opacity:.45}
+.ptable.pick tr.off label{cursor:not-allowed}
 .toolbar .muted{font-size:.85rem}
 #synced{margin-left:auto;font-size:.75rem;color:#a3aac0}
 .flash{animation:flash 1.2s ease}
@@ -357,9 +368,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   </section>
   <section class="batch">
     <div class="bhead"><b>🏷 画像设置</b>
-      <span class="muted">学号 + 年级/专业/学期；填了才能按这些维度分组，留空归入「未标注」</span>
+      <span class="muted">姓名/学号/年级/专业/学期参与统计分组；学校/院系/班级/平台昵称只展示。平台读取可自动回填，不足的手补</span>
       <span class="spacer"></span>
-      <input id="profQ" placeholder="🔍 按姓名/备注/学号筛选账号" style="width:200px"
+      <input id="profQ" placeholder="🔍 搜 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级" style="width:200px"
         oninput="renderProfiles()">
     </div>
     <div id="profBody" class="muted" style="font-size:.82rem">加载中…</div>
@@ -430,7 +441,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>课程名</label><input type="text" id="pl_course" style="width:240px" list="pl_courses" placeholder="填该账号课程列表里的课名"></div>
   <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label>
     <span style="flex:1"></span>
-    <button class="minibtn" title="打开账号选择器：可按姓名/备注/学号搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
+    <button class="minibtn" title="打开账号选择器：可按 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级 搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
     <button class="minibtn" onclick="clearPicked()">清空</button>
     <span class="muted" id="pl_count">已选 0 个</span>
   </div>
@@ -442,7 +453,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <dialog id="pickDlg"><h3>选择账号</h3>
   <div class="pbar">
-    <input id="pk_q" placeholder="🔍 搜姓名/备注/学号" oninput="renderPick()">
+    <input id="pk_q" placeholder="🔍 搜 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级" oninput="renderPick()">
     <label class="chk"><input type="checkbox" id="pk_onlyfree" checked onchange="renderPick()">只看未排</label>
     <select id="pk_grade" onchange="renderPick()"><option value="">全部年级</option></select>
     <select id="pk_major" onchange="renderPick()"><option value="">全部专业</option></select>
@@ -826,43 +837,58 @@ function renderProfiles(){
   const el=document.getElementById('profBody'); if(!el)return;
   if(!PROFILES.length){el.innerHTML='<span class="muted">还没有账号</span>';return;}
   const q=(document.getElementById('profQ')?.value||'').trim().toLowerCase();
-  const rows=PROFILES.filter(p=>!q||[p.label,p.name,p.display_name,p.platform_name,
-      p.student_no,p.grade,p.major,p.term].join(' ').toLowerCase().includes(q));
+  const rows=PROFILES.filter(p=>!q||[p.account_id,p.label,p.name,p.display_name,p.platform_name,
+      p.student_no,p.grade,p.major,p.term,p.school,p.dept,p.cls,p.source]
+      .join(' ').toLowerCase().includes(q));
   if(!rows.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的账号</span>';return;}
-  el.innerHTML=rows.map(p=>`<div class="profrow">
-      <b style="min-width:150px" title="账号 #${p.account_id}｜备注名：${esc(p.label)}｜平台昵称：${esc(p.platform_name||'未知')}">#${p.account_id} ${esc(p.display_name||p.label)}
-        ${p.source==='platform'?'<span class="b-ok" style="font-size:.7rem">平台</span>':''}${(p.label&&p.display_name&&p.display_name!==p.label)?`<span class="muted" style="font-weight:400">（${esc(p.label)}）</span>`:''}</b>
-      <input id="pf_n_${p.account_id}" class="pf pfname" placeholder="姓名" value="${esc(p.display_name)}">
-      <input id="pf_s_${p.account_id}" class="pf" placeholder="学号" value="${esc(p.student_no)}">
-      <input id="pf_g_${p.account_id}" class="pf" placeholder="年级" value="${esc(p.grade)}">
-      <input id="pf_m_${p.account_id}" class="pf" placeholder="专业" value="${esc(p.major)}">
-      <input id="pf_t_${p.account_id}" class="pf" placeholder="学期" value="${esc(p.term)}">
-      <button class="minibtn" onclick="saveProfile(${p.account_id})">保存</button>
-      <button class="minibtn" title="只读访问一次个人中心，尝试抓取平台上的姓名/学号并回填（不覆盖你已手填的内容）"
-        onclick="readProfileFromPlatform(${p.account_id})">⬇ 平台读取</button></div>`).join('')
-      + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名框预填“当前生效姓名”（你手填的优先，其次平台昵称）；点『保存』即把框中当前值写回。姓名留空则卡片显示平台昵称。例：2024123456 / 2024级 / 计算机科学与技术 / 2026秋。学号只用于本地面板识别，不上传</div>';
+  const inp=(id,k,v,ph)=>`<input id="pf_${k}_${id}" class="pf" placeholder="${esc(ph)}" value="${esc(v||'')}">`;
+  el.innerHTML='<table class="ptable"><thead><tr>'
+    + '<th>账号</th><th>备注名</th><th>姓名</th><th>平台昵称</th><th>学号</th>'
+    + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th>'
+    + '<th>来源</th><th>操作</th></tr></thead><tbody>'
+    + rows.map(p=>{const id=p.account_id;return `<tr>
+        <td class="ro" title="账号 #${id}">#${id}</td>
+        <td class="ro" title="账号备注名（面板显示名）">${esc(p.label||'')}</td>
+        <td>${inp(id,'n',p.display_name,p.platform_name||'姓名')}</td>
+        <td class="ro" title="平台昵称（只读，登录后自动带出）">${esc(p.platform_name||'—')}</td>
+        <td>${inp(id,'s',p.student_no,'学号')}</td>
+        <td>${inp(id,'g',p.grade,'年级')}</td>
+        <td>${inp(id,'m',p.major,'专业')}</td>
+        <td>${inp(id,'t',p.term,'学期')}</td>
+        <td>${inp(id,'sc',p.school,'学校')}</td>
+        <td>${inp(id,'dp',p.dept,'院系')}</td>
+        <td>${inp(id,'cl',p.cls,'班级')}</td>
+        <td class="ro">${p.source==='platform'?'<span class="b-ok">平台</span>':(p.source==='manual'?'<span class="b-info">手动</span>':'—')}</td>
+        <td class="ro"><div class="cellops">
+          <button class="minibtn" onclick="saveProfile(${id})">保存</button>
+          <button class="minibtn" title="只读访问一次个人中心，尝试抓取平台上的姓名/学号/学校/院系/班级并回填（不覆盖你已手填的内容）"
+            onclick="readProfileFromPlatform(${id})">⬇ 平台读取</button></div></td></tr>`;}).join('')
+    + '</tbody></table>'
+    + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名/学号/年级/专业/学期/学校/院系/班级可编辑，留空即清空；平台读取只补空、不覆盖手填。姓名留空则卡片显示平台昵称。学号只用于本地面板识别，不上传</div>';
 }
 function saveProfile(id){
   const v=k=>{const el=document.getElementById(`pf_${k}_${id}`);return el?el.value.trim():'';};
   fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,name:v('n'),student_no:v('s'),grade:v('g'),
-      major:v('m'),term:v('t')})})
+      major:v('m'),term:v('t'),school:v('sc'),dept:v('dp'),cls:v('cl')})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('保存失败：'+d.error,1);return;}
-    toast('✔ 画像已保存（姓名/学号/年级/专业/学期）');
+    toast('✔ 画像已保存（姓名/学号/年级/专业/学期/学校/院系/班级）');
     syncRun();loadStats();loadProfiles();});
 }
-const FIELD_CN={name:'姓名',student_no:'学号',grade:'年级',major:'专业',term:'学期'};
+const FIELD_CN={name:'姓名',student_no:'学号',grade:'年级',major:'专业',term:'学期',
+  school:'学校',dept:'院系',cls:'班级'};
 function readProfileFromPlatform(id){
-  if(!confirm('将从平台只读访问一次个人中心，尝试抓取姓名/学号并回填（不覆盖已手填内容；需该账号已登录）。继续？'))return;
+  if(!confirm('将从平台只读访问一次个人中心，尝试抓取 姓名/学号/学校/院系/班级 并回填（只补空、不覆盖手填；需该账号已登录）。继续？'))return;
   toast('⏳ 正在从平台读取（约 5–15 秒）…');
   fetch(`/api/accounts/${id}/profile_from_platform`,{method:'POST'})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('平台读取失败：'+(d.error||'未知'),1);return;}
     const f=(d.merged&&d.merged.filled)||[], s=(d.merged&&d.merged.skipped)||[];
-    const fp=f.length?'回填 '+f.map(k=>FIELD_CN[k]||k).join('/'):'没有可回填的新字段';
+    const fp=f.length?'已回填 '+f.map(k=>FIELD_CN[k]||k).join('/'):'无新字段可回填';
     const sp=s.length?'；保留手填 '+s.map(k=>FIELD_CN[k]||k).join('/'):'';
-    toast('✔ 平台读取完成：'+fp+sp);
+    const fl=(d.fields&&d.fields.length)?'。平台返回字段：'+d.fields.join('/'):'';
+    toast('✔ 平台读取完成：'+fp+sp+fl);
     syncRun();loadProfiles();
   }).catch(e=>toast('平台读取失败：'+e,1));
 }
@@ -975,20 +1001,36 @@ function pickVisible(){
     if(g&&(p.grade||'')!==g)return false;
     if(m&&(p.major||'')!==m)return false;
     if(!q)return true;
-    return [a.label,a.platform_username,p.name,p.student_no,p.grade,p.major,p.term,a.note]
-      .filter(Boolean).join(' ').toLowerCase().includes(q);
+    return [a.id,a.label,a.platform_username,p.name,p.student_no,p.grade,p.major,p.term,
+      p.school,p.dept,p.cls,a.note].filter(Boolean).join(' ').toLowerCase().includes(q);
   });
 }
 function renderPick(){
   const box=document.getElementById('pk_list'); if(!box)return;
   const rows=pickVisible();
-  box.innerHTML=rows.map(a=>{
-    const b=PLBUSY[a.id];
-    return `<label class="${b?'off':''}" title="${b?'已在《'+esc(b)+'》里，需先停用原批次':'勾选后点「确定添加」加入批次'}">
-      <input type="checkbox" value="${a.id}" ${b?'disabled':''} ${PKSEL.has(a.id)?'checked':''}
-        onchange="pickToggle(${a.id},this.checked)">#${a.id} ${esc(accName(a))}
-      <span class="muted">${esc(accDesc(a))}</span>${b?'<span class="muted">(已排)</span>':''}</label>`;
-  }).join('')||`<span class="muted">${(ACCOUNTS||[]).length?'没有匹配的账号（试试清空搜索或取消筛选）':'还没有账号'}</span>`;
+  if(!rows.length){box.innerHTML=`<span class="muted">${(ACCOUNTS||[]).length?'没有匹配的账号（试试清空搜索或取消筛选）':'还没有账号'}</span>`;return;}
+  const dash='<span class="muted">—</span>';
+  box.innerHTML='<table class="ptable pick"><thead><tr>'
+    + '<th>选</th><th>账号</th><th>备注名</th><th>姓名</th><th>平台昵称</th><th>学号</th>'
+    + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th><th>状态</th>'
+    + '</tr></thead><tbody>'
+    + rows.map(a=>{const b=PLBUSY[a.id], p=a.profile||{};
+      return `<tr class="${b?'off':''}" title="${b?'已在《'+esc(b)+'》里，需先停用原批次':'勾选后点「确定添加」加入批次'}">
+        <td><input type="checkbox" value="${a.id}" ${b?'disabled':''} ${PKSEL.has(a.id)?'checked':''}
+          onchange="pickToggle(${a.id},this.checked)"></td>
+        <td class="ro">#${a.id}</td>
+        <td class="ro">${esc(a.label||'')||dash}</td>
+        <td>${esc(accName(a))}</td>
+        <td class="ro">${esc(a.platform_username||'')||dash}</td>
+        <td class="ro">${esc(p.student_no||'')||dash}</td>
+        <td class="ro">${esc(p.grade||'')||dash}</td>
+        <td class="ro">${esc(p.major||'')||dash}</td>
+        <td class="ro">${esc(p.term||'')||dash}</td>
+        <td class="ro">${esc(p.school||'')||dash}</td>
+        <td class="ro">${esc(p.dept||'')||dash}</td>
+        <td class="ro">${esc(p.cls||'')||dash}</td>
+        <td class="ro">${b?`<span class="b-warn" style="font-size:.7rem">已在《${esc(b)}》</span>`:'<span class="muted">可选</span>'}</td>
+      </tr>`;}).join('')+'</tbody></table>';
   document.getElementById('pk_count').textContent=`已选 ${PKSEL.size} 个`;
 }
 function pickToggle(id,on){if(on)PKSEL.add(+id);else PKSEL.delete(+id);
@@ -1860,7 +1902,10 @@ def create_app(settings: Settings) -> FastAPI:
                                      student_no=str(body.get("student_no") or ""),
                                      grade=str(body.get("grade") or ""),
                                      major=str(body.get("major") or ""),
-                                     term=str(body.get("term") or ""))
+                                     term=str(body.get("term") or ""),
+                                     school=str(body.get("school") or ""),
+                                     dept=str(body.get("dept") or ""),
+                                     cls=str(body.get("cls") or ""))
             return r
         finally:
             conn.close()

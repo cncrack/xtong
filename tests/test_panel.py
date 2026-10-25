@@ -57,6 +57,18 @@ class TestPanel(unittest.TestCase):
         row = next(p for p in plans if p["id"] == pid)
         self.assertFalse(row["enabled"])  # 新建批次默认不启用，需手动启用
 
+    def test_profile_roundtrip_includes_platform_fields(self):
+        r = self.client.post("/api/profiles", json={
+            "account_id": 1, "name": "张三", "student_no": "2024001",
+            "grade": "2024级", "major": "计算机", "term": "2026秋",
+            "school": "某某大学", "dept": "计算机学院", "cls": "1班"})
+        self.assertTrue(r.json()["ok"])
+        p = next(x for x in self.client.get("/api/profiles").json()["profiles"]
+                 if x["account_id"] == 1)
+        self.assertEqual(p["school"], "某某大学")
+        self.assertEqual(p["dept"], "计算机学院")
+        self.assertEqual(p["cls"], "1班")
+
     def test_settings_roundtrip(self):
         r = self.client.put("/api/settings", json={
             "quiz_enabled": True, "window_start": "09:30", "window_end": "22:30",

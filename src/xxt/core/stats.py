@@ -27,36 +27,44 @@ def get_profile(conn: sqlite3.Connection, account_id: int) -> dict[str, Any]:
                        (account_id,)).fetchone()
     platform_name = (plt["platform_username"] or "") if plt else ""
     row = conn.execute(
-        "SELECT name, student_no, grade, major, term, source FROM account_profiles"
-        " WHERE account_id=?", (account_id,)).fetchone()
+        "SELECT name, student_no, grade, major, term, school, dept, cls, source"
+        " FROM account_profiles WHERE account_id=?", (account_id,)).fetchone()
     base = {"account_id": account_id, "name": "", "platform_name": platform_name,
-            "student_no": "", "grade": "", "major": "", "term": "", "source": ""}
+            "student_no": "", "grade": "", "major": "", "term": "",
+            "school": "", "dept": "", "cls": "", "source": ""}
     if row is None:
         base["display_name"] = platform_name
         return base
     out = {**base, "name": row["name"] or "", "student_no": row["student_no"] or "",
            "grade": row["grade"] or "", "major": row["major"] or "",
-           "term": row["term"] or "", "source": row["source"] or ""}
+           "term": row["term"] or "", "school": row["school"] or "",
+           "dept": row["dept"] or "", "cls": row["cls"] or "",
+           "source": row["source"] or ""}
     out["display_name"] = out["name"] or platform_name
     return out
 
 
 def set_profile(conn: sqlite3.Connection, account_id: int, *, name: str = "",
                 student_no: str = "", grade: str = "", major: str = "",
-                term: str = "", source: str = "manual") -> dict[str, Any]:
+                term: str = "", school: str = "", dept: str = "", cls: str = "",
+                source: str = "manual") -> dict[str, Any]:
     """写入/更新画像（留空即清空该维度，统计里会归入"未标注"）。"""
     if conn.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
         return {"ok": False, "error": f"账号 #{account_id} 不存在"}
     conn.execute(
         "INSERT INTO account_profiles(account_id, name, student_no, grade, major, term,"
-        " source, updated_at) VALUES(?,?,?,?,?,?,?,datetime('now'))"
+        " school, dept, cls, source, updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))"
         " ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,"
         " student_no=excluded.student_no, grade=excluded.grade, major=excluded.major,"
-        " term=excluded.term, source=excluded.source, updated_at=excluded.updated_at",
+        " term=excluded.term, school=excluded.school, dept=excluded.dept, cls=excluded.cls,"
+        " source=excluded.source, updated_at=excluded.updated_at",
         (account_id, (name or "").strip() or None,
          (student_no or "").strip() or None,
          (grade or "").strip() or None, (major or "").strip() or None,
-         (term or "").strip() or None, source or "manual"))
+         (term or "").strip() or None, (school or "").strip() or None,
+         (dept or "").strip() or None, (cls or "").strip() or None,
+         source or "manual"))
     conn.commit()
     return {"ok": True, **get_profile(conn, account_id)}
 
@@ -73,8 +81,9 @@ def merge_platform_profile(conn: sqlite3.Connection, account_id: int,
     cur = get_profile(conn, account_id)
     filled, skipped = [], []
     merged = {"name": cur["name"], "student_no": cur["student_no"],
-              "grade": cur["grade"], "major": cur["major"], "term": cur["term"]}
-    for field in ("name", "student_no", "grade", "major", "term"):
+              "grade": cur["grade"], "major": cur["major"], "term": cur["term"],
+              "school": cur["school"], "dept": cur["dept"], "cls": cur["cls"]}
+    for field in ("name", "student_no", "grade", "major", "term", "school", "dept", "cls"):
         val = (data.get(field) or "").strip()
         if not val:
             continue
@@ -95,7 +104,7 @@ def list_profiles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     out = []
     for r in conn.execute(
             "SELECT a.id, a.label, a.status, a.platform_username, p.name, p.student_no,"
-            " p.grade, p.major, p.term, p.source"
+            " p.grade, p.major, p.term, p.school, p.dept, p.cls, p.source"
             " FROM accounts a LEFT JOIN account_profiles p ON p.account_id = a.id"
             " ORDER BY a.id"):
         name, student_no = r["name"] or "", r["student_no"] or ""
@@ -104,7 +113,9 @@ def list_profiles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                     "name": name, "platform_name": platform_name,
                     "display_name": name or platform_name, "student_no": student_no,
                     "grade": r["grade"] or "", "major": r["major"] or "",
-                    "term": r["term"] or "", "source": r["source"] or ""})
+                    "term": r["term"] or "", "school": r["school"] or "",
+                    "dept": r["dept"] or "", "cls": r["cls"] or "",
+                    "source": r["source"] or ""})
     return out
 
 

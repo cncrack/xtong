@@ -140,6 +140,9 @@ CREATE TABLE IF NOT EXISTS account_profiles (
     grade      TEXT,
     major      TEXT,
     term       TEXT,
+    school     TEXT,
+    dept       TEXT,
+    cls        TEXT,
     source     TEXT,
     updated_at TEXT
 );
@@ -173,6 +176,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     for name, decl in (("name", "TEXT"),            # 姓名（默认取平台昵称，可手改）
                        ("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
                        ("grade", "TEXT"), ("major", "TEXT"), ("term", "TEXT"),
+                       ("school", "TEXT"), ("dept", "TEXT"), ("cls", "TEXT"),
+                       # 学校/院系/班级：平台读取回填，只展示不参与统计维度
                        ("source", "TEXT")):          # source: manual | platform
         if name not in pcols:
             conn.execute(f"ALTER TABLE account_profiles ADD COLUMN {name} {decl}")
