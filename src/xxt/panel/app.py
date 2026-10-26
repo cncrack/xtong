@@ -573,6 +573,11 @@ function renderAccounts(){
                  a.window?`窗口 ${esc(a.window)}`:'',a.proxy?'代理':'',
                  a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
                  a.start_at?`定时 ${a.start_at}`:(AUTOPLAN.times[a.id]?`今日定时 ${AUTOPLAN.times[a.id]}`:'定时未设'),
+                 // 定时只是“计划时刻”：真正去开刷的是「⏱ 定时调度」守护进程；
+                 // 守护没在跑时显式标红，避免误以为到点会自动开刷（2026-10-26 用户疑问）
+                 (a.start_at&&!AUTOSTATE.running)
+                   ? `<span style="color:#c0392b" title="这只是计划时刻：需点顶部「⏱ 定时调度」启动守护进程，到点才会自动开刷（不启动则今天不会自己跑）">⏱ 调度未启动</span>`
+                   : '',
                  a.renew_count?`续期${a.renew_count}次`:'',
                  a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' ]
                  .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');

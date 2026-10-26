@@ -74,10 +74,34 @@ DB 复核：`account_profiles` 两行 `name/school` 已填、`source=platform`�
 - `scripts/fill_profiles.py`（新增：串行补画像工具）
 - `tests/test_profile_read.py`（新增 7 条）
 - `STATUS.md`、`docs/PLAN.md`（v0.17）、本 devlog
-- 临时诊断（`data/` 已 gitignore）：`data/debug/probe_profile.py`、`probe_profile2.py`、`diag_ui9.py`
+- 临时诊断（`data/` 已 gitignore）：`data/debug/probe_profile.py`、`probe_profile2.py`、`diag_ui9.py`、`diag_ui10.py`
+
+## 追加（同日）：用户问“定时任务为何没启动” → 卡片补「调度未启动」提示
+
+**用户疑问**：卡片上有「定时 10:14 / 09:20」，但今天什么都没跑；且问“单账号设了定时不是会按自己时间自启动吗，和面板的「定时调度」什么关系”。
+
+**核实（读码 + 查库，未访问平台）**：
+
+| 事实 | 证据 |
+|---|---|
+| 「定时 hh:mm」只是账号级 `start_at`，即**计划时刻**，自身不执行任何动作 | `panel/app.py` 卡片 chips 直接展示 `a.start_at` |
+| 真正执行者只有一个：「⏱ 定时调度」= `xxt auto` 守护进程，每 30s 巡检 | `cli.py::cmd_auto` 主循环 |
+| 守护**不会随面板启动自动拉起** | `cmd_panel` 只 `uvicorn.run`，无 auto spawn |
+| 今天守护从没跑过 | `data/run/auto.json` 不存在；`app_config.auto.plan` 还停在 `2026-10-24`；今日 `run_logs` 无 `session-start` |
+| `plans` 表为空（凌晨删光）→ 即使守护在跑也只会按课程轮转随机选课 | `SELECT ... FROM plans` 0 行 |
+
+**触发条件（代码为准）**：① 守护在跑 → ② 账号 `active` 且在有效期内 → ③ `now >= 计划时刻`（有 `start_at` 用它；空则 `window_start` + 0~120 分钟随机）→ ④ `state.json` 存在（已登录）否则今日跳过 → ⑤ 启用中的批次课优先，否则课程轮转，无课则跳过 → ⑥ 经面板 `/api/study/start` 启动（共用防双开锁，面板无响应 30s 重试）→ ⑦ 每号每天只触发一次 → ⑧ 额度到顶由会话内部自停。
+
+**补充定论**：学习窗口**不是**“允许启动的区间”，而是**停止条件**——`astudy.run()` 开头就 `within_daily_window(effective_pace)` 校验，窗口外直接返回“超出每日学习时段”，且**零浏览器零请求**。但 auto 只借 `window_start` 算随机起点，**不校验 `window_end`**；若 `start_at` 被设在窗口外，到点仍会被 spawn（`ok=True` 记为 fired），会话随即立即停 → 当天白费，次日也不补。
+
+**落地（用户选“卡片显示守护是否在跑”）**：`panel/app.py` 卡片 chips 在 `a.start_at` 且 `!AUTOSTATE.running` 时追加红字 **「⏱ 调度未启动」**，hover 提示“这只是计划时刻：需点顶部「⏱ 定时调度」启动守护进程，不启动则今天不会自己跑”。
+
+**验证**：`py_compile` 0 · `check_js` 0 · 重启面板无 traceback · `diag_ui10.py`：真实状态显示 `定时 10:14 ＋ ⏱ 调度未启动`（两号皆是），模拟 `AUTOSTATE.running=true` 后红字消失，`pageerror=0` · `pytest` 111 passed。
+
+**用户未选（暂不做）**：面板启动时自动拉起守护、到点多号错峰补跑。
 
 ## 交接块
 
-- **进行中**：✅ 无。画像 `name/school` 两号已补；院系/班级/学号平台该页无 → **用户已决定后期手工补**（不为此再访问平台）
+- **进行中**：✅ 无。画像 `name/school` 两号已补；院系/班级/学号平台该页无 → **用户已决定后期手工补**（不为此再访问平台）；卡片已能看出守护是否在跑
 - **下一步第一个动作**：用户 `Ctrl+F5` →「📚 批次 → ＋新建批次」→ 课程下拉应显示「泉州信息工程学院」；「＋选择账号」的学校筛选里也应有该学校
 - **阻塞点**：无
