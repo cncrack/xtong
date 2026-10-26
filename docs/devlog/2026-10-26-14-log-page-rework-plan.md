@@ -1,0 +1,93 @@
+# 会话 42：日志页四问 + 改造方案（本轮不改代码）
+
+- 日期：2026-10-26
+- 结论：**代码零改动**。现场核实 + 解释四个疑问 + 把日志页改造拆成决策完整的待办，用户拍板"下午再做"。
+
+## 一、用户提出的四个疑问（原话要点）
+
+1. 日志页记录只到 `09:46:51`，之后全没——但终端里有 `11:39/11:42/11:43 子进程 auto 已启动`。
+2. 日志页旁的账号下拉把全部账号塞进去，账号一多就是超长列表，应该改成"筛选"。
+3. 旁边的「⟳ 刷新」是干什么的？不是自动刷新吗？
+4. 面板终端里为什么有那三条"子进程 auto 已启动"，"现在项目是不是停止了"？
+5. 另一处："只做了代码审查、没实跑"是什么意思（指守护缺课预核与 `--force` 分支）。
+
+## 二、现场核实（证据）
+
+| 核查项 | 结果 |
+|---|---|
+| 面板进程 | **已退出**（8300 端口无监听）→ 已用 `.venv\Scripts\xxt.exe panel` 重启，页面 77288 字符（新代码） |
+| 学习会话 | `jobs = {}`，无会话在跑 |
+| 守护 | `data/run/auto.json` 指向 pid 13512，**进程已不存在**；`sub-auto-114321.log` 末尾为"守护退出" → 守护已停。残留 marker 已删除（`/api/study/status` 本身也会对死 pid 自动清） |
+| 今日 `run_logs` | 最后一条 `2026-10-26T09:46:51 profile-read`；分布：plan-delete 7 / plan-create 7 / work-answer 6 / plan-update 4 / profile-read 2 / plan-toggle 2；**auto、session 相关 = 0 条** |
+| 当前定时 | `#1 start_at=10:14`、`#2 start_at=09:20`（实测后已还原，两者均已过点） |
+
+## 三、给用户的四条结论（解释用）
+
+1. **页面日志只到 9:46 是真缺陷**：日志页 `/api/logs` 只读 `run_logs` 表（业务事件）；而面板自身的 `INFO` 行写 `data/logs/xxt.log`、守护子进程的 `print` 写 `data/logs/sub-auto-*.log`——两份文件都不入库，所以页面看不见 11 点以后的动作。11 点后做的都是"起停守护、改定时、验证 UI"，本来就不产生业务事件。
+2. **11:42:22 / 11:43:21 两次 auto 启动不是我起的**：11:34:42、11:39:16 是实测脚本起的（等 45 秒后自己 stop 并还原）；面板前端只有点击「⏱ 定时调度」才发 `start/stop`（15 秒轮询只读状态，`create_app` 里也没有自启钩子）。每次点击都 spawn 新进程 + 新 `sub-auto-*.log`，旧句柄丢失/被 Ctrl+C 就留下多条。
+3. **「⟳ 刷新」只是立即刷一次**：页面 `setInterval(syncRun, 15000)` 每 15 秒自动刷新账号/统计/日志；按钮语义没写清，容易误解。
+4. **"只做了代码审查"**：守护侧的缺课预核与 CLI `--force` 分支，只有"真起会话 + 到点触发"才走得到；实跑就要真登录平台、真开学习会话（违反最小访问原则），故只做了逐行代码审查、标注"待实况验证"。作为对比，CLI 双开守卫是实跑验证过的。
+
+## 四、下午待办：日志页改造（用户已选四项，含个人补充）
+
+> 用户选择：守护/调度事件入库 + 加「系统日志」视图 + 账号筛选改可搜索 + 把刷新按钮换成"自动刷新"开关；时机 = **下午再做**。
+
+### ① 调度事件入库（`src/xxt/cli.py::cmd_auto`）
+
+复用 `cli.py` 已有直写 `run_logs` 的写法（`session-end` 那段）：
+
+| 事件 | account_id | detail 示例 |
+|---|---|---|
+| `auto-start` | 0 | `巡检 2 号｜今日计划 #1 10:14、#2 23:50` |
+| `auto-fire` | 账号 id | `《知行合一，做最好的自己》｜来源=轮转` |
+| `auto-skip` | 账号 id | `缺课（课程ID 999）` / `已学完` / `窗口外` / `启动失败：…` |
+| `auto-stop` | 0 | `运行 1h20m｜触发 2 次｜跳过 1 次` |
+
+- **去重（关键）**：守护 30 秒巡检，不能每轮写库。内存 `announced: set[int]` 记已打印计划的账号；`fired: dict[int,str]` 只在"该账号今日首次触发/原因变化"时写；进程重启后的兜底：先查 `SELECT 1 FROM run_logs WHERE ts LIKE '今日%' AND event=:ev AND account_id=:aid`。
+- 量级：每天每号 ≤ 5 行，可接受（`run_logs` 目前无清理策略，见第五节）。
+- 命名沿用 `0 = 系统/全局` 约定（`plan-*` 事件已是 `#0`，统计页 `account_id=0` 不计入账号维度）。
+
+### ② 「系统日志」视图（`/api/logs` + 前端来源下拉）
+
+- `GET /api/logs?source=event|sys&min_level=WARNING|INFO&sub=0|1`
+- `sys`：读 `data/logs/xxt.log` 尾部 ≤ 2000 行，正则 `^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d),\d+ (\w+) \[([^\]]+)\] (.*)$` → `{ts, level, event=logger, detail=msg, account_id:0}`；默认只回 WARNING/ERROR。
+- `sub=1`：把当天 `sub-*.log` 也并入（`event` 标注为 `sub:<cmd>`），用于看守护决策与子进程 traceback。
+- 前端「来源」下拉：`业务事件 / 系统日志（警告+错误）/ 系统日志（全部）/ 含子进程`。
+
+### ③ 账号筛选改可搜索（不要长下拉）
+
+- `select#logAcc` → `input#logAcc` + `datalist#logAccList`，placeholder：`全部账号（输入 #1 或姓名）`。
+- 新增 `LOGACC`（`''` = 全部）持久化用户输入；解析规则：`#N`/纯数字 → 按 id；否则按 `display_name/label/platform_username` 模糊；**填了但匹配不到 → 表格区显示"未匹配到账号"，不发请求**。
+- `fillLogAccounts()` 只更新 datalist（含"全部账号"项），**不覆盖输入框当前值**（15 秒轮询重渲染，值必须来自 `LOGACC`）。
+- 多命中的模糊词 → 前端传 `accounts=1,2`（后端加参数，SQL 用 `IN`）。
+
+### ④ 「刷新」→ 自动刷新开关
+
+- 移除「⟳ 刷新」，改为复选框 `自动刷新`（默认开，存 `localStorage.logAuto`）+ 右侧 `更新于 hh:mm:ss`。
+- 关闭时：`syncRun()` 不再调 `renderLogs()`（账号卡片/统计仍照常刷），旁边显示小按钮「刷一次」。
+
+### ⑤ 验收方式
+
+`py_compile` → `node --check`（`data/debug/check_js.py`，`_PAGE` 非原始串）→ 重启面板 → 实测：① 起一次守护看页面出现 `auto-start` ② 输入 `#2` 只出 #2 的行 ③ 关自动刷新后表格不再跳动、点"刷一次"能更新 → `pytest` → devlog 15 → commit。
+
+## 五、顺带记录的三个工程问题（下午一并决定）
+
+1. **孤儿守护**：面板退出/重启不会 terminate 守护（它是面板的子进程，但面板一死就变孤儿）。建议面板 shutdown 时若 `_AUTO` 存活 → terminate + 写 `auto-stop`，marker 仍保留以便"重启后可见"。
+2. **`run_logs` 无清理策略**：事件入库后会持续增长，建议加 `prune(keep_days=90)`（面板启动自检里调一次）。
+3. **`auto_stop` 用 `taskkill /F`**（仅 Windows）：`deploy/Dockerfile` 走 Linux 部署时需 `proc.terminate()` 分支。
+
+## 六、改动文件清单
+
+本轮**无代码改动**。新增/更新：
+
+- `docs/devlog/2026-10-26-14-log-page-rework-plan.md`（本文件）
+- `STATUS.md`：最近更新行、§3 交接（等用户 ⑦ 扩为"日志页改造 + 重建 exe"）、§5 新增会话 42
+- 现场操作（`data/` 已忽略）：重启面板、删残留 `data/run/auto.json`、新增诊断 `data/debug/q_state.py`（查 start_at / run_logs 分布）
+
+## 七、交接块
+
+- **进行中**：无。本轮只解释 + 落盘待办，代码未动，工作区仅文档改动。
+- **下一步第一个动作**：按第四节 ①~④ 改日志页（先 ① 入库，它决定页面能看到什么），再 ⑤ 验收 → devlog 15 → commit。
+- **阻塞点**：无。
+- **待提醒用户**：下午重建 `dist\xxt.exe`（`scripts/build_exe.py --onefile`，限并发后台跑），与日志页改造同批带上。
+- **风险提示**：`start_at` = 10:14 / 09:20 均已过点，此刻点「⏱ 定时调度」= 两个号立刻补跑。
