@@ -11,7 +11,7 @@ import sys
 import time
 from collections import deque
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from ..config import Settings
@@ -21,6 +21,28 @@ from ..store.db import connect
 # 学习会话进程表：account_id → {proc, course}（面板重启后进程仍活但失联，属已知限制）
 _JOBS: dict[int, dict] = {}
 _AUTO: dict | None = None  # 定时调度守护进程（面板一键开关）
+
+
+def _auto_who(request, source: str) -> str:
+    """标识“谁发起的启停”，让「📜 日志」能追溯（2026-10-27 加固）。
+
+    背景：10-26 有四次来源不明的守护启动，靠历史文件与日志才排到是诊断脚本。
+    现在前端按钮传 `source=ui`；脚本 / httpx / curl 一律记 API 并带 UA 特征。
+    """
+    if source == "ui":
+        return "面板按钮"
+    try:
+        ua = (request.headers.get("user-agent") or "")[:60] if request is not None else ""
+    except Exception:
+        ua = ""
+    low = ua.lower()
+    if "httpx" in low:
+        return "API(httpx)"
+    if "requests" in low:
+        return "API(requests)"
+    if "mozilla" in low:
+        return "API(浏览器)"
+    return f"API({ua or '无UA'})"
 
 
 def _spawn(root_str: str, *cmd: str):
@@ -723,9 +745,11 @@ function renderLogs(n){if(n)LOGN=n;
     if(!d.logs.length){box.innerHTML='<div class="muted">暂无记录</div>';}
     else box.innerHTML='<table>'+d.logs.map(l=>{
       const cls=l.event==='video-done'||l.event==='auto-fire'?'ev-good':
-        (l.event==='session-start'||l.event==='auto-start'||l.event==='auto-plan')?'ev-info':
+        (l.event==='session-start'||l.event==='auto-start'||l.event==='auto-plan'||
+         l.event==='auto-request'||l.event==='auto-replan')?'ev-info':
         (l.event==='session-stop'||l.event==='auto-skip'||l.event==='auto-stop'||
-         l.event==='auto-error'||l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
+         l.event==='auto-error'||l.event==='auto-plan-stale'||
+         l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
         <td class="mono">${esc(l.who)}</td><td class="ev ${cls}">${esc(l.event)}</td>
         <td>${esc(l.detail)}</td></tr>`;}).join('')+'</table>';
@@ -1284,7 +1308,7 @@ async function syncRun(){
 function toggleAuto(){
   const on=AUTOSTATE.running;
   if(on&&!confirm('停止定时调度？（已开的学习会话会自行跑到当日额度停机）'))return;
-  fetch('/api/auto/'+(on?'stop':'start'),{method:'POST'})
+  fetch('/api/auto/'+(on?'stop':'start')+'?source=ui',{method:'POST'})
     .then(r=>r.json()).then(d=>{if(!d.ok)alert(d.error);syncRun();});}
 function doRenew(){fetch('/api/accounts/'+EDIT.id+'/renew',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
@@ -2020,7 +2044,7 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
-    def _log_event(account_id: int, event: str, detail: str) -> None:
+    def _log_event(account_id: int, event: str, detail: str, level: str = "INFO") -> None:
         from ..log import get_logger
 
         get_logger("panel").info("[账号#%s] %s｜%s", account_id, event, detail)
@@ -2029,7 +2053,7 @@ def create_app(settings: Settings) -> FastAPI:
             conn.execute(
                 "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                 " VALUES(?,?,?,?,?)",
-                (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO", event, detail, account_id),
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), level, event, detail, account_id),
             )
             conn.commit()
         finally:
@@ -2310,16 +2334,24 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": False, "error": "该账号没有进行中的会话"}
 
     @app.post("/api/auto/start")
-    def auto_start():
-        """启动定时调度守护；PID 落 data/run/auto.json（面板重启后仍可见、可停）。"""
+    def auto_start(request: Request, source: str = "api"):
+        """启动定时调度守护；PID 落 data/run/auto.json（面板重启后仍可见、可停）。
+
+        `source=ui` 由前端按钮传入（其余记 API + UA），启动/拒绝都入库 → 日志页能答
+        “这个守护是谁开的”（2026-10-27 加固）。
+        """
         import json as _json
 
         global _AUTO
+        who = _auto_who(request, source)
         marker = settings.data_dir / "run" / "auto.json"
         if marker.exists():  # 旧守护还活着（如面板重启前启动的）——先确认
             try:
                 old = _json.loads(marker.read_text(encoding="utf-8"))
                 if _pid_alive(int(old["pid"])):
+                    _log_event(0, "auto-request",
+                               f"启动请求被拒（已在运行 pid={old['pid']}）｜来源={who}",
+                               "WARNING")
                     return {"ok": False, "error": "定时调度已在运行"}
             except Exception:
                 pass
@@ -2329,12 +2361,14 @@ def create_app(settings: Settings) -> FastAPI:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(_json.dumps({"pid": proc.pid, "since": since}),
                           encoding="utf-8")
+        _log_event(0, "auto-request", f"启动请求已受理（pid={proc.pid}）｜来源={who}")
         return {"ok": True}
 
     @app.post("/api/auto/stop")
-    def auto_stop():
+    def auto_stop(request: Request, source: str = "api"):
         """停止定时调度（含面板重启前的旧守护）；学习会话不被动。"""
         global _AUTO
+        who = _auto_who(request, source)
         marker = settings.data_dir / "run" / "auto.json"
         stopped = False
         if _AUTO and _AUTO["proc"].poll() is None:
@@ -2354,7 +2388,8 @@ def create_app(settings: Settings) -> FastAPI:
             marker.unlink(missing_ok=True)
         _AUTO = None
         if stopped:  # 面板侧停止也要在「📜 日志」留一笔（守护被强杀时自己写不了）
-            _log_event(0, "auto-stop", "面板停止定时调度（已在跑的学习会话不受影响）")
+            _log_event(0, "auto-stop",
+                       f"面板停止定时调度（来源={who}；已在跑的学习会话不受影响）")
         return {"ok": True} if stopped else {"ok": False, "error": "定时调度未在运行"}
 
     @app.get("/api/study/status")

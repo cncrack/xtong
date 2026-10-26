@@ -181,6 +181,56 @@ class TestPanel(unittest.TestCase):
         self.assertFalse(any("子进程日志行" in (x["detail"] or "") and x["event"].startswith("sub:")
                              for x in sub))  # 子进程文件里的 logging 行不重复
 
+    def test_auto_start_records_source_and_rejects_second(self):
+        """启停来源必须可追溯：面板按钮 → 面板按钮；重复启动被拒要留 WARNING。"""
+        import os
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        fake = mock.Mock(pid=os.getpid())  # 用自身 pid：_pid_alive 判活，但不会真被 kill
+        fake.poll.return_value = None
+        with mock.patch.object(appmod, "_spawn", return_value=fake) as spawn:
+            self.assertTrue(self.client.post("/api/auto/start?source=ui").json()["ok"])
+            self.assertFalse(self.client.post("/api/auto/start?source=ui").json()["ok"])
+            self.assertEqual(spawn.call_count, 1)  # 第二次没再拉起
+        try:
+            conn = connect(self.settings.db_path)
+            rows = conn.execute(
+                "SELECT level, event, detail FROM run_logs "
+                "WHERE event='auto-request' ORDER BY id").fetchall()
+            conn.close()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["level"], "INFO")
+            self.assertIn("面板按钮", rows[0]["detail"])
+            self.assertEqual(rows[1]["level"], "WARNING")
+            self.assertIn("被拒", rows[1]["detail"])
+        finally:
+            appmod._AUTO = None
+
+    def test_auto_start_api_flagged_by_ua(self):
+        """非 UI 入口（脚本 / httpx）记成 API 并带 UA 特征，事后能区分谁开的守护。"""
+        import os
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        fake = mock.Mock(pid=os.getpid())
+        fake.poll.return_value = None
+        with mock.patch.object(appmod, "_spawn", return_value=fake):
+            r = self.client.post("/api/auto/start",
+                                 headers={"User-Agent": "python-httpx/0.27.0"})
+            self.assertTrue(r.json()["ok"])
+        try:
+            conn = connect(self.settings.db_path)
+            row = conn.execute(
+                "SELECT detail FROM run_logs WHERE event='auto-request' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            self.assertIn("API(httpx)", row["detail"])
+        finally:
+            appmod._AUTO = None
+
 
 if __name__ == "__main__":
     unittest.main()

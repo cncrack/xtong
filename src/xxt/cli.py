@@ -595,9 +595,15 @@ def cmd_auto(args: argparse.Namespace) -> int:
             conn.close()
     except Exception:
         pass
-    _ev(0, "auto-start", f"守护启动（每 30 秒巡检）｜今日待跑 {len(planned)} 个账号"
-        if planned else "守护启动（每 30 秒巡检）")
+    def _plan_brief() -> str:
+        """计划摘要进 auto-start：10-26 的 23:50/23:55 缓存残留就是靠这行一眼认出来的。"""
+        if not planned:
+            return "｜今日计划待首轮巡检确定"
+        return "｜今日计划 " + "、".join(f"#{k} {planned[k]}" for k in sorted(planned))
+
+    _ev(0, "auto-start", "守护启动（每 30 秒巡检）" + _plan_brief())
     started_at = _time.monotonic()  # 供退出时汇报运行时长
+    first_pass = True  # 首轮：缓存计划与当前定时不一致时按 WARNING 记（便于追溯残留）
 
     while True:
         try:
@@ -618,6 +624,18 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 aid = row["id"]
                 if aid in fired or aid in skipped:
                     continue
+                if aid in planned and row["start_at"] and planned[aid] != row["start_at"]:
+                    # 以当前 start_at 为准：缓存可能来自上次运行/诊断脚本（10-26 的 23:5x
+                    # 残留就是这么来的）；运行中改定时也应生效（2026-10-27 加固）。
+                    old = planned[aid]
+                    planned[aid] = row["start_at"]
+                    if first_pass:
+                        _ev(0, "auto-plan-stale",
+                            f"#{aid} {row['label']} 缓存计划 {old} ≠ 当前定时 {planned[aid]}"
+                            "（已按当前定时执行；缓存多来自上次运行或诊断脚本）", "WARNING")
+                    else:
+                        _ev(0, "auto-replan",
+                            f"#{aid} {row['label']} 定时改为 {planned[aid]}（原 {old}）")
                 if aid not in planned:
                     if row["start_at"]:
                         planned[aid] = row["start_at"]
@@ -725,6 +743,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 conn.close()
             except Exception:
                 pass
+            first_pass = False
             _time.sleep(30)
         except KeyboardInterrupt:
             mins = int((_time.monotonic() - started_at) // 60)
