@@ -553,11 +553,61 @@ def cmd_auto(args: argparse.Namespace) -> int:
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
     print("[auto] 守护启动。到点后经面板启动学习会话（面板可见、可 ■ 停止）。Ctrl+C 退出。")
 
+    def _ev(aid: int, event: str, detail: str, level: str = "INFO") -> None:
+        """守护决策写入 run_logs → 面板「📜 日志」直接可见（aid=0 为系统级）。
+
+        只写“状态变化”（首次算出计划 / 触发 / 跳过 / 退出），不随 30 秒巡检重复写，
+        否则一天就刷出上千行把真事件顶掉（2026-10-26 用户要求“日志页能看到守护做了什么”）。
+        """
+        try:
+            conn = connect(s.db_path)
+            with conn:
+                conn.execute(
+                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                    " VALUES(?,?,?,?,?)",
+                    (_time.strftime("%Y-%m-%dT%H:%M:%S"), level, event, detail, aid),
+                )
+            conn.close()
+        except Exception:  # 日志失败绝不影响调度
+            pass
+
+    err_once: set[tuple[int, str]] = set()  # 同账号同原因只记一次，避免重试刷屏
+    # 重启续跑：今日计划与已触发/已跳过从库里恢复——否则守护一重启就重新随机时刻，
+    # 已刷完的号还会被再刷一次（“每账号每天只自动启动一次”会被打破）。
+    try:
+        conn = connect(s.db_path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key='auto.plan'").fetchone()
+            if row:
+                import json as _json_t
+
+                info = _json_t.loads(row["value"])
+                if info.get("date") == plan_date:
+                    planned = {int(k): v for k, v in (info.get("times") or {}).items()}
+            for r in conn.execute(
+                    "SELECT DISTINCT account_id FROM run_logs WHERE ts LIKE ? AND event='auto-fire'",
+                    (plan_date + "%",)):
+                fired.add(int(r["account_id"]))
+            # 刻意不恢复 skipped：未登录/缺课这类原因当天可修（登进去、补抓课程），
+            # 修好后重启守护应能补跑；只有“已真正触发过”不能被重复刷。
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    _ev(0, "auto-start", f"守护启动（每 30 秒巡检）｜今日待跑 {len(planned)} 个账号"
+        if planned else "守护启动（每 30 秒巡检）")
+    started_at = _time.monotonic()  # 供退出时汇报运行时长
+
     while True:
         try:
             today = _time.strftime("%Y-%m-%d")
-            if today != plan_date:  # 跨日重置
+            if today != plan_date:  # 跨日重置（fired/skipped 必须一并清，否则次日永不触发）
                 planned, plan_date = {}, today
+                fired.clear()
+                skipped.clear()
+                err_once.clear()
+            new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
                 rows = [r for r in acc.list_accounts(conn)
@@ -580,12 +630,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         except Exception:
                             planned[aid] = "09:00"
                     print(f"[auto] 账号#{aid} {row['label']} 今日计划 {planned[aid]} 开刷")
+                    new_plan.append(f"#{aid} {row['label']} {planned[aid]}")
                 if _time.strftime("%H:%M") < planned[aid]:
                     continue
                 state = s.data_dir / "accounts" / str(aid) / "state.json"
                 if not state.exists():
                     skipped.add(aid)
                     print(f"[auto] 账号#{aid} 未登录，今日跳过")
+                    _ev(aid, "auto-skip", "未登录（会话文件缺失，先点登录）", "WARNING")
                     continue
                 conn = connect(s.db_path)
                 plan = None
@@ -603,9 +655,11 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 if not picks:
                     skipped.add(aid)
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
+                    _ev(aid, "auto-skip", "无可学课程（先抓课程/章节）", "WARNING")
                     continue
                 course_name = picks[0]["name"]
                 course_pid = picks[0].get("pid")
+                src_cn = "学习安排" if plan else "轮转"
                 # 缺课保护（2026-10-26）：学习安排指定的课该号没抓过时，spawn 后必然
                 # `[FAIL] 未找到课程` 退出，而面板已回 ok=True → 记为“今日已触发”，
                 # 当日机会白白消耗。本地先核（零平台访问），缺课直接跳过。
@@ -619,6 +673,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     skipped.add(aid)
                     print(f"[auto] 账号#{aid} 缺课《{course_name}》→ 今日跳过"
                           "（不消耗当日机会，补抓课程后可手动▶）")
+                    _ev(aid, "auto-skip", f"缺课《{course_name}》｜不消耗当日机会（补抓后可手动▶）",
+                        "WARNING")
                     continue
                 # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试。
                 # ⚠ 与账号卡片 ▶ 走的是同一个 /api/study/start，共用防双开锁
@@ -639,15 +695,23 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 if ok:
                     fired.add(aid)
                     print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》")
+                    _ev(aid, "auto-fire", f"《{course_name}》｜来源={src_cn}")
                 elif "已有进行中的会话" in str(reason):
                     fired.add(aid)  # 手动已开（面板▶），视为今日已学
                     print(f"[auto] 账号#{aid} 已有会话（手动开的），今日不再触发")
+                    _ev(aid, "auto-fire", f"《{course_name}》｜已有会话（手动开的），今日不再触发")
                 elif "没有这门课" in str(reason):
                     skipped.add(aid)
                     print(f"[auto] 账号#{aid} 面板侧判定缺课：{reason}（今日跳过）")
+                    _ev(aid, "auto-skip", f"面板判定缺课：{reason}", "WARNING")
                 else:
                     print(f"[auto] 账号#{aid} 触发失败：{reason}（30 秒后重试）")
+                    if (aid, str(reason)) not in err_once:  # 重试不刷屏，同因只记首次
+                        err_once.add((aid, str(reason)))
+                        _ev(aid, "auto-error", f"触发失败：{reason}（30 秒后重试）", "WARNING")
             # 计划落库：面板"今日定时"显示（auto 分配的时间对用户可见）
+            if new_plan:
+                _ev(0, "auto-plan", "、".join(new_plan))
             try:
                 import json as _json
 
@@ -663,7 +727,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 pass
             _time.sleep(30)
         except KeyboardInterrupt:
+            mins = int((_time.monotonic() - started_at) // 60)
             print("\n[auto] 守护退出（学习进程继续自行运行至额度停机）")
+            _ev(0, "auto-stop",
+                f"运行 {mins} 分钟｜今日触发 {len(fired)} 个｜跳过 {len(skipped)} 个")
             return 0
 
 

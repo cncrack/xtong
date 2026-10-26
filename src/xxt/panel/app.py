@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import os as _os
+import re
 import sqlite3
 import subprocess
 import sys
 import time
+from collections import deque
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -402,16 +404,29 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 <div id="viewLogs" style="display:none">
   <section class="batch">
     <div class="bhead"><b>📜 日志</b>
-      <span class="muted">全部动态已存档于 data/logs/xxt.log 与数据库；本页只读本地记录，不访问平台</span>
+      <span class="muted">业务事件存数据库（含定时调度的计划/触发/跳过）；系统日志读 data/logs/xxt.log 与 sub-*.log。只读本地，不访问平台</span>
       <span class="spacer"></span>
-      <select id="logAcc" onchange="renderLogs()"><option value="">全部账号（不筛选）</option></select>
+      <select id="logSrc" onchange="renderLogs()" title="业务事件=账号做了什么事；系统日志=面板与子进程的技术日志">
+        <option value="event" selected>业务事件</option>
+        <option value="sys-warn">系统日志（警告+）</option>
+        <option value="sys-info">系统日志（全部）</option>
+        <option value="sys-sub">含子进程输出</option>
+      </select>
+      <input id="logAcc" list="logAccList" style="width:190px"
+        placeholder="全部账号（输 #1 或姓名）" title="可输入账号编号（如 #2）或姓名/备注/平台昵称模糊匹配；清空=全部"
+        oninput="LOGACC=this.value;renderLogs()">
+      <datalist id="logAccList"></datalist>
       <select id="logN" onchange="renderLogs(+this.value)">
         <option value="20" selected>最近 20 条</option>
         <option value="50">最近 50 条</option>
         <option value="100">最近 100 条</option>
         <option value="300">最近 300 条</option>
       </select>
-      <button class="minibtn" onclick="renderLogs()">⟳ 刷新</button>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:.78rem"
+        title="关掉后本页不再自动刷新（账号卡片/统计仍每 15 秒刷新），点「⟳ 刷一次」手动更新">
+        <input type="checkbox" id="logAuto" onchange="LOG_AUTO=this.checked;localStorage.setItem('logAuto',this.checked?'1':'0');renderLogs()"> 自动刷新</label>
+      <span id="logAt" class="muted" style="font-size:.72rem"></span>
+      <button class="minibtn" onclick="renderLogs()">⟳ 刷一次</button>
     </div>
     <div id="logs" class="muted">加载中…</div>
   </section>
@@ -676,27 +691,47 @@ function renderAccounts(){
      <button ${PAGE>=pages?'disabled':''} onclick="go(${PAGE+1})">下一页 ›</button>`;
 }
 function go(p){PAGE=p;renderAccounts();}
-let LOGN=20;
-// 日志页的账号下拉（首次渲染账号列表后灌一次，保留用户选择）
+let LOGN=20, LOGACC='', LOG_AUTO=true;  // 日志页：条数 / 账号筛选输入 / 自动刷新开关
+// 日志页账号候选：只灌 datalist（不覆盖用户正在输入的值），账号再多也不会变成超长下拉
 function fillLogAccounts(){
-  const sel=document.getElementById('logAcc'); if(!sel)return;
-  const cur=sel.value;
-  sel.innerHTML='<option value="">全部账号（不筛选）</option>'+(ACCOUNTS||[]).map(a=>
-    `<option value="${a.id}">#${a.id} ${esc(a.display_name||a.label)}</option>`).join('');
-  if([...sel.options].some(o=>o.value===cur))sel.value=cur;  // 账号被删则回退到"全部"
+  const dl=document.getElementById('logAccList'); if(!dl)return;
+  dl.innerHTML=(ACCOUNTS||[]).map(a=>
+    `<option value="#${a.id} ${esc(a.display_name||a.label)}"></option>`).join('');
+}
+// 输入解析：`#2` / `2` → 该账号；“张” → 姓名/备注/平台昵称模糊命中（可能多账号）
+function logAccIds(){
+  const raw=(LOGACC||'').trim(); if(!raw)return '';
+  const head=raw.split(/\s+/)[0].replace(/^#/,'');
+  if(/^\d+$/.test(head))return head;
+  const q=raw.toLowerCase();
+  return (ACCOUNTS||[]).filter(a=>[a.display_name,a.label,a.platform_username]
+    .some(v=>v&&String(v).toLowerCase().includes(q))).map(a=>a.id).join(',');
+}
+function logSourceQs(){
+  const v=document.getElementById('logSrc')?.value||'event';
+  if(v==='sys-sub')return 'source=sys&min_level=INFO&sub=1';
+  if(v==='sys-info')return 'source=sys&min_level=INFO';
+  if(v==='sys-warn')return 'source=sys&min_level=WARNING';
+  return 'source=event';
 }
 function renderLogs(n){if(n)LOGN=n;
-  const acc=document.getElementById('logAcc')?.value||'';
-  fetch('/api/logs?n='+LOGN+(acc?`&account=${acc}`:'')).then(r=>r.json()).then(d=>{
-    document.getElementById('logs').innerHTML='<table>'+d.logs.map(l=>{
-      const cls=l.event==='video-done'?'ev-good':l.event==='session-start'?'ev-info':
-        (l.event==='session-stop'||l.level==='WARNING')?'ev-warn':'';
+  const box=document.getElementById('logs'); if(!box)return;
+  const ids=logAccIds();
+  if((LOGACC||'').trim()&&!ids){  // 输入了但没命中：不发请求，免得误以为“没日志”
+    box.innerHTML='<div class="muted">未匹配到账号：“'+esc(LOGACC)+'”（清空即看全部）</div>';return;}
+  fetch('/api/logs?n='+LOGN+'&'+logSourceQs()+(ids?`&accounts=${ids}`:'')).then(r=>r.json()).then(d=>{
+    if(!d.logs.length){box.innerHTML='<div class="muted">暂无记录</div>';}
+    else box.innerHTML='<table>'+d.logs.map(l=>{
+      const cls=l.event==='video-done'||l.event==='auto-fire'?'ev-good':
+        (l.event==='session-start'||l.event==='auto-start'||l.event==='auto-plan')?'ev-info':
+        (l.event==='session-stop'||l.event==='auto-skip'||l.event==='auto-stop'||
+         l.event==='auto-error'||l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
         <td class="mono">${esc(l.who)}</td><td class="ev ${cls}">${esc(l.event)}</td>
         <td>${esc(l.detail)}</td></tr>`;}).join('')+'</table>';
-    const cnt=document.getElementById('vtabLogN');
-    if(cnt&&!acc)cnt.textContent='';
-  });
+    const at=document.getElementById('logAt');
+    if(at)at.textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  }).catch(e=>{box.innerHTML='<div class="muted">读取日志失败：'+esc(String(e))+'</div>';});
 }
 function loadSettings(){
   fetch('/api/settings').then(r=>r.json()).then(d=>{
@@ -1245,7 +1280,7 @@ async function syncRun(){
   else{btn.textContent='⏱ 定时调度：点击启动';btn.style.background='';}
   const sync=document.getElementById('synced');
   if(sync)sync.textContent='自动刷新中 · 更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  renderAccounts();renderLogs();}
+  renderAccounts();if(LOG_AUTO)renderLogs();}
 function toggleAuto(){
   const on=AUTOSTATE.running;
   if(on&&!confirm('停止定时调度？（已开的学习会话会自行跑到当日额度停机）'))return;
@@ -1377,6 +1412,8 @@ document.getElementById('q').addEventListener('input',()=>{PAGE=1;
   if(VIEW!=='accounts')switchView('accounts');  // 搜索只作用于账号卡片，自动切回
   renderAccounts();});
 document.getElementById('psize').addEventListener('change',()=>{PAGE=1;renderAccounts();});
+LOG_AUTO=localStorage.getItem('logAuto')!=='0';
+{const _la=document.getElementById('logAuto'); if(_la)_la.checked=LOG_AUTO;}
 renderLogs();loadSettings();loadProviders();loadPlans();switchView(VIEW);syncRun();setInterval(()=>{syncRun();loadPlans();},15000);
 </script></body></html>"""
 
@@ -1605,7 +1642,60 @@ def create_app(settings: Settings) -> FastAPI:
             conn.close()
 
     @app.get("/api/logs")
-    def logs(n: int = 50, account: int | None = None):
+    def logs(n: int = 50, account: int | None = None, accounts: str | None = None,
+             source: str = "event", min_level: str = "WARNING", sub: int = 0):
+        """日志页数据。source=event：业务事件（run_logs）；source=sys：技术日志文件。
+
+        业务事件与系统日志是两条道（2026-10-26 用户疑问“页面为何看不到守护动作”）：
+        run_logs 只记业务事件；面板/守护/会话的 INFO（含 traceback）在 data/logs/ 下，
+        过去只能翻文件。现在把两者都接到本页——
+        - event：run_logs（account_id、accounts=1,2 可筛）
+        - sys：   data/logs/xxt.log，min_level=WARNING|INFO，sub=1 时并入当天 sub-*.log
+        """
+        limit = max(1, min(n, 500))
+        if source == "sys":
+            rank = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+            floor = rank.get(min_level.upper(), 30)
+            pat = re.compile(
+                r"^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d),\d+ (\w+) \[([^\]]+)\] (.*)$")
+
+            def tail(path):
+                try:
+                    with path.open("r", encoding="utf-8", errors="replace") as fh:
+                        return deque(fh, maxlen=2000)
+                except OSError:
+                    return deque()
+
+            logdir = settings.data_dir / "logs"
+            files = [logdir / "xxt.log"]
+            if sub:  # 只合今天的子进程日志（最多 4 个），历史文件别扰当前排查
+                day0 = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
+                cand = [p for p in logdir.glob("sub-*.log") if p.stat().st_mtime >= day0]
+                files += sorted(cand)[-4:]
+            out = []
+            for fp in files:
+                is_sub = fp.name != "xxt.log"
+                last_ts = ""
+                for line in tail(fp):
+                    line = line.rstrip("\n")
+                    if not line.strip():
+                        continue
+                    m = pat.match(line)
+                    if m:
+                        d, t, lv, logger, msg = m.groups()
+                        last_ts = f"{d}T{t}"
+                        if is_sub:
+                            continue  # 子进程文件里的 logging 行 xxt.log 已有，避免重复
+                    elif sub:  # 子进程的 print / traceback 无时间戳：整行保留，时间兑上一条
+                        lv, logger, msg = "INFO", "sub:" + fp.stem, line
+                    else:
+                        continue
+                    if rank.get(lv, 20) < floor:
+                        continue
+                    out.append({"ts": last_ts, "level": lv, "event": logger,
+                                "detail": msg, "account_id": 0, "who": "系统"})
+            out.sort(key=lambda x: x["ts"], reverse=True)
+            return {"logs": out[:limit]}
         conn = db()
         try:
             sql = (
@@ -1613,13 +1703,20 @@ def create_app(settings: Settings) -> FastAPI:
                 "COALESCE(a.platform_username, a.label, '#'||l.account_id) AS who "
                 "FROM run_logs l LEFT JOIN accounts a ON a.id = l.account_id"
             )
-            params: tuple = ()
+            where, params = [], []
             if account:
-                sql += " WHERE l.account_id = ?"
-                params = (account,)
+                where.append("l.account_id = ?")
+                params.append(account)
+            if accounts:  # 可搜索筛选的多命中（逗号分隔），与 account 互斥
+                ids = [int(x) for x in str(accounts).split(",") if str(x).strip().isdigit()]
+                if ids:
+                    where.append("l.account_id IN (%s)" % ",".join("?" * len(ids)))
+                    params += ids
+            if where:
+                sql += " WHERE " + " AND ".join(where)
             sql += " ORDER BY l.id DESC LIMIT ?"
-            params += (max(1, min(n, 500)),)
-            rows = conn.execute(sql, params).fetchall()
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return {"logs": [dict(r) for r in rows]}
         finally:
             conn.close()
@@ -2256,6 +2353,8 @@ def create_app(settings: Settings) -> FastAPI:
                 pass
             marker.unlink(missing_ok=True)
         _AUTO = None
+        if stopped:  # 面板侧停止也要在「📜 日志」留一笔（守护被强杀时自己写不了）
+            _log_event(0, "auto-stop", "面板停止定时调度（已在跑的学习会话不受影响）")
         return {"ok": True} if stopped else {"ok": False, "error": "定时调度未在运行"}
 
     @app.get("/api/study/status")

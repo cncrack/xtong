@@ -142,6 +142,45 @@ class TestPanel(unittest.TestCase):
     def test_index_renders(self):
         self.assertEqual(self.client.get("/").status_code, 200)
 
+    def test_logs_accounts_filter(self):
+        """日志页面包屑筛选：accounts=1,2 走 IN，单号准确。"""
+        conn = connect(self.settings.db_path)
+        conn.execute("INSERT INTO run_logs(ts, level, event, detail, account_id) "
+                     "VALUES('2026-01-01T11:00:00','INFO','plan-create','A',0)")
+        conn.execute("INSERT INTO run_logs(ts, level, event, detail, account_id) "
+                     "VALUES('2026-01-01T11:01:00','INFO','video-done','B',1)")
+        conn.commit()
+        conn.close()
+        only1 = self.client.get("/api/logs?n=50&accounts=1").json()["logs"]
+        self.assertTrue(only1 and all(x["account_id"] == 1 for x in only1))
+        both = self.client.get("/api/logs?n=50&accounts=1,2").json()["logs"]
+        self.assertTrue({x["account_id"] for x in both} <= {1, 2})
+
+    def test_logs_sys_source_reads_file(self):
+        """系统日志视图：读 xxt.log，按 min_level 过滤，sub=1 并入子进程 print 行。"""
+        logdir = self.settings.data_dir / "logs"
+        logdir.mkdir(parents=True, exist_ok=True)
+        (logdir / "xxt.log").write_text(
+            "2026-01-01 10:00:00,001 INFO [xxt.panel] 普通一行\n"
+            "2026-01-01 10:00:01,002 WARNING [xxt.cli] 警告一行\n",
+            encoding="utf-8")
+        (logdir / "sub-auto-1.log").write_text(
+            "2026-01-01 10:00:02,003 INFO [xxt.cli] 子进程日志行\n"
+            "[auto] 账号#1 今日计划 09:00 开刷\n",
+            encoding="utf-8")
+        warn = self.client.get("/api/logs?source=sys&min_level=WARNING").json()["logs"]
+        self.assertEqual([x["level"] for x in warn], ["WARNING"])
+        self.assertEqual(warn[0]["who"], "系统")
+        info = self.client.get("/api/logs?source=sys&min_level=INFO").json()["logs"]
+        self.assertEqual(len(info), 2)  # 子进程文件未入选时只有 xxt.log 两行
+        sub = self.client.get("/api/logs?source=sys&min_level=INFO&sub=1").json()["logs"]
+        events = [x["event"] for x in sub]
+        self.assertIn("xxt.panel", events)
+        self.assertIn("xxt.cli", events)
+        self.assertTrue(any(e.startswith("sub:") for e in events))
+        self.assertFalse(any("子进程日志行" in (x["detail"] or "") and x["event"].startswith("sub:")
+                             for x in sub))  # 子进程文件里的 logging 行不重复
+
 
 if __name__ == "__main__":
     unittest.main()
