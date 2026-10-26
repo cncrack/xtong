@@ -38,7 +38,7 @@
 
 ## 五、实测证据
 
-`data/debug/test_guard.py`（结果落 `data/debug/guard_out.txt`，零平台访问）：
+`data/debug/diag_guard.py`（结果落 `data/debug/guard_out.txt`，零平台访问）：
 
 ```
 ① 缺课启动 → {"ok": false, "error": "该账号没有这门课（课程ID 999999999），已跳过"}
@@ -86,7 +86,7 @@
 `pending==0`（已学完）与无章节课直接出局。**多门时会随机，但并非无偏好**；
 本次两号都只有一门候选，所以看起来“固定”。
 
-### 真起守护（`data/debug/test_auto_live.py`，把计划时刻临时推到 23:50/23:55）
+### 真起守护（`data/debug/diag_auto_live.py`，把计划时刻临时推到 23:50/23:55）
 
 ```
 POST /api/auto/start → {"ok": true}；auto = {"running": true, "since": "11:39"}；jobs = {}
@@ -113,6 +113,14 @@ POST /api/auto/stop → {"ok": true}；start_at 已还原 {1: '10:14', 2: '09:20
    子进程会立刻以“超出每日学习时段”退出，而面板已回 `ok=True` → 当日机会白耗（同缺课问题同类）。
 2. **多门课时轮转=随机**：不建学习安排就会随机挑；要指定就必须建学习安排并启用。
 3. `start_at` 已过时，一启动守护就会对全部账号立刻补跑（两号会同时开）。
+
+### 另一处踩坑：诊断脚本名叫 `test_*.py` 会把 push_check 弄挂
+
+`scripts/push_check.py` 跑的是裸 `pytest -q`，而 `pyproject.toml` 当时没有 `testpaths` →
+递归收集到 `data/debug/test_*.py`（现场诊断脚本，import 时就要访问面板/平台）→
+`3 errors during collection` → 门禁 FAIL，而手动 `pytest -q` 又“看起来正常”。
+修：① 诊断脚本统一改 `diag_*.py`；② `pyproject.toml` 加 `[tool.pytest.ini_options] testpaths = ["tests"]`，
+以后只在 `tests/` 收集。
 
 ## 八、交接块
 

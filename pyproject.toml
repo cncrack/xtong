@@ -28,3 +28,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "xxt.adapters.chaoxing" = ["watcher.js"]
+
+[tool.pytest.ini_options]
+# 只收 tests/：data/debug/ 下是现场诊断脚本（会真访问面板/平台），
+# 被 pytest 递归收集时会在 import 阶段报错，把 push_check 门禁弄挂（2026-10-26 踩过）。
+testpaths = ["tests"]
