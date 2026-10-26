@@ -476,6 +476,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="pbar">
     <input id="pk_q" placeholder="🔍 搜 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级" oninput="renderPick()">
     <label class="chk"><input type="checkbox" id="pk_onlyfree" checked onchange="renderPick()">只看未排</label>
+    <select id="pk_school" onchange="renderPick()"><option value="">全部学校</option></select>
+    <select id="pk_dept" onchange="renderPick()"><option value="">全部院系</option></select>
+    <select id="pk_cls" onchange="renderPick()"><option value="">全部班级</option></select>
     <select id="pk_grade" onchange="renderPick()"><option value="">全部年级</option></select>
     <select id="pk_major" onchange="renderPick()"><option value="">全部专业</option></select>
     <button class="minibtn" onclick="pickAll(true)">全选可见</button>
@@ -1100,24 +1103,34 @@ function openPicker(){
   document.getElementById('pickDlg').showModal();
   renderPick();
 }
+// 选择器筛选维度（2026-10-26：加学校/院系/班级——都是平台 stu-base-info 里能拿到、且已入库的字段；
+// 选项全部由本地画像动态生成，**不产生任何平台访问**）
+const PICKFILTERS=[['pk_school','school','学校'],['pk_dept','dept','院系'],
+  ['pk_cls','cls','班级'],['pk_grade','grade','年级'],['pk_major','major','专业']];
 function fillPickFilters(){
-  const uniq=k=>[...new Set((ACCOUNTS||[]).map(a=>((a.profile||{})[k]||'')).filter(Boolean))].sort();
-  for(const [id,k] of [['pk_grade','grade'],['pk_major','major']]){
-    const sel=document.getElementById(id), cur=sel.value;
-    sel.innerHTML=`<option value="">全部${k==='grade'?'年级':'专业'}</option>`+
-      uniq(k).map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  for(const [id,k,label] of PICKFILTERS){
+    const sel=document.getElementById(id); if(!sel)continue;
+    const cur=sel.value;
+    const vals=[...new Set((ACCOUNTS||[]).map(a=>((a.profile||{})[k]||'').trim()).filter(Boolean))].sort();
+    sel.innerHTML=`<option value="">全部${label}</option>`
+      +vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('')
+      +`<option value="__empty__">（未填${label}）</option>`;  // 找“画像不全”的号去补
     sel.value=cur;
   }
 }
 function pickVisible(){
   const q=(document.getElementById('pk_q').value||'').trim().toLowerCase();
   const onlyFree=document.getElementById('pk_onlyfree').checked;
-  const g=document.getElementById('pk_grade').value, m=document.getElementById('pk_major').value;
+  // __empty__ = 该字段未填；其余为精确相等
+  const conds=PICKFILTERS.map(([id,k])=>{const el=document.getElementById(id);
+    return el&&el.value?[k,el.value]:null;}).filter(Boolean);
   return (ACCOUNTS||[]).filter(a=>{
     const p=a.profile||{};
     if(onlyFree&&PLBUSY[a.id])return false;
-    if(g&&(p.grade||'')!==g)return false;
-    if(m&&(p.major||'')!==m)return false;
+    for(const [k,v] of conds){
+      const cur=(p[k]||'').trim();
+      if(v==='__empty__'?cur!=='':cur!==v)return false;
+    }
     if(!q)return true;
     return [a.id,a.label,a.platform_username,p.name,p.student_no,p.grade,p.major,p.term,
       p.school,p.dept,p.cls,a.note].filter(Boolean).join(' ').toLowerCase().includes(q);
