@@ -457,19 +457,19 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <dialog id="planDlg"><h3 id="planTitle">📚 新建批次</h3>
   <div class="frow"><label>批次名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
-  <div class="frow"><label>课程<small>按平台课程ID锚定 · 同名不同班会分开列</small></label>
-      <select id="pl_course" style="width:330px" onchange="updateCourseCov()"></select></div>
-    <div id="pl_cov" class="hint" style="margin:.1rem 0 .35rem"></div>
-  <div class="frm"><label>账号<small>同一账号只能在一个启用中的批次里</small></label>
+  <div class="frm"><label>① 账号<small>先勾人；课程列表随后只显示这些账号的课</small></label>
     <span style="flex:1"></span>
     <button class="minibtn" title="打开账号选择器：可按 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级 搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
     <button class="minibtn" onclick="clearPicked()">清空</button>
     <span class="muted" id="pl_count">已选 0 个</span>
   </div>
   <div id="pl_picked" class="picked muted">还没有选择账号 —— 点「＋ 选择账号」从列表里挑</div>
+  <div class="frow"><label>② 课程<small>按平台课程ID锚定 · 同名不同班会分开列</small></label>
+      <select id="pl_course" style="width:520px" onchange="updateCourseCov()"></select></div>
+    <div id="pl_cov" class="hint" style="margin:.1rem 0 .35rem"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" id="planOk" onclick="doPlan()">创建（默认停用）</button></div>
-  <div class="hint">批次只管"刷哪门课"，不管"几点开"——开跑仍按各账号的定时/学习窗口错峰。新建后默认「已停用」，确认无误再点该批次「▶ 启用」。</div>
+  <div class="hint">批次锁定的是「平台课程ID + 你勾的账号」：以后<b>新增账号不用重建批次</b>，点「✎ 编辑」把新账号勾上即可；缺这门课的账号会被自动跳过（上方会列出）。开跑仍按各账号定时/学习窗口错峰，新建后默认「已停用」。</div>
 </dialog>
 
 <dialog id="pickDlg"><h3>选择账号</h3>
@@ -935,8 +935,12 @@ function renderPlans(){
     const st=p.enabled?badge('启用中','b-ok'):badge('已停用','b-warn');
     const pidNote=p.course_pid?'':` <span class="b-warn" style="font-size:.68rem"
       title="老批次只存了课名（无平台课程ID），同名课程可能歧义——点「✎ 编辑」重新选一次课程即可补上">建议补选课程ID</span>`;
+    // 已抓课程里没这门课（按 pid）的账号：运行时会被跳过，卡片上直说，不让人猜
+    const lackN=p.course_pid?p.account_ids.filter(id=>!accountHasCourse(id,p.course_pid)):[];
+    const lackNote=lackN.length?` <span class="b-warn" style="font-size:.68rem"
+      title="这些账号的课程列表里没有本批次这门课（按平台课程ID匹配）：${esc(lackN.map(i=>'#'+i).join('、'))}——运行时会被跳过。让对方先抓取课程，或点「✎ 编辑」核对">${lackN.length} 个账号缺此课</span>`:'';
     return `<div class="prow"><b>${esc(p.name)}</b>${st}
-      <span>课程《${esc(p.course_name)}》${pidNote}</span>
+      <span>课程《${esc(p.course_name)}》${pidNote}${lackNote}</span>
       <span class="muted">${p.account_ids.length} 个账号：${esc(accs)}</span>
       <span style="flex:1"></span>
       <button class="minibtn" title="改名/换课程/增删账号（不影响已完成的刷课）" onclick="openPlan(${p.id})">✎ 编辑</button>
@@ -958,6 +962,7 @@ function accDesc(a){
   const p=a.profile||{}, bits=[];
   if(a.platform_username)bits.push(a.platform_username);
   if(p.student_no)bits.push('学号 '+p.student_no);
+  if(p.school)bits.push(p.school);   // 学校靠前：同名课跨校时先看这一位
   [p.grade,p.major,p.term].filter(Boolean).forEach(v=>bits.push(v));
   if(a.note)bits.push('📝'+a.note);
   return bits.join(' · ');
@@ -970,7 +975,11 @@ function openPlan(planId){
   PLANMODE=planId||null;
   const p=planId?PLANS.find(x=>x.id===planId):null;
   document.getElementById('pl_name').value=p?p.name:'';
-  buildCourseOptions();
+  document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
+  document.getElementById('planOk').textContent=p?'保存修改':'创建（默认停用）';
+  PLSEL=new Set(p?p.account_ids:[]);   // 先定人：课程下拉按这批账号过滤（2026-10-26 改）
+  loadPlanBusy();
+  renderPicked();                      // 内含 buildCourseOptions + updateCourseCov
   const sel=document.getElementById('pl_course');
   if(p){  // 编辑：按 pid 回选；老批次无 pid 则按课名回选
     let key=p.course_pid?('pid:'+p.course_pid):('name:'+p.course_name);
@@ -978,55 +987,90 @@ function openPlan(planId){
       key='name:'+p.course_name;
       if(![...sel.options].some(o=>o.value===key)){  // 课名已不在任何账号课程里→补占位项
         sel.insertAdjacentHTML('beforeend',
-          `<option value="${esc(key)}" data-name="${esc(p.course_name)}">${esc(p.course_name)}（原批次课名，未在账号课程中）</option>`);
+          `<option value="${esc(key)}" data-name="${esc(p.course_name)}" data-pid="${esc(p.course_pid||'')}">${esc(p.course_name)}（原批次课名，未在账号课程中）</option>`);
       }
     }
     sel.value=key;
   }else{ sel.value=''; }
-  document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
-  document.getElementById('planOk').textContent=p?'保存修改':'创建（默认停用）';
-  PLSEL=new Set(p?p.account_ids:[]);
-  loadPlanBusy();
-  renderPicked();
   updateCourseCov();
   document.getElementById('planDlg').showModal();
 }
-let PLCOURSE={};   // 课程下拉 key → {pid,name,ids:Set}（按平台课程ID聚合，同名不同班分开）
-function buildCourseOptions(){
+let PLCOURSE={};   // 课程下拉 key → {pid,name,ids:Set,schools:Set}（按平台课程ID聚合）
+// 全库聚合：pid → 课程。同名不同班会分开（pid 不同）；同一 pid 覆盖多个账号时合并
+function courseMap(){
   const map=new Map();
   (ACCOUNTS||[]).forEach(a=>(a.courses||[]).forEach(c=>{
     const key=c.platform_course_id?('pid:'+c.platform_course_id):('name:'+c.name);
-    if(!map.has(key))map.set(key,{pid:c.platform_course_id||'',name:c.name,ids:new Set()});
-    map.get(key).ids.add(a.id);
+    if(!map.has(key))map.set(key,{pid:c.platform_course_id||'',name:c.name,
+      ids:new Set(),schools:new Set()});
+    const v=map.get(key);
+    v.ids.add(a.id);
+    const sch=((a.profile||{}).school||'').trim();
+    if(sch)v.schools.add(sch);
   }));
-  PLCOURSE={};
-  const opts=[...map.entries()].sort((x,y)=>y[1].ids.size-x[1].ids.size).map(([key,v])=>{
-    PLCOURSE[key]=v;
-    const note=v.pid?' · pid='+esc(v.pid):' · 无pid(老式)';
-    return `<option value="${esc(key)}" data-name="${esc(v.name)}">《${esc(v.name)}》 · ${v.ids.size} 个账号有此课${note}</option>`;
-  });
+  return map;
+}
+// 课程归属学校的可读文本（画像 school 为空时明确提示，而不是留白让人猜）
+function courseSchool(v){
+  const s=[...(v&&v.schools)||[]];
+  if(!s.length)return '学校未填';
+  return s.slice(0,2).join('/')+(s.length>2?'等':'');
+}
+function accountHasCourse(id,pid){   // 该账号有没有抓到这门课（按平台课程ID）
+  if(!pid)return true;               // 老批次无 pid：不做覆盖判断，避免误报
+  const a=(ACCOUNTS||[]).find(x=>x.id===id);
+  if(!a)return false;
+  return (a.courses||[]).some(c=>c.platform_course_id===pid);
+}
+// 课程下拉：先勾账号 → 只列这些账号抓到的课；未勾账号则列全部（便于先看有什么课）
+function buildCourseOptions(){
   const sel=document.getElementById('pl_course');
-  if(sel)sel.innerHTML='<option value="">（请选择课程）</option>'+opts.join('');
+  if(!sel)return;
+  const keep=sel.value;
+  const map=courseMap(), ids=[...PLSEL];
+  PLCOURSE={};
+  const rows=[...map.entries()].filter(([k,v])=>!ids.length||ids.some(i=>v.ids.has(i)));
+  rows.sort((x,y)=>y[1].ids.size-x[1].ids.size);
+  const opts=rows.map(([key,v])=>{
+    PLCOURSE[key]=v;
+    const cov=ids.length?(' · 你选的 '+ids.filter(i=>v.ids.has(i)).length+'/'+ids.length+' 有'):'';
+    return `<option value="${esc(key)}" data-name="${esc(v.name)}" data-pid="${esc(v.pid)}">`
+      +`《${esc(v.name)}》 · ${esc(courseSchool(v))}${cov}</option>`;
+  });
+  sel.innerHTML='<option value="">（请选择课程）</option>'+opts.join('');
+  if(keep&&[...sel.options].some(o=>o.value===keep))sel.value=keep;
 }
 function updateCourseCov(){
   const sel=document.getElementById('pl_course');
   const el=document.getElementById('pl_cov');
   if(!sel||!el)return;
-  const key=sel.value, v=PLCOURSE[key];
+  const ids=[...PLSEL], key=sel.value, v=PLCOURSE[key];
   const name=(sel.selectedOptions[0]?.dataset.name)||'';
   el.style.color='';
-  if(!key||!name){el.textContent='';return;}
-  const ids=[...PLSEL];
-  if(!ids.length){el.style.color='var(--muted)';el.textContent=`课程《${name}》：尚未选择账号`;return;}
+  if(!ids.length){
+    el.style.color='var(--muted)';
+    el.textContent=key?`课程《${name}》：还没勾账号 —— 勾账号后才会核对覆盖`
+      :'① 先勾账号 → ② 课程列表只显示这些账号抓到的课';
+    return;
+  }
+  if(!key||!name){
+    el.style.color='var(--muted)';
+    el.textContent=`已勾 ${ids.length} 个账号；请在上面选课程`;return;
+  }
+  const who=i=>{const a=(ACCOUNTS||[]).find(x=>x.id===i);
+    return '#'+i+(a?' '+esc(accName(a)):'');};
   const have=ids.filter(i=>v&&v.ids.has(i));
   const lack=ids.filter(i=>!(v&&v.ids.has(i)));
+  const cross=!!(v&&v.schools.size>1);   // 同一 pid 冒出多所学校 = 异常，值得警示
   if(lack.length){
     el.style.color='#c0392b';
-    el.innerHTML=`⚠ 本批次 ${ids.length} 个账号里 <b>${have.length}</b> 个有此课；缺课：`
-      +`<b>${lack.map(i=>'#'+i).join('、')}</b>（运行时这些账号会被跳过，请核对）`;
+    el.innerHTML=`⚠ 已勾 ${ids.length} 个账号，只有 <b>${have.length}</b> 个有《${esc(name)}》；`
+      +`缺课：<b>${lack.map(who).join('、')}</b>（运行时会被跳过）`
+      +(cross?' · <b>该课程ID跨校出现，请核对</b>':'');
   }else{
     el.style.color='var(--ok)';
-    el.textContent=`✔ 本批次 ${ids.length} 个账号都有此课`;
+    el.innerHTML=`✔ 已勾 ${ids.length} 个账号都有《${esc(name)}》 · ${esc(courseSchool(v))}`
+      +(cross?' <span style="color:#c0392b">⚠ 该课程ID跨校出现，请核对</span>':'');
   }
 }
 function renderPicked(){
@@ -1042,6 +1086,7 @@ function renderPicked(){
       ${b?`<span class="b-warn" style="font-size:.7rem">已在《${esc(b)}》</span>`:''}
       <span class="x" title="从本批次移除" onclick="pickedRemove(${id})">✕</span></div>`;}).join('')
     :'还没有选择账号 —— 点「＋ 选择账号」从列表里挑';
+  buildCourseOptions();   // 账号变了 → 课程候选随之收窄（先定人再定课）
   updateCourseCov();
 }
 function pickedRemove(id){PLSEL.delete(+id);renderPicked();}
@@ -1122,7 +1167,8 @@ function doPlan(){
   const sel=document.getElementById('pl_course');
   const key=sel.value;
   const course=(sel.selectedOptions[0]?.dataset.name)||'';
-  let pid='';
+  // 占位项（原批次课名已不在任何账号课程里）也带 data-pid，避免保存时把 pid 洗掉
+  let pid=(sel.selectedOptions[0]?.dataset.pid)||'';
   if(key.startsWith('pid:'))pid=key.slice(4);
   else if(PLCOURSE[key]&&PLCOURSE[key].pid)pid=PLCOURSE[key].pid;
   const ids=[...PLSEL];
@@ -1430,8 +1476,10 @@ def create_app(settings: Settings) -> FastAPI:
                 a["max_tasks"] = a.pop("daily_max_tasks", None)
                 a["days_left"] = days_left(a)
                 # 画像（姓名/学号/年级/专业/学期）：卡片与批次弹窗都要显示，一并下发
+                # 学校/院系/班级一并下发：批次弹窗的课程下拉要用它标注「这门课是哪所学校的」
                 a["profile"] = {k: (get_profile(conn, a["id"]).get(k) or "") for k in
-                                ("name", "student_no", "grade", "major", "term")}
+                                ("name", "student_no", "grade", "major", "term",
+                                 "school", "dept", "cls")}
                 a["student_no"] = a["profile"]["student_no"]
                 a["display_name"] = a["profile"]["name"] or (a.get("platform_username") or "")
                 a["courses"] = [
