@@ -39,6 +39,10 @@ class TestPanel(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    # 真人浏览器 UA：`source=ui` 只有配上它才算「面板按钮」（2026-10-27 纠偏）
+    UI_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"}
+
     def test_overview_account_cards(self):
         r = self.client.get("/api/overview")
         self.assertEqual(r.status_code, 200)
@@ -191,8 +195,10 @@ class TestPanel(unittest.TestCase):
         fake = mock.Mock(pid=os.getpid())  # 用自身 pid：_pid_alive 判活，但不会真被 kill
         fake.poll.return_value = None
         with mock.patch.object(appmod, "_spawn", return_value=fake) as spawn:
-            self.assertTrue(self.client.post("/api/auto/start?source=ui").json()["ok"])
-            self.assertFalse(self.client.post("/api/auto/start?source=ui").json()["ok"])
+            self.assertTrue(self.client.post("/api/auto/start?source=ui",
+                                             headers=self.UI_HEADERS).json()["ok"])
+            self.assertFalse(self.client.post("/api/auto/start?source=ui",
+                                              headers=self.UI_HEADERS).json()["ok"])
             self.assertEqual(spawn.call_count, 1)  # 第二次没再拉起
         try:
             conn = connect(self.settings.db_path)
@@ -230,6 +236,116 @@ class TestPanel(unittest.TestCase):
             self.assertIn("API(httpx)", row["detail"])
         finally:
             appmod._AUTO = None
+
+    def _last_auto_request(self) -> tuple[str, str]:
+        conn = connect(self.settings.db_path)
+        row = conn.execute("SELECT level, detail FROM run_logs WHERE event='auto-request' "
+                           "ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        return row["level"], row["detail"]
+
+    def _start_once(self, **kw):
+        import os
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        fake = mock.Mock(pid=os.getpid())
+        fake.poll.return_value = None
+        try:
+            with mock.patch.object(appmod, "_spawn", return_value=fake):
+                return self.client.post("/api/auto/start", **kw)
+        finally:
+            appmod._AUTO = None
+
+    def test_ui_claim_with_script_ua_is_not_panel_button(self):
+        """自称 `source=ui` 但 UA 是 httpx → 不能记“面板按钮”（脚本伪装的盲区）。"""
+        r = self._start_once(params={"source": "ui"},
+                             headers={"User-Agent": "python-httpx/0.27.0"})
+        self.assertTrue(r.json()["ok"])
+        level, detail = self._last_auto_request()
+        self.assertNotIn("面板按钮", detail)
+        self.assertIn("自称 UI", detail)
+        self.assertEqual(level, "WARNING")  # 伪装要黄字，日志里一眼看见
+
+    def test_diag_header_marks_diagnostic_script(self):
+        """诊断脚本带 `X-Diag` 就算 UA 像浏览器也记成诊断脚本（主动声明优先）。"""
+        r = self._start_once(headers={**self.UI_HEADERS, "X-Diag": "q_readback.py"})
+        self.assertTrue(r.json()["ok"])
+        level, detail = self._last_auto_request()
+        self.assertIn("诊断脚本(q_readback.py)", detail)
+        self.assertEqual(level, "INFO")
+
+    def test_source_diag_without_header(self):
+        r = self._start_once(params={"source": "diag"})
+        self.assertTrue(r.json()["ok"])
+        self.assertIn("诊断脚本", self._last_auto_request()[1])
+
+    def _write_stale_auto_marker(self, age: float) -> Path:
+        """写 auto.json 并把 mtime 往前推 age 秒（模拟 pid 被复用）。"""
+        import json as _json
+        import os
+        import time as _time
+
+        run = self.settings.data_dir / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        marker = run / "auto.json"
+        marker.write_text(_json.dumps({"pid": os.getpid(), "since": "00:00"}),
+                          encoding="utf-8")
+        old = _time.time() - age
+        os.utime(marker, (old, old))
+        return marker
+
+    def test_auto_start_not_blocked_by_reused_pid(self):
+        """标记里的 pid 被别的进程复用时，不能一直回“已在运行”把守护永久锁死。"""
+        import os
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        self._write_stale_auto_marker(3600)
+        fake = mock.Mock(pid=os.getpid())
+        fake.poll.return_value = None
+        try:
+            with mock.patch.object(appmod, "_spawn", return_value=fake) as spawn:
+                r = self.client.post("/api/auto/start?source=ui")
+            self.assertTrue(r.json()["ok"])
+            self.assertEqual(spawn.call_count, 1)
+        finally:
+            appmod._AUTO = None
+
+    def test_auto_stop_never_kills_reused_pid(self):
+        """pid 归属不符时只清标记：宁可停不掉，也不能 taskkill 无关进程。"""
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        appmod._AUTO = None  # 确保走“孤儿标记”分支
+        marker = self._write_stale_auto_marker(3600)
+        with mock.patch.object(appmod.subprocess, "run") as run_cmd:
+            d = self.client.post("/api/auto/stop?source=ui").json()
+        self.assertFalse(d["ok"])
+        self.assertFalse(run_cmd.called)
+        self.assertFalse(marker.exists())
+        conn = connect(self.settings.db_path)
+        row = conn.execute(
+            "SELECT detail FROM run_logs WHERE event='auto-stop' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertIn("未强杀", row["detail"])
+
+    def test_auto_stop_kills_owned_pid(self):
+        """归属成立时正常强杀（mock 掉 subprocess，不真杀自己）。"""
+        from unittest import mock
+
+        import xxt.panel.app as appmod
+
+        appmod._AUTO = None
+        self._write_stale_auto_marker(0)  # 文件就是刚写的 → 归属成立
+        with mock.patch.object(appmod.subprocess, "run") as run_cmd:
+            d = self.client.post("/api/auto/stop?source=ui").json()
+        self.assertTrue(d["ok"])
+        self.assertTrue(run_cmd.called)
 
 
 if __name__ == "__main__":

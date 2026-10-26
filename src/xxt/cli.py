@@ -527,6 +527,42 @@ def cmd_panel(args: argparse.Namespace) -> int:
     return 0
 
 
+def _random_start(ws: str, we: str) -> str:
+    """在 [ws, we] 窗口内随机开刷时刻（HH:MM），不越窗、不产生 24:xx。
+
+    2026-10-27：原实现无条件加 0~120 分钟，短窗口（如 23:00-23:30）会随机到 23:59
+    这种窗口外时刻 → 到点被子进程判“超出学习时段”秒退，白耗一次当日机会。
+    """
+    import random as _r
+
+    def _min(s: str) -> int:
+        h, m = s.split(":")
+        return int(h) * 60 + int(m)
+
+    try:
+        start, end = _min(ws), _min(we)
+    except Exception:
+        return "09:00"
+    span = (1440 - start + end) if end <= start else (end - start)  # 跨午夜
+    span = max(0, span - 1)  # 留 1 分钟余量，不压线到窗口结束
+    t = (start + _r.randint(0, min(120, span))) % 1440
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
+def _course_ref(pick) -> tuple[str, str | None]:
+    """从选课结果里取（课名, 平台课程ID）。
+
+    2026-10-27 实测踩坑：学习安排返回 dict（键 `pid`），课程轮转返回 `sqlite3.Row`
+    （列名 `platform_course_id`，没有 `pid`）。原来统一用 `.get("pid")` → 轮转路径
+    抛 `AttributeError: 'sqlite3.Row' object has no attribute 'get'`，**守护一触发就崩**，
+    且因为它之前只验证过“学习安排”路径而没被发现。
+    """
+    if isinstance(pick, dict):
+        return pick["name"], pick.get("pid")
+    keys = pick.keys()  # sqlite3.Row
+    return pick["name"], (pick["platform_course_id"] if "platform_course_id" in keys else None)
+
+
 def cmd_auto(args: argparse.Namespace) -> int:
     """常驻调度：各账号在计划时刻（start_at 或窗口内随机）自动开始当日学习会话。
 
@@ -540,7 +576,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
     from pathlib import Path as _Path
 
     from .core import accounts as acc
-    from .core.accounts import is_valid
+    from .core.accounts import effective_pace, is_valid
+    from .core.pace import within_daily_window
     from .core.rotation import pick_courses
     from .store.db import connect
 
@@ -548,6 +585,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
     planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM（全天保留供面板显示）
     fired: set[int] = set()        # 今日已触发（含手动已开）
     skipped: set[int] = set()      # 今日跳过（未登录/无课程）
+    pending: dict[int, tuple[float, str]] = {}  # 已触发待回读：aid → (monotonic, ISO)
+    wait_noted: set[int] = set()   # 已提示过“等学习窗口开启”的账号（不重复写日志）
     plan_date = _time.strftime("%Y-%m-%d")
     panel_port = int(s.raw.get("panel", {}).get("port", 8300))
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
@@ -572,6 +611,21 @@ def cmd_auto(args: argparse.Namespace) -> int:
             pass
 
     err_once: set[tuple[int, str]] = set()  # 同账号同原因只记一次，避免重试刷屏
+
+    def _stopped_since(account_id: int, iso_ts: str) -> bool:
+        """触发之后是否有人手动停过会话（用于区分“秒退”与“用户主动停”）。"""
+        try:
+            conn = connect(s.db_path)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM run_logs WHERE account_id=? AND event='session-stop'"
+                    " AND ts>=? LIMIT 1", (account_id, iso_ts)).fetchone()
+            finally:
+                conn.close()
+            return row is not None
+        except Exception:
+            return False
+
     # 重启续跑：今日计划与已触发/已跳过从库里恢复——否则守护一重启就重新随机时刻，
     # 已刷完的号还会被再刷一次（“每账号每天只自动启动一次”会被打破）。
     try:
@@ -613,6 +667,25 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 fired.clear()
                 skipped.clear()
                 err_once.clear()
+                wait_noted.clear()
+            # 回读上一轮触发的账号（2026-10-27 加固）：面板只保证“进程起来了”，若定时
+            # 落在学习窗口外或额度已满，子进程会秒退——而 auto-fire 已把当日机会记掉，
+            # 界面看着一切正常。这里补一条告警；不自动重试，避免连续访问触发风控。
+            if pending:
+                from .core.runmark import marker_process_alive
+
+                for aid_p, (ts_p, iso_p) in list(pending.items()):
+                    if _time.monotonic() - ts_p < 25:  # 至少跑完一轮再回读
+                        continue
+                    pending.pop(aid_p, None)
+                    if marker_process_alive(s.data_dir, aid_p):
+                        continue  # 会话真在跑
+                    if _stopped_since(aid_p, iso_p):
+                        continue  # 手动停的，不算异常
+                    _ev(aid_p, "auto-error",
+                        f"触发后不足 {max(1, int((_time.monotonic() - ts_p) // 60))} 分钟"
+                        "会话已退出且未见学习记录（多为定时落在学习窗口外或额度已满）；"
+                        "本次不自动重试，改窗口/定时后重启守护或手动 ▶ 补跑", "WARNING")
             new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
@@ -624,6 +697,11 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 aid = row["id"]
                 if aid in fired or aid in skipped:
                     continue
+                if aid in planned and not row["start_at"]:
+                    # 定时被清空时不能沿用缓存计划（否则“改成随机”等于没改）——2026-10-27
+                    old = planned.pop(aid)
+                    _ev(0, "auto-replan",
+                        f"#{aid} {row['label']} 定时已清空 → 丢弃缓存计划 {old}，改按学习窗口随机")
                 if aid in planned and row["start_at"] and planned[aid] != row["start_at"]:
                     # 以当前 start_at 为准：缓存可能来自上次运行/诊断脚本（10-26 的 23:5x
                     # 残留就是这么来的）；运行中改定时也应生效（2026-10-27 加固）。
@@ -641,15 +719,29 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         planned[aid] = row["start_at"]
                     else:
                         ws = row["window_start"] or s.pace["daily_window"][0]
-                        try:
-                            h, m = map(int, ws.split(":"))
-                            off = _random.randint(0, 120)
-                            planned[aid] = f"{(h * 60 + m + off) // 60:02d}:{(h * 60 + m + off) % 60:02d}"
-                        except Exception:
-                            planned[aid] = "09:00"
+                        we = row["window_end"] or s.pace["daily_window"][1]
+                        planned[aid] = _random_start(ws, we)
                     print(f"[auto] 账号#{aid} {row['label']} 今日计划 {planned[aid]} 开刷")
                     new_plan.append(f"#{aid} {row['label']} {planned[aid]}")
-                if _time.strftime("%H:%M") < planned[aid]:
+                now_hm = _time.strftime("%H:%M")
+                if now_hm < planned[aid]:
+                    continue
+                # 窗口预校验（2026-10-27 加固）：start_at 落在窗口外时子进程会立刻
+                # “超出每日学习时段”退出，而面板已回 ok=True、auto-fire 把当日机会
+                # 记掉 → 静默白耗。本地先判（零平台访问）：窗口未到就等，已过才跳过。
+                pace_a = effective_pace(s, row)
+                if not within_daily_window(pace_a):
+                    ws, we = pace_a["daily_window"]
+                    if ws > we or now_hm < ws:  # 今天还会开窗口 → 等，不消耗机会
+                        if aid not in wait_noted:
+                            wait_noted.add(aid)
+                            _ev(aid, "auto-skip",
+                                f"定时 {planned[aid]} 早于学习窗口 {ws}–{we}，等窗口开启后触发")
+                        continue
+                    skipped.add(aid)
+                    _ev(aid, "auto-skip",
+                        f"已过学习窗口 {ws}–{we}（当前 {now_hm}），今日不再自动启动"
+                        "（未消耗机会；改窗口/定时后重启守护可补跑）", "WARNING")
                     continue
                 state = s.data_dir / "accounts" / str(aid) / "state.json"
                 if not state.exists():
@@ -675,8 +767,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
                     _ev(aid, "auto-skip", "无可学课程（先抓课程/章节）", "WARNING")
                     continue
-                course_name = picks[0]["name"]
-                course_pid = picks[0].get("pid")
+                course_name, course_pid = _course_ref(picks[0])
                 src_cn = "学习安排" if plan else "轮转"
                 # 缺课保护（2026-10-26）：学习安排指定的课该号没抓过时，spawn 后必然
                 # `[FAIL] 未找到课程` 退出，而面板已回 ok=True → 记为“今日已触发”，
@@ -712,6 +803,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     ok, reason = False, "面板未响应（保持面板运行）"
                 if ok:
                     fired.add(aid)
+                    pending[aid] = (_time.monotonic(), _time.strftime("%Y-%m-%dT%H:%M:%S"))
                     print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》")
                     _ev(aid, "auto-fire", f"《{course_name}》｜来源={src_cn}")
                 elif "已有进行中的会话" in str(reason):

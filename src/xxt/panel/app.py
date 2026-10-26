@@ -23,19 +23,44 @@ _JOBS: dict[int, dict] = {}
 _AUTO: dict | None = None  # 定时调度守护进程（面板一键开关）
 
 
+# 脚本/命令行客户端的 UA 特征：命中即视为“非真人浏览器”
+_SCRIPT_UA_HINTS = ("httpx", "requests", "aiohttp", "urllib", "curl", "wget",
+                    "python-", "go-http-client", "okhttp", "node-fetch", "testclient")
+
+
+def _looks_script_ua(ua: str) -> bool:
+    """UA 像脚本/命令行（空 UA 也算）——真人浏览器一定带 Mozilla。"""
+    low = (ua or "").strip().lower()
+    return not low or any(k in low for k in _SCRIPT_UA_HINTS)
+
+
 def _auto_who(request, source: str) -> str:
-    """标识“谁发起的启停”，让「📜 日志」能追溯（2026-10-27 加固）。
+    """标识“谁发起的启停”，让「📜 日志」能追溯（2026-10-27 加固，同日纠偏）。
 
     背景：10-26 有四次来源不明的守护启动，靠历史文件与日志才排到是诊断脚本。
-    现在前端按钮传 `source=ui`；脚本 / httpx / curl 一律记 API 并带 UA 特征。
+    首版只判 `source`，但诊断脚本为模拟真实点击同样传 `source=ui` → 脚本与真人
+    点击在 run_logs 里一模一样（2026-10-27 实测 8 次全为脚本却显示“面板按钮”）。
+    现改为三重证据：
+      ① `X-Diag: <脚本名>` 头或 `source=diag` → 诊断脚本（脚本应主动声明）；
+      ② 自称 ui 但 UA 不像真浏览器（httpx/requests/curl/空 UA…）→ 记“（自称 UI）”；
+      ③ 自定义 UI 且 UA 含 Mozilla → 才记「面板按钮」。
     """
-    if source == "ui":
-        return "面板按钮"
-    try:
-        ua = (request.headers.get("user-agent") or "")[:60] if request is not None else ""
-    except Exception:
-        ua = ""
+    diag, ua = "", ""
+    if request is not None:
+        try:
+            diag = (request.headers.get("x-diag") or "").strip()[:40]
+            ua = (request.headers.get("user-agent") or "")[:60]
+        except Exception:
+            diag, ua = "", ""
+    if diag:
+        return f"诊断脚本({diag})"
+    if source == "diag":
+        return "诊断脚本"
     low = ua.lower()
+    if source == "ui":
+        if "mozilla" in low and not _looks_script_ua(ua):
+            return "面板按钮"
+        return f"API({ua or '无UA'})（自称 UI）"
     if "httpx" in low:
         return "API(httpx)"
     if "requests" in low:
@@ -43,6 +68,11 @@ def _auto_who(request, source: str) -> str:
     if "mozilla" in low:
         return "API(浏览器)"
     return f"API({ua or '无UA'})"
+
+
+def _who_level(who: str) -> str:
+    """“自称 UI 但不像浏览器”要黄字标出来，否则日志里看不出伪装。"""
+    return "WARNING" if "自称 UI" in who else "INFO"
 
 
 def _spawn(root_str: str, *cmd: str):
@@ -80,17 +110,18 @@ def _spawn(root_str: str, *cmd: str):
     return proc
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        import ctypes
+def _pid_alive(pid: int, marker=None) -> bool:
+    """进程是否存活；给了标记文件时再核对 pid 归属（防 pid 复用误判/误杀）。
 
-        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not h:
-            return False
-        ctypes.windll.kernel32.CloseHandle(h)
-        return True
-    except Exception:
-        return True
+    2026-10-27：此前只用 OpenProcess 判“存在”，pid 被系统复用后会误报“守护已在运行”
+    （点不起来）或在停止时 taskkill 掉无关进程。归属判定见 core/runmark.pid_owns_file，
+    已覆盖 Linux（/proc），Docker 部署同样适用。
+    """
+    from ..core.runmark import pid_alive, pid_owns_file
+
+    if pid <= 0 or not pid_alive(pid):
+        return False
+    return True if marker is None else pid_owns_file(marker, pid)
 
 
 def _marker_jobs(settings: Settings) -> dict[int, dict]:
@@ -104,7 +135,7 @@ def _marker_jobs(settings: Settings) -> dict[int, dict]:
     for f in run_dir.glob("*.json"):
         try:
             info = _json.loads(f.read_text(encoding="utf-8"))
-            if _pid_alive(int(info["pid"])):
+            if _pid_alive(int(info["pid"]), f):
                 out[int(f.stem)] = {"course": info.get("course", "?"),
                                     "since": info.get("since", ""), "pid": info["pid"],
                                     "external": True}
@@ -193,6 +224,18 @@ background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3
 .statrow b{font-weight:600}
 .statrow .flag{font-size:.65rem;color:var(--warn,#b8860b);margin-left:.25rem;cursor:pointer;white-space:nowrap}
 #profBody{overflow-x:auto;margin-top:.3rem}
+/* 画像表：列宽按内容收紧（2026-10-27）—— 不再 width:100% 强行铺满，窄列不再大片空白 */
+#profBody .ptable{width:max-content;max-width:100%;min-width:0}
+#profBody .ptable th,#profBody .ptable td{padding:.26rem .35rem}
+#profBody .ptable .pf{width:auto;min-width:0}
+#profBody .ptable td:nth-child(3) .pf{width:8em}
+#profBody .ptable td:nth-child(5) .pf{width:9em}
+#profBody .ptable td:nth-child(6) .pf,#profBody .ptable td:nth-child(8) .pf{width:6em}
+#profBody .ptable td:nth-child(7) .pf{width:9em}
+#profBody .ptable td:nth-child(9) .pf{width:11em}
+#profBody .ptable td:nth-child(10) .pf{width:8em}
+#profBody .ptable td:nth-child(11) .pf{width:8em}
+#profBody .ptable .dirty{color:#c0560b;font-size:.68rem;margin-right:.25rem;white-space:nowrap}
 .ptable{width:100%;border-collapse:collapse;font-size:.75rem;background:var(--card);
  border:1px solid var(--line);border-radius:12px;overflow:hidden;min-width:1050px}
 .ptable th,.ptable td{border-bottom:1px solid var(--line);padding:.3rem .4rem;text-align:left;
@@ -246,6 +289,8 @@ display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-wei
 box-shadow:0 3px 8px rgba(70,80,220,.3)}
 .head .names{min-width:0;flex:1 1 150px}
 .who{font-size:1.05rem;font-weight:800;line-height:1.25;word-break:break-all}
+.who .nicktag{font-size:.6rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
+ border-radius:6px;padding:0 .25rem;margin-left:.35rem;vertical-align:2px;white-space:nowrap}
 .sub{font-size:.72rem;color:var(--muted);margin-top:.1rem}
 .head .ops{display:flex;gap:.35rem;flex:none;align-items:center;flex-wrap:wrap;margin-left:auto}
 .minibtn{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:.22rem .6rem;
@@ -415,7 +460,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   </section>
   <section class="batch">
     <div class="bhead"><b>🏷 画像设置</b>
-      <span class="muted">姓名/学号/年级/专业/学期参与统计分组；学校/院系/班级/平台昵称只展示。平台读取可自动回填，不足的手补</span>
+      <span class="muted">年级/专业/学期参与统计分组；姓名/学号用于识别与搜索；学校/院系/班级/平台昵称只展示。平台读取只补空，不足的手补</span>
       <span class="spacer"></span>
       <input id="profQ" placeholder="🔍 搜 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级" style="width:200px"
         oninput="renderProfiles()">
@@ -688,7 +733,7 @@ function renderAccounts(){
     return `<div class="card${run?' running':''}${hits.length?' hit':''}">
     <div class="head">
       <div class="avatar">${esc(avatar)}</div>
-      <div class="names"><div class="who">${hl(a.display_name||a.platform_username||'—',q)}</div>
+      <div class="names"><div class="who">${hl(a.display_name||a.platform_username||'—',q)}${(a.platform_username&&!(a.profile&&a.profile.name))?'<span class="nicktag" title="当前显示的是平台昵称；在「📈 统计 → 画像设置」手填姓名后自动换成姓名">昵称</span>':''}</div>
         <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}${(a.profile&&a.profile.name&&a.platform_username&&a.profile.name!==a.platform_username)?' · 平台昵称 '+esc(a.platform_username):''}</div>
         ${(a.student_no||(a.profile&&(a.profile.grade||a.profile.major||a.profile.term)))?`<div class="sub">
           🎓 ${a.student_no?`学号 ${hl(a.student_no,q)}`:''}${a.student_no&&a.profile&&(a.profile.grade||a.profile.major||a.profile.term)?' · ':''}${a.profile?[a.profile.grade,a.profile.major,a.profile.term].filter(Boolean).map(x=>esc(x)).join(' / '):''}
@@ -933,7 +978,7 @@ function renderProfiles(){
       p.student_no,p.grade,p.major,p.term,p.school,p.dept,p.cls,p.source]
       .join(' ').toLowerCase().includes(q));
   if(!rows.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的账号</span>';return;}
-  const inp=(id,k,v,ph)=>`<input id="pf_${k}_${id}" class="pf" placeholder="${esc(ph)}" value="${esc(v||'')}">`;
+  const inp=(id,k,v,ph)=>`<input id="pf_${k}_${id}" class="pf" placeholder="${esc(ph)}" value="${esc(v||'')}" oninput="pfDirty(${id})">`;
   el.innerHTML='<table class="ptable"><thead><tr>'
     + '<th>账号</th><th>备注</th><th>姓名</th><th>昵称</th><th>学号</th>'
     + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th>'
@@ -941,7 +986,7 @@ function renderProfiles(){
     + rows.map(p=>{const id=p.account_id;return `<tr>
         <td class="ro" title="账号 #${id}">#${id}</td>
         <td class="ro" title="账号备注名（面板显示名）">${esc(p.label||'')}</td>
-        <td>${inp(id,'n',p.display_name,p.platform_name||'姓名')}</td>
+        <td>${inp(id,'n',p.name,p.platform_name?'留空用昵称':'姓名')}</td>
         <td class="ro" title="平台昵称（只读，登录后自动带出）">${esc(p.platform_name||'—')}</td>
         <td>${inp(id,'s',p.student_no,'学号')}</td>
         <td>${inp(id,'g',p.grade,'年级')}</td>
@@ -952,20 +997,30 @@ function renderProfiles(){
         <td>${inp(id,'cl',p.cls,'班级')}</td>
         <td class="ro">${p.source==='platform'?'<span class="b-ok">平台</span>':(p.source==='manual'?'<span class="b-info">手动</span>':'—')}</td>
         <td class="ro"><div class="cellops">
+          <span class="dirty" id="pf_dirty_${id}"></span>
           <button class="minibtn" onclick="saveProfile(${id})">保存</button>
           <button class="minibtn" title="只读访问一次个人中心，尝试抓取平台上的姓名/学号/学校/院系/班级并回填（不覆盖你已手填的内容）"
             onclick="readProfileFromPlatform(${id})">⬇ 平台读取</button></div></td></tr>`;}).join('')
     + '</tbody></table>'
-    + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名/学号/年级/专业/学期/学校/院系/班级可编辑，留空即清空；平台读取只补空、不覆盖手填。姓名留空则卡片显示平台昵称。学号只用于本地面板识别，不上传</div>';
+    + '<div class="muted" style="margin-top:.35rem;font-size:.75rem">姓名/学号/年级/专业/学期/学校/院系/班级可编辑，留空即清空；姓名留空时卡片显示平台昵称（不会把昵称写进姓名）；平台读取只补空、不覆盖手填。学号只用于本地面板识别，不上传</div>';
+}
+function pfDirty(id){
+  const e=document.getElementById('pf_dirty_'+id);
+  if(e&&!e.textContent)e.textContent='● 未保存';
 }
 function saveProfile(id){
   const v=k=>{const el=document.getElementById(`pf_${k}_${id}`);return el?el.value.trim():'';};
+  const cur=PROFILES.find(p=>p.account_id===id)||{};
+  const vals={name:v('n'),student_no:v('s'),grade:v('g'),major:v('m'),term:v('t'),
+    school:v('sc'),dept:v('dp'),cls:v('cl')};
+  // 一个字都没改就不动来源（否则点一下“保存”就把平台→手动，来源标记就失真了）
+  const same=Object.keys(vals).every(k=>vals[k]===(cur[k]||'').trim());
   fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({account_id:id,name:v('n'),student_no:v('s'),grade:v('g'),
-      major:v('m'),term:v('t'),school:v('sc'),dept:v('dp'),cls:v('cl')})})
+    body:JSON.stringify({account_id:id,...vals,source:same?null:'manual'})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('保存失败：'+d.error,1);return;}
-    toast('✔ 画像已保存（姓名/学号/年级/专业/学期/学校/院系/班级）');
+    toast(same?'✔ 无改动（来源保持不变）':'✔ 画像已保存（姓名/学号/年级/专业/学期/学校/院系/班级）');
+    const e=document.getElementById('pf_dirty_'+id);if(e)e.textContent='';
     syncRun();loadStats();loadProfiles();});
 }
 const FIELD_CN={name:'姓名',student_no:'学号',grade:'年级',major:'专业',term:'学期',
@@ -977,10 +1032,12 @@ function readProfileFromPlatform(id){
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('平台读取失败：'+(d.error||'未知'),1);return;}
     const f=(d.merged&&d.merged.filled)||[], s=(d.merged&&d.merged.skipped)||[];
+    const nn=(d.merged&&d.merged.nickname_only)||[];
     const fp=f.length?'已回填 '+f.map(k=>FIELD_CN[k]||k).join('/'):'无新字段可回填';
     const sp=s.length?'；保留手填 '+s.map(k=>FIELD_CN[k]||k).join('/'):'';
+    const np=nn.length?'；平台只给了昵称，姓名未填（请手填真名）':'';
     const fl=(d.fields&&d.fields.length)?'。平台返回字段：'+d.fields.join('/'):'';
-    toast('✔ 平台读取完成：'+fp+sp+fl);
+    toast('✔ 平台读取完成：'+fp+sp+np+fl);
     syncRun();loadProfiles();
   }).catch(e=>toast('平台读取失败：'+e,1));
 }
@@ -1457,7 +1514,8 @@ def _startup_cleanup(settings: Settings) -> dict:
             try:
                 import json as _j
 
-                keep = _pid_alive(int(_j.loads(f.read_text(encoding="utf-8")).get("pid") or 0))
+                keep = _pid_alive(
+                    int(_j.loads(f.read_text(encoding="utf-8")).get("pid") or 0), f)
             except Exception:
                 keep = False
             if keep:
@@ -2177,7 +2235,9 @@ def create_app(settings: Settings) -> FastAPI:
                                      term=str(body.get("term") or ""),
                                      school=str(body.get("school") or ""),
                                      dept=str(body.get("dept") or ""),
-                                     cls=str(body.get("cls") or ""))
+                                     cls=str(body.get("cls") or ""),
+                                     # null = 前端确认“一个字没改”，保留原来源
+                                     source=body.get("source", "manual"))
             return r
         finally:
             conn.close()
@@ -2200,9 +2260,10 @@ def create_app(settings: Settings) -> FastAPI:
                 return {**got, "profile": statsmod.get_profile(conn, account_id)}
             merged = statsmod.merge_platform_profile(conn, account_id, got)
             # 学校/院系/班级平台给了也一并留档（面板只展示，不进统计维度）
+            note = "，姓名=昵称已忽略" if "name" in (merged.get("nickname_only") or []) else ""
             _log_event(account_id, "profile-read",
                        f"平台画像：字段 {len(got.get('fields') or [])} 个，回填 "
-                       f"{merged.get('filled') or '无'}，保留手填 {merged.get('skipped') or '无'}")
+                       f"{merged.get('filled') or '无'}，保留手填 {merged.get('skipped') or '无'}{note}")
             return {**got, "merged": merged, "profile": statsmod.get_profile(conn, account_id)}
         finally:
             conn.close()
@@ -2326,10 +2387,16 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": True}
         ext = _marker_jobs(settings).get(account_id)  # 定时/外部启动的会话
         if ext:
-            subprocess.run(["taskkill", "/PID", str(ext["pid"]), "/F"],
-                           capture_output=True)
-            (settings.data_dir / "run" / f"{account_id}.json").unlink(missing_ok=True)
-            _log_event(account_id, "session-stop", f"{ext['course']}｜手动停止（进度保留）")
+            mpath = settings.data_dir / "run" / f"{account_id}.json"
+            # 强杀前再核一次 pid 归属：期间可能已自行退出、pid 又被别的进程占用
+            owned = _pid_alive(int(ext["pid"]), mpath)
+            if owned:
+                subprocess.run(["taskkill", "/PID", str(ext["pid"]), "/F"],
+                               capture_output=True)
+            mpath.unlink(missing_ok=True)
+            _log_event(account_id, "session-stop",
+                       f"{ext['course']}｜手动停止（进度保留）" if owned
+                       else f"{ext['course']}｜标记 pid 已变（可能已退出），仅清标记")
             return {"ok": True}
         return {"ok": False, "error": "该账号没有进行中的会话"}
 
@@ -2348,10 +2415,10 @@ def create_app(settings: Settings) -> FastAPI:
         if marker.exists():  # 旧守护还活着（如面板重启前启动的）——先确认
             try:
                 old = _json.loads(marker.read_text(encoding="utf-8"))
-                if _pid_alive(int(old["pid"])):
+                if _pid_alive(int(old["pid"]), marker):
                     _log_event(0, "auto-request",
                                f"启动请求被拒（已在运行 pid={old['pid']}）｜来源={who}",
-                               "WARNING")
+                               "WARNING")  # 被拒本身就该黄字，别看来源
                     return {"ok": False, "error": "定时调度已在运行"}
             except Exception:
                 pass
@@ -2361,7 +2428,8 @@ def create_app(settings: Settings) -> FastAPI:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(_json.dumps({"pid": proc.pid, "since": since}),
                           encoding="utf-8")
-        _log_event(0, "auto-request", f"启动请求已受理（pid={proc.pid}）｜来源={who}")
+        _log_event(0, "auto-request", f"启动请求已受理（pid={proc.pid}）｜来源={who}",
+                   _who_level(who))
         return {"ok": True}
 
     @app.post("/api/auto/stop")
@@ -2379,17 +2447,24 @@ def create_app(settings: Settings) -> FastAPI:
                 import json as _json
 
                 old = _json.loads(marker.read_text(encoding="utf-8"))
-                if _pid_alive(int(old["pid"])):
-                    subprocess.run(["taskkill", "/PID", str(old["pid"]), "/F"],
+                old_pid = int(old["pid"])
+                if _pid_alive(old_pid, marker):
+                    subprocess.run(["taskkill", "/PID", str(old_pid), "/F"],
                                    capture_output=True)
                     stopped = True
+                elif _pid_alive(old_pid):
+                    # pid 被别的进程复用：绝不强杀，只清标记并留警告（2026-10-27）
+                    _log_event(0, "auto-stop",
+                               f"标记 pid={old_pid} 存活但不像守护进程"
+                               "（pid 可能已被复用），未强杀，仅清标记", "WARNING")
             except Exception:
                 pass
             marker.unlink(missing_ok=True)
         _AUTO = None
         if stopped:  # 面板侧停止也要在「📜 日志」留一笔（守护被强杀时自己写不了）
             _log_event(0, "auto-stop",
-                       f"面板停止定时调度（来源={who}；已在跑的学习会话不受影响）")
+                       f"面板停止定时调度（来源={who}；已在跑的学习会话不受影响）",
+                       _who_level(who))
         return {"ok": True} if stopped else {"ok": False, "error": "定时调度未在运行"}
 
     @app.get("/api/study/status")

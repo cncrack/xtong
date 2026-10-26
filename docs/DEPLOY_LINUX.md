@@ -104,3 +104,4 @@ sudo systemctl enable --now xxt
 | 提示浏览器缺失 | 方式A 不应出现（镜像自带）；方式B 重跑 `playwright install chromium` |
 | 会话失效循环 | Windows 重登该账号 → 只把 `data/accounts/<id>/state.json` 拷回容器 data |
 | Windows 和小主机都挂机 | **禁止同一账号双端同时挂**（互踢+IP 跳变）——迁移完停掉 Windows 端 |
+| 面板「⏹ 停止」点了没反应 | **已知限制（2026-10-27 登记）**：停止守护/会话用 Windows 专有 `taskkill`，容器内无效 → 临用 `docker compose restart`；Docker 实机落地前改成 `proc.terminate()`/`os.kill` |

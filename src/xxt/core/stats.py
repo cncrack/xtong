@@ -47,8 +47,12 @@ def get_profile(conn: sqlite3.Connection, account_id: int) -> dict[str, Any]:
 def set_profile(conn: sqlite3.Connection, account_id: int, *, name: str = "",
                 student_no: str = "", grade: str = "", major: str = "",
                 term: str = "", school: str = "", dept: str = "", cls: str = "",
-                source: str = "manual") -> dict[str, Any]:
-    """写入/更新画像（留空即清空该维度，统计里会归入"未标注"）。"""
+                source: str | None = "manual") -> dict[str, Any]:
+    """写入/更新画像（留空即清空该维度，统计里会归入“未标注”）。
+
+    `source=None` 表示“一个字没改”，保留库里原来源（新增行则为空）。
+    2026-10-27 修：此前无论如何都写 manual，点一下“保存”就把「平台」抹成「手动」。
+    """
     if conn.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
         return {"ok": False, "error": f"账号 #{account_id} 不存在"}
     conn.execute(
@@ -58,13 +62,14 @@ def set_profile(conn: sqlite3.Connection, account_id: int, *, name: str = "",
         " ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,"
         " student_no=excluded.student_no, grade=excluded.grade, major=excluded.major,"
         " term=excluded.term, school=excluded.school, dept=excluded.dept, cls=excluded.cls,"
-        " source=excluded.source, updated_at=excluded.updated_at",
+        " source=COALESCE(excluded.source, account_profiles.source),"
+        " updated_at=excluded.updated_at",
         (account_id, (name or "").strip() or None,
          (student_no or "").strip() or None,
          (grade or "").strip() or None, (major or "").strip() or None,
          (term or "").strip() or None, (school or "").strip() or None,
          (dept or "").strip() or None, (cls or "").strip() or None,
-         source or "manual"))
+         (source or "").strip() or None))
     conn.commit()
     return {"ok": True, **get_profile(conn, account_id)}
 
@@ -74,12 +79,19 @@ def merge_platform_profile(conn: sqlite3.Connection, account_id: int,
     """把平台读到的画像**只补空、不覆盖手填**。
 
     用户手改过的姓名/学号是他自己确认过的真值，平台值（可能旧/错）不得悄悄覆盖。
-    返回 `{"ok", "filled": [...], "skipped": [...]}`；有任何字段来自平台则标 source=platform。
+    返回 `{"ok", "filled", "skipped", "nickname_only"}`；有任何字段来自平台则标 source=platform。
+
+    `nickname_only`（2026-10-27）：平台“姓名”字段常常就是**平台昵称**（个人空间 `.user` 显示的就是昵称），
+    与 `accounts.platform_username` 完全相同时**不写 name**（宁漏不错）——否则姓名列永远显示昵称，
+    用户以为已填真名，而“只补空”又会永久挡住下次真名。
     """
-    if conn.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
+    row = conn.execute("SELECT platform_username FROM accounts WHERE id=?",
+                       (account_id,)).fetchone()
+    if row is None:
         return {"ok": False, "error": f"账号 #{account_id} 不存在"}
+    nickname = (row["platform_username"] or "").strip()
     cur = get_profile(conn, account_id)
-    filled, skipped = [], []
+    filled, skipped, nickname_only = [], [], []
     merged = {"name": cur["name"], "student_no": cur["student_no"],
               "grade": cur["grade"], "major": cur["major"], "term": cur["term"],
               "school": cur["school"], "dept": cur["dept"], "cls": cur["cls"]}
@@ -87,16 +99,20 @@ def merge_platform_profile(conn: sqlite3.Connection, account_id: int,
         val = (data.get(field) or "").strip()
         if not val:
             continue
+        if field == "name" and nickname and val == nickname:
+            nickname_only.append(field)   # 平台只是把昵称吐回来，不是真名
+            continue
         if merged[field]:
             skipped.append(field)
         else:
             merged[field] = val
             filled.append(field)
     if not filled:
-        return {"ok": True, "filled": [], "skipped": skipped}
+        return {"ok": True, "filled": [], "skipped": skipped,
+                "nickname_only": nickname_only}
     res = set_profile(conn, account_id, source="platform", **merged)
     return {"ok": res.get("ok", False), "filled": filled, "skipped": skipped,
-            "error": res.get("error"), "profile": res}
+            "nickname_only": nickname_only, "error": res.get("error"), "profile": res}
 
 
 def list_profiles(conn: sqlite3.Connection) -> list[dict[str, Any]]:

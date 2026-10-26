@@ -32,3 +32,4 @@ docker compose up -d --build        # 构建并启动（面板 http://服务器I
 - 同一账号避免 Windows 与 Docker **同时**挂机（会话互踢+IP 跳变）；迁移期间停一边
 - 出口 IP：服务器 IP；如需与家庭 IP 一致，配 `environment.HTTP_PROXY`（compose 注释示例）
 - LLM Key：`deploy/.env` 写 `XXT_LLM_API_KEY=sk-...`（.env 已被 gitignore），或面板 Provider 中心填（加密落 data/）
+- ⚠ **已知限制（2026-10-27 登记，待落地时修）**：面板「⏹ 停止」守护/会话用 Windows 专有 `taskkill /F`，容器内无效（停不掉孤儿进程，只能 `docker compose restart`）→ Docker 实机落地前需改为跨平台 `proc.terminate()` / `os.kill`。pid 归属校验已兼容 Linux（读 `/proc/<pid>/stat`），本次加固**无需**改 `Dockerfile` / `docker-compose.yml`
