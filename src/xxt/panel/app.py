@@ -36,14 +36,18 @@ def _spawn(root_str: str, *cmd: str):
     if getattr(_sys, "frozen", False):  # exe 模式：自身即 CLI 入口
         argv = [_sys.executable, *cmd]
     else:
-        argv = [_sys.executable, "-m", "xxt.cli", *cmd]
+        # -u：不缓冲 stdout。不加时守护/会话的 print（计划时刻、跳过原因、触发结果）
+        # 全卡在缓冲区，进程一被杀就丢 → 日志只剩一行“守护启动”，无法核查决策
+        # （2026-10-26 实测：只剩 logging 那条，print 全没）
+        argv = [_sys.executable, "-u", "-m", "xxt.cli", *cmd]
     log_dir = _pl.Path(root_str) / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"sub-{cmd[0] if cmd else 'cli'}-{time.strftime('%Y%m%d-%H%M%S')}.log"
     fh = open(log_path, "ab")
     try:
         # 子进程 stdout 默认按系统码页（cp936）编码，中文会写成乱码——强制 UTF-8
-        env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1",
+                   PYTHONUNBUFFERED="1")
         proc = subprocess.Popen(argv, cwd=root_str, stdout=fh, stderr=fh, env=env)
     finally:
         fh.close()  # 句柄已由子进程继承
