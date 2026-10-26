@@ -151,3 +151,16 @@ CSS：`.who .nicktag{font-size:.6rem;border:1px solid var(--line);border-radius:
 卡片2: 标题='王泽轩昵称' 有昵称标签=True 副行='#2 小号1 · 优先级 2'
 pageerror = 0
 ```
+
+## 九、会话收尾（2026-10-27 晚）
+
+- **本次全部完成**：画像表 5 项（① 列宽 ② 姓名/昵称分离 ③ 文案 ④ 未保存提示 ⑤ 来源不误改）
+  + C（B 堵源头 / A 清历史）+ 卡片标题「昵称」标签。实测 5 轮（含两轮重启后面板 headless 检查）、
+  `pytest 142 passed`、`push_check` PASS。提交 `9ecae7d` 已推送（`main` 与 `origin/main` 齐平）。
+- **进行中**：无。
+- **下一步第一个动作（明天 10-28）**：`Ctrl+F5` →「📈 统计 → 画像设置」给 #1/#2 手填真名并保存，
+  确认卡片标题的「昵称」灰标签消失、副行改显「· 平台昵称 林鑫阳/王泽轩」。
+- **之后可选**：① 重建 `dist\xxt.exe`（仍 10-25 18:58 旧构建） ② 作业全链路实测（参考答案→回填→平台核对→提交→读判分） ③ 弹题选择器实况。
+- **阻塞点**：无。面板保持运行（挂机不影响）。
+- **现场备查（`data/` 不入库）**：新增 `diag_prof_table.py`、`shot_prof.py`、`shot_card.py`、`q_prof_check.py`、`q_clean_nickname.py`；
+  画像原值备份 `profiles_backup_20261027-025421.json`（两号 name 分别为 林鑫阳/王泽轩，可据此还原）。
