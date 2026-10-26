@@ -165,7 +165,7 @@ def _pick_course(conn, needle: str, account_id: int = 1):
 
 
 def _pick_course_in(conn, *, account_ids, name: str | None = None, pid: str | None = None):
-    """在**给定账号集合**里找课程行（批次路径用）。
+    """在**给定账号集合**里找课程行（学习安排路径用）。
 
     顺序：pid 精确（平台课程ID，跨账号唯一锚点）→ 课名全等 → 课名模糊。
     这样同名多门时优先命中 pid 指定的那门；不同账号的同名课也不会串。
@@ -280,9 +280,9 @@ def cmd_learn(args: argparse.Namespace) -> int:
         # 同账号单进程：learn 固定用 #1，启动前先看有没有别的会话（面板/定时/另开的 CLI）。
         # 2026-10-25 修：此前 learn 不写标记，面板看不见它 → 再点"开始"就会双开。
         running = live_session(s.data_dir, 1)
-        if running:
+        if running and not getattr(args, "force", False):
             print(f"[FAIL] 账号 #1 已有会话在跑（{running.get('course')}，pid {running.get('pid')}）"
-                  "——先停掉再启动，避免同账号双开")
+                  "——先停掉再启动，避免同账号双开；确认无影响可加 --force")
             return 1
 
         acc_row = find_account(conn, "1")
@@ -435,8 +435,8 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
     conn = connect(s.db_path)
     marked: list[int] = []  # 已写标记的账号（finally 只清自己写过的）
     try:
-        # 先定账号：种子课程要从"本批次账号"里解析，而非默认账号#1。
-        # （修 2026-10-26 的 R1：批次只含 #2/#3 时，旧逻辑在 #1 找不到课会整轮失败）
+        # 先定账号：种子课程要从"本学习安排账号"里解析，而非默认账号#1。
+        # （修 2026-10-26 的 R1：学习安排只含 #2/#3 时，旧逻辑在 #1 找不到课会整轮失败）
         if args.accounts:
             rows = []
             for needle in args.accounts.split(","):
@@ -450,13 +450,25 @@ def cmd_mlearn(args: argparse.Namespace) -> int:
         if not rows:
             print("[FAIL] 无可用账号（xxt account add / list 查看）")
             return 1
+        # 同账号单进程（2026-10-26 补）：面板/定时/另开的 CLI 都可能已在跑这个号。
+        # 此前只有 `xxt learn` 有守卫，`mlearn` 直接写标记不检查 → 面板在跑时再跑一次就双开。
+        if not getattr(args, "force", False):
+            from .core.runmark import busy_sessions
+
+            busy = busy_sessions(s.data_dir, [int(r["id"]) for r in rows])
+            if busy:
+                for aid, info in busy.items():
+                    print(f"[FAIL] 账号 #{aid} 已有会话在跑（{info.get('course')}，"
+                          f"pid {info.get('pid')}）——先停掉再启动，避免同账号双开")
+                print("       若确认无影响、必须强制并行，加 --force")
+                return 1
         ids = [int(r["id"]) for r in rows]
-        # 课程解析：pid 精确优先（跨账号唯一锚点）→ 课名；范围限定本批次账号
+        # 课程解析：pid 精确优先（跨账号唯一锚点）→ 课名；范围限定本学习安排账号
         course = _pick_course_in(conn, account_ids=ids,
                                  pid=getattr(args, "course_pid", None), name=args.course)
         if course is None:
             want = getattr(args, "course_pid", None) or args.course
-            print(f"[FAIL] 在本批次账号里未找到课程：{want}"
+            print(f"[FAIL] 在本学习安排账号里未找到课程：{want}"
                   "（确认账号已抓取该课程；或在面板重新选择课程）")
             return 1
         print(f"[mlearn] 课程匹配：《{course['name']}》pid={course['platform_course_id']}")
@@ -578,8 +590,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 conn = connect(s.db_path)
                 plan = None
                 try:
-                    # 批次优先：启用中的批次指定了课程 → 用它；否则走课程轮转。
-                    # 批次不含时间字段，开跑时刻仍由本账号 start_at/窗口决定（天然错峰）。
+                    # 学习安排优先：启用中的学习安排指定了课程 → 用它；否则走课程轮转。
+                    # 学习安排不含时间字段，开跑时刻仍由本账号 start_at/窗口决定（天然错峰）。
                     from .core import plans as _plans
 
                     plan = _plans.course_for_account(conn, aid)  # {"name","pid"} | None
@@ -594,6 +606,20 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     continue
                 course_name = picks[0]["name"]
                 course_pid = picks[0].get("pid")
+                # 缺课保护（2026-10-26）：学习安排指定的课该号没抓过时，spawn 后必然
+                # `[FAIL] 未找到课程` 退出，而面板已回 ok=True → 记为“今日已触发”，
+                # 当日机会白白消耗。本地先核（零平台访问），缺课直接跳过。
+                conn = connect(s.db_path)
+                try:
+                    has_course = _plans.account_has_course(
+                        conn, aid, pid=course_pid, name=course_name)
+                finally:
+                    conn.close()
+                if not has_course:
+                    skipped.add(aid)
+                    print(f"[auto] 账号#{aid} 缺课《{course_name}》→ 今日跳过"
+                          "（不消耗当日机会，补抓课程后可手动▶）")
+                    continue
                 # 会话统一交面板管理（面板可见/可停）；面板未启动则本轮重试。
                 # ⚠ 与账号卡片 ▶ 走的是同一个 /api/study/start，共用防双开锁
                 #   （进程内 _JOBS + data/run/<id>.json 标记），因此不会重复多开。
@@ -604,7 +630,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         f"http://127.0.0.1:{panel_port}/api/study/start",
                         json={"account_id": aid, "course": course_name,
                               "course_pid": course_pid,
-                              "source": "批次" if plan else "定时"}, timeout=10,
+                              "source": "学习安排" if plan else "定时"}, timeout=10,
                     )
                     ok = bool(r.json().get("ok"))
                     reason = r.json().get("error", "")
@@ -616,6 +642,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 elif "已有进行中的会话" in str(reason):
                     fired.add(aid)  # 手动已开（面板▶），视为今日已学
                     print(f"[auto] 账号#{aid} 已有会话（手动开的），今日不再触发")
+                elif "没有这门课" in str(reason):
+                    skipped.add(aid)
+                    print(f"[auto] 账号#{aid} 面板侧判定缺课：{reason}（今日跳过）")
                 else:
                     print(f"[auto] 账号#{aid} 触发失败：{reason}（30 秒后重试）")
             # 计划落库：面板"今日定时"显示（auto 分配的时间对用户可见）
@@ -777,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
     p_learn.add_argument("--limit", type=int, default=None, help="本次最多播放的视频数")
     p_learn.add_argument("--ignore-window", action="store_true",
                          help="忽略每日学习时段限制（仅限验收测试）")
+    p_learn.add_argument("--force", action="store_true",
+                         help="跳过同账号双开检查（确认无影响时用）")
 
     p_prog = sub.add_parser("progress", help="查看各课程完成进度与今日学习量")
     p_prog.add_argument("course", nargs="?", default=None, help="课程名或 courseid（可省略）")
@@ -809,10 +840,12 @@ def main(argv: list[str] | None = None) -> int:
     p_ml = sub.add_parser("mlearn", help="多账号并发学习（async，M4 实验性）")
     p_ml.add_argument("course", help="课程名或 courseid")
     p_ml.add_argument("--course-pid", default=None,
-                      help="平台课程ID（批次锚点，优先于课名精确匹配）")
+                      help="平台课程ID（学习安排锚点，优先于课名精确匹配）")
     p_ml.add_argument("--accounts", default=None, help="账号（id/标签，逗号分隔；缺省=全部 active）")
     p_ml.add_argument("--limit", type=int, default=None, help="每账号本次最多视频数")
     p_ml.add_argument("--concurrency", type=int, default=2, help="全局同时学习账号数上限")
+    p_ml.add_argument("--force", action="store_true",
+                      help="跳过同账号双开检查（确认无影响时用）")
 
     sub.add_parser("panel", help="启动 Web 管理面板（浏览器查看进度/账号/日志）")
     sub.add_parser("auto", help="常驻调度守护：各账号定时自动刷课（start_at/窗口内随机，额度停机）")

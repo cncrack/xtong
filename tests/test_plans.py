@@ -1,4 +1,4 @@
-"""批次（plan）测试：统一排课、账号冲突、与手动启动的关系（不触网、不拉进程）。"""
+"""学习安排（plan）测试：统一排课、账号冲突、与手动启动的关系（不触网、不拉进程）。"""
 
 from __future__ import annotations
 
@@ -31,21 +31,21 @@ class TestPlans(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(course_for_account(self.conn, 1), {"name": "数据结构", "pid": None})
         self.assertEqual(course_for_account(self.conn, 2), {"name": "数据结构", "pid": None})
-        self.assertIsNone(course_for_account(self.conn, 3))  # 未排批次的账号走轮转
+        self.assertIsNone(course_for_account(self.conn, 3))  # 未排学习安排的账号走轮转
         plans = list_plans(self.conn)
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0]["account_ids"], [1, 2])
         self.assertTrue(plans[0]["enabled"])
 
     def test_course_pid_anchor(self):
-        """批次可带平台课程ID；course_for_account 原样带出（运行按 pid 精确匹配）。"""
+        """学习安排可带平台课程ID；course_for_account 原样带出（运行按 pid 精确匹配）。"""
         self.assertTrue(create_plan(self.conn, "A", "数据结构", [1], course_pid="c9")["ok"])
         self.assertEqual(course_for_account(self.conn, 1), {"name": "数据结构", "pid": "c9"})
         self.assertEqual(list_plans(self.conn)[0]["course_pid"], "c9")
 
     def test_update_plan_sets_and_clears_pid(self):
         pid = create_plan(self.conn, "A", "数据结构", [1])["id"]
-        self.assertIsNone(list_plans(self.conn)[0]["course_pid"])  # 老式批次无 pid
+        self.assertIsNone(list_plans(self.conn)[0]["course_pid"])  # 老式学习安排无 pid
         self.assertTrue(update_plan(self.conn, pid, course_pid="c9")["ok"])
         self.assertEqual(list_plans(self.conn)[0]["course_pid"], "c9")
         self.assertTrue(update_plan(self.conn, pid, course_pid="")["ok"])  # 空串=清空
@@ -53,16 +53,16 @@ class TestPlans(unittest.TestCase):
 
     def test_reject_empty_name_or_accounts(self):
         self.assertFalse(create_plan(self.conn, "", "数据结构", [1])["ok"])
-        self.assertFalse(create_plan(self.conn, "批次", "", [1])["ok"])
-        self.assertFalse(create_plan(self.conn, "批次", "数据结构", [])["ok"])
-        self.assertFalse(create_plan(self.conn, "批次", "数据结构", [99])["ok"])
+        self.assertFalse(create_plan(self.conn, "学习安排", "", [1])["ok"])
+        self.assertFalse(create_plan(self.conn, "学习安排", "数据结构", [])["ok"])
+        self.assertFalse(create_plan(self.conn, "学习安排", "数据结构", [99])["ok"])
 
     def test_same_account_cannot_be_in_two_enabled_plans(self):
-        """同一账号同时挂两个启用批次 → "今天刷哪门课"没有确定答案，必须拒绝。"""
+        """同一账号同时挂两个启用学习安排 → "今天刷哪门课"没有确定答案，必须拒绝。"""
         self.assertTrue(create_plan(self.conn, "A", "数据结构", [1])["ok"])
         r = create_plan(self.conn, "B", "操作系统", [1, 2])
         self.assertFalse(r["ok"])
-        self.assertIn("已在其他启用中的批次里", r["error"])
+        self.assertIn("已在其他启用中的学习安排里", r["error"])
         # 不带冲突账号则允许
         self.assertTrue(create_plan(self.conn, "B", "操作系统", [2])["ok"])
         self.assertEqual(busy_accounts(self.conn), {1: "A", 2: "B"})
@@ -72,7 +72,7 @@ class TestPlans(unittest.TestCase):
         pid = r["id"]
         self.assertTrue(set_enabled(self.conn, pid, False)["ok"])
         self.assertIsNone(course_for_account(self.conn, 1))
-        # 停用后账号可被别的批次占用
+        # 停用后账号可被别的学习安排占用
         self.assertTrue(create_plan(self.conn, "B", "操作系统", [1])["ok"])
 
     def test_enable_checks_conflict(self):
@@ -96,13 +96,13 @@ class TestPlans(unittest.TestCase):
         self.assertIsNone(course_for_account(self.conn, 1))
 
     def test_plan_has_no_time_fields(self):
-        """批次不携带开跑时间：错峰由各账号 start_at / 窗口决定（用户明确要求）。"""
+        """学习安排不携带开跑时间：错峰由各账号 start_at / 窗口决定（用户明确要求）。"""
         r = create_plan(self.conn, "A", "数据结构", [1])
         self.assertTrue(r["ok"])
         cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(plans)")}
         self.assertFalse({"start_at", "start_time", "begin_at"} & cols)
 
-    # ---- update_plan（编辑已建批次：改名 / 换课程 / 增删账号）----
+    # ---- update_plan（编辑已建学习安排：改名 / 换课程 / 增删账号）----
 
     def test_update_plan_rename_and_course(self):
         pid = create_plan(self.conn, "A", "数据结构", [1])["id"]
@@ -135,11 +135,11 @@ class TestPlans(unittest.TestCase):
     def test_update_plan_conflict_excludes_self(self):
         a = create_plan(self.conn, "A", "数据结构", [1])["id"]
         create_plan(self.conn, "B", "操作系统", [2])
-        # 把 A 的账号改成 [1,2]：2 已在启用批次 B 里 → 拒绝
+        # 把 A 的账号改成 [1,2]：2 已在启用学习安排 B 里 → 拒绝
         r = update_plan(self.conn, a, account_ids=[1, 2])
         self.assertFalse(r["ok"])
-        self.assertIn("已在其他启用中的批次里", r["error"])
-        # 仅调整 A 自己的账号（仍含自己批次的 #1）→ 排除自身，不与自己冲突
+        self.assertIn("已在其他启用中的学习安排里", r["error"])
+        # 仅调整 A 自己的账号（仍含自己学习安排的 #1）→ 排除自身，不与自己冲突
         self.assertTrue(update_plan(self.conn, a, account_ids=[1])["ok"])
 
 

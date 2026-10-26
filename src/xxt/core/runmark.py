@@ -72,3 +72,16 @@ def live_session(data_dir: Path, account_id: int) -> dict[str, Any] | None:
 
 def clear_marker(data_dir: Path, account_id: int) -> None:
     marker_path(data_dir, account_id).unlink(missing_ok=True)
+
+
+def busy_sessions(data_dir: Path, account_ids) -> dict[int, dict[str, Any]]:
+    """传入的账号里，哪些已有**活着的**会话 → {account_id: 标记内容}。
+
+    启动前统一查这一下（面板与 CLI 共用），防同账号双开。
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for aid in account_ids:
+        info = live_session(data_dir, int(aid))
+        if info:
+            out[int(aid)] = info
+    return out

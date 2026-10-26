@@ -334,7 +334,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <button class="vtab active" data-view="accounts" onclick="switchView('accounts')"
       title="每个账号一张卡：额度、课程、作业与刷课控制">📇 账号卡片<b id="vtabAccN"></b></button>
     <button class="vtab" data-view="plans" onclick="switchView('plans')"
-      title="把某门课一次性排给多个账号；开跑时间仍按各账号定时/窗口错峰">📚 批次<b id="vtabPlanN"></b></button>
+      title="可选：把某门课排给多个账号（不设也能刷：手动 ▶ 指定课，定时则按进度挑一门）；开跑时间仍按各账号定时/窗口错峰">📚 学习安排<b id="vtabPlanN"></b></button>
     <button class="vtab" data-view="stats" onclick="switchView('stats')"
       title="按年级/专业/学期/课程/账号统计刷课战果（数据来源：本地日志，不访问平台）">📈 统计</button>
     <button class="vtab" data-view="logs" onclick="switchView('logs')"
@@ -353,12 +353,12 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 </div>
 <div id="viewPlans" style="display:none">
   <section class="batch">
-    <div class="bhead"><b>📚 批次</b>
+    <div class="bhead"><b>📚 学习安排</b>
       <span class="muted">统一指定课程；开跑时间仍按各账号自己的定时/窗口错峰（不会同时开刷，也不会重复多开）</span>
       <span class="spacer"></span>
-      <input id="planQ" placeholder="🔍 搜批次名/课程/账号" style="width:190px"
+      <input id="planQ" placeholder="🔍 搜学习安排名/课程/账号" style="width:190px"
         oninput="renderPlans()">
-      <button class="minibtn" title="把某门课一次性排给多个账号" onclick="openPlan()">＋ 新建批次</button>
+      <button class="minibtn" title="可选：把某门课统一排给多个账号" onclick="openPlan()">＋ 新建学习安排</button>
     </div>
     <div id="planList" class="muted" style="font-size:.8rem">加载中…</div>
   </section>
@@ -455,8 +455,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
 </dialog>
 
-<dialog id="planDlg"><h3 id="planTitle">📚 新建批次</h3>
-  <div class="frow"><label>批次名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
+<dialog id="planDlg"><h3 id="planTitle">📚 新建学习安排</h3>
+  <div class="frow"><label>学习安排名</label><input type="text" id="pl_name" style="width:200px" placeholder="如：十月数据结构"></div>
   <div class="frm"><label>① 账号<small>先勾人；课程列表随后只显示这些账号的课</small></label>
     <span style="flex:1"></span>
     <button class="minibtn" title="打开账号选择器：可按 账号/备注名/姓名/平台昵称/学号/年级/专业/学期/学校/院系/班级 搜索，并按年级/专业筛选" onclick="openPicker()">＋ 选择账号</button>
@@ -469,7 +469,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <div id="pl_cov" class="hint" style="margin:.1rem 0 .35rem"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" id="planOk" onclick="doPlan()">创建（默认停用）</button></div>
-  <div class="hint">批次锁定的是「平台课程ID + 你勾的账号」：以后<b>新增账号不用重建批次</b>，点「✎ 编辑」把新账号勾上即可；缺这门课的账号会被自动跳过（上方会列出）。开跑仍按各账号定时/学习窗口错峰，新建后默认「已停用」。</div>
+  <div class="hint">学习安排锁定的是「平台课程ID + 你勾的账号」：以后<b>新增账号不用重建学习安排</b>，点「✎ 编辑」把新账号勾上即可；缺这门课的账号会被自动跳过（上方会列出）。开跑仍按各账号定时/学习窗口错峰，新建后默认「已停用」。</div>
 </dialog>
 
 <dialog id="pickDlg"><h3>选择账号</h3>
@@ -488,7 +488,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div id="pk_list" class="paccs"></div>
   <div class="dlgbtns"><button class="ghost" onclick="document.getElementById('pickDlg').close()">取消</button>
     <button class="primary" onclick="pickApply()">确定添加</button></div>
-  <div class="hint">勾选只是"加进批次"，不会立刻开刷；开跑仍按各账号定时/窗口错峰。</div>
+  <div class="hint">勾选只是"加进学习安排"，不会立刻开刷；开跑仍按各账号定时/窗口错峰。</div>
 </dialog>
 
 <dialog id="addDlg"><h3>＋ 添加账号</h3>
@@ -663,7 +663,7 @@ function renderAccounts(){
     </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
     ${(()=>{const bp=(PLANS||[]).find(p=>p.enabled&&p.account_ids.includes(a.id));
-      return bp?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📚 批次《${esc(bp.name)}》→ 课程《${esc(bp.course_name)}》（开跑时间仍按本账号定时/窗口）</div>`:'';})()}
+      return bp?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📚 学习安排《${esc(bp.name)}》→ 课程《${esc(bp.course_name)}》（开跑时间仍按本账号定时/窗口）</div>`:'';})()}
     <div class="chips">${chips}</div>${courses}</div>`;
   }).join('')||'<div class="card muted">无匹配</div>';
   document.getElementById('pager').innerHTML=
@@ -791,7 +791,7 @@ function doAdd(){
   .then(r=>r.json()).then(d=>{alert(d.ok?'已添加（记得为其登录）':'失败：'+d.error);
     if(d.ok){document.getElementById('addDlg').close();reload();}});}
 let PLANS=[];
-// 视图切换（2026-10-26：批次原先压在账号卡片上方，占位又挡视线 → 改成标签页；
+// 视图切换（2026-10-26：学习安排原先压在账号卡片上方，占位又挡视线 → 改成标签页；
 // 选择记在 localStorage，刷新/重开面板后停在上次看的页）
 let VIEW=(()=>{try{return localStorage.getItem('xxt.view')||'accounts';}catch(e){return 'accounts';}})();
 function switchView(v){
@@ -928,7 +928,7 @@ function renderPlans(){
   const on=PLANS.filter(p=>p.enabled).length;
   const cnt=document.getElementById('vtabPlanN');
   if(cnt)cnt.textContent=PLANS.length?`${on}/${PLANS.length}`:'';
-  if(!PLANS.length){el.innerHTML='<span class="muted">暂无批次 —— 想把同一门课一次性排给多个账号，点右上「＋ 新建批次」</span>';return;}
+  if(!PLANS.length){el.innerHTML='<span class="muted">暂无学习安排（可选功能）—— 想把同一门课统一排给多个账号，点右上「＋ 新建学习安排」；<b>不建也能刷</b>：手动 ▶ 指定课，定时则按进度随机挑一门</span>';return;}
   const q=(document.getElementById('planQ')?.value||'').trim().toLowerCase();
   const shown=PLANS.filter(p=>{
     if(!q)return true;
@@ -936,17 +936,17 @@ function renderPlans(){
       return a?(a.label+' '+(a.platform_username||'')+' '+(a.student_no||'')):'';}).join(' ');
     return [p.name,p.course_name,names].join(' ').toLowerCase().includes(q);
   });
-  if(!shown.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的批次</span>';return;}
+  if(!shown.length){el.innerHTML='<span class="muted">没有匹配「'+esc(q)+'」的学习安排</span>';return;}
   el.innerHTML=shown.map(p=>{
     const accs=p.account_ids.map(id=>{const a=(ACCOUNTS||[]).find(x=>x.id===id);
       return '#'+id+(a?' '+esc(a.label):'');}).join('、')||'—';
     const st=p.enabled?badge('启用中','b-ok'):badge('已停用','b-warn');
     const pidNote=p.course_pid?'':` <span class="b-warn" style="font-size:.68rem"
-      title="老批次只存了课名（无平台课程ID），同名课程可能歧义——点「✎ 编辑」重新选一次课程即可补上">建议补选课程ID</span>`;
+      title="老学习安排只存了课名（无平台课程ID），同名课程可能歧义——点「✎ 编辑」重新选一次课程即可补上">建议补选课程ID</span>`;
     // 已抓课程里没这门课（按 pid）的账号：运行时会被跳过，卡片上直说，不让人猜
     const lackN=p.course_pid?p.account_ids.filter(id=>!accountHasCourse(id,p.course_pid)):[];
     const lackNote=lackN.length?` <span class="b-warn" style="font-size:.68rem"
-      title="这些账号的课程列表里没有本批次这门课（按平台课程ID匹配）：${esc(lackN.map(i=>'#'+i).join('、'))}——运行时会被跳过。让对方先抓取课程，或点「✎ 编辑」核对">${lackN.length} 个账号缺此课</span>`:'';
+      title="这些账号的课程列表里没有本学习安排这门课（按平台课程ID匹配）：${esc(lackN.map(i=>'#'+i).join('、'))}——运行时会被跳过。让对方先抓取课程，或点「✎ 编辑」核对">${lackN.length} 个账号缺此课</span>`:'';
     return `<div class="prow"><b>${esc(p.name)}</b>${st}
       <span>课程《${esc(p.course_name)}》${pidNote}${lackNote}</span>
       <span class="muted">${p.account_ids.length} 个账号：${esc(accs)}</span>
@@ -957,8 +957,8 @@ function renderPlans(){
 }
 let PLSEL=new Set();     // 主弹窗当前已选账号（新建/编辑共用）
 let PKSEL=new Set();     // 选择器弹窗内的临时勾选
-let PLBUSY={};           // 已在**其他**启用批次里的账号 → 批次名
-let PLANMODE=null;       // null=新建；否则=正在编辑的批次 id
+let PLBUSY={};           // 已在**其他**启用学习安排里的账号 → 学习安排名
+let PLANMODE=null;       // null=新建；否则=正在编辑的学习安排 id
 function toast(msg,bad){
   let el=document.getElementById('toast');
   if(!el){el=document.createElement('div');el.id='toast';document.body.appendChild(el);}
@@ -983,19 +983,19 @@ function openPlan(planId){
   PLANMODE=planId||null;
   const p=planId?PLANS.find(x=>x.id===planId):null;
   document.getElementById('pl_name').value=p?p.name:'';
-  document.getElementById('planTitle').textContent=p?`✎ 编辑批次 #${p.id}`:'📚 新建批次';
+  document.getElementById('planTitle').textContent=p?`✎ 编辑学习安排 #${p.id}`:'📚 新建学习安排';
   document.getElementById('planOk').textContent=p?'保存修改':'创建（默认停用）';
   PLSEL=new Set(p?p.account_ids:[]);   // 先定人：课程下拉按这批账号过滤（2026-10-26 改）
   loadPlanBusy();
   renderPicked();                      // 内含 buildCourseOptions + updateCourseCov
   const sel=document.getElementById('pl_course');
-  if(p){  // 编辑：按 pid 回选；老批次无 pid 则按课名回选
+  if(p){  // 编辑：按 pid 回选；老学习安排无 pid 则按课名回选
     let key=p.course_pid?('pid:'+p.course_pid):('name:'+p.course_name);
     if(![...sel.options].some(o=>o.value===key)){
       key='name:'+p.course_name;
       if(![...sel.options].some(o=>o.value===key)){  // 课名已不在任何账号课程里→补占位项
         sel.insertAdjacentHTML('beforeend',
-          `<option value="${esc(key)}" data-name="${esc(p.course_name)}" data-pid="${esc(p.course_pid||'')}">${esc(p.course_name)}（原批次课名，未在账号课程中）</option>`);
+          `<option value="${esc(key)}" data-name="${esc(p.course_name)}" data-pid="${esc(p.course_pid||'')}">${esc(p.course_name)}（原学习安排课名，未在账号课程中）</option>`);
       }
     }
     sel.value=key;
@@ -1025,7 +1025,7 @@ function courseSchool(v){
   return s.slice(0,2).join('/')+(s.length>2?'等':'');
 }
 function accountHasCourse(id,pid){   // 该账号有没有抓到这门课（按平台课程ID）
-  if(!pid)return true;               // 老批次无 pid：不做覆盖判断，避免误报
+  if(!pid)return true;               // 老学习安排无 pid：不做覆盖判断，避免误报
   const a=(ACCOUNTS||[]).find(x=>x.id===id);
   if(!a)return false;
   return (a.courses||[]).some(c=>c.platform_course_id===pid);
@@ -1092,7 +1092,7 @@ function renderPicked(){
     return `<div class="pkrow"><b>#${id} ${esc(a?accName(a):'（账号已删）')}</b>
       <span class="muted">${esc(a?accDesc(a):'')}</span>
       ${b?`<span class="b-warn" style="font-size:.7rem">已在《${esc(b)}》</span>`:''}
-      <span class="x" title="从本批次移除" onclick="pickedRemove(${id})">✕</span></div>`;}).join('')
+      <span class="x" title="从本学习安排移除" onclick="pickedRemove(${id})">✕</span></div>`;}).join('')
     :'还没有选择账号 —— 点「＋ 选择账号」从列表里挑';
   buildCourseOptions();   // 账号变了 → 课程候选随之收窄（先定人再定课）
   updateCourseCov();
@@ -1151,7 +1151,7 @@ function renderPick(){
     + '<th>年级</th><th>专业</th><th>学期</th><th>学校</th><th>院系</th><th>班级</th><th>状态</th>'
     + '</tr></thead><tbody>'
     + rows.map(a=>{const b=PLBUSY[a.id], p=a.profile||{};
-      return `<tr class="${b?'off':''}" title="${b?'已在《'+esc(b)+'》里，需先停用原批次':'勾选后点「确定添加」加入批次'}">
+      return `<tr class="${b?'off':''}" title="${b?'已在《'+esc(b)+'》里，需先停用原学习安排':'勾选后点「确定添加」加入学习安排'}">
         <td><input type="checkbox" value="${a.id}" ${b?'disabled':''} ${PKSEL.has(a.id)?'checked':''}
           onchange="pickToggle(${a.id},this.checked)"></td>
         <td class="ro">#${a.id}</td>
@@ -1185,12 +1185,12 @@ function doPlan(){
   const sel=document.getElementById('pl_course');
   const key=sel.value;
   const course=(sel.selectedOptions[0]?.dataset.name)||'';
-  // 占位项（原批次课名已不在任何账号课程里）也带 data-pid，避免保存时把 pid 洗掉
+  // 占位项（原学习安排课名已不在任何账号课程里）也带 data-pid，避免保存时把 pid 洗掉
   let pid=(sel.selectedOptions[0]?.dataset.pid)||'';
   if(key.startsWith('pid:'))pid=key.slice(4);
   else if(PLCOURSE[key]&&PLCOURSE[key].pid)pid=PLCOURSE[key].pid;
   const ids=[...PLSEL];
-  if(!name||!course){toast('批次名与课程都不能为空（课程请从下拉里选）',1);return;}
+  if(!name||!course){toast('学习安排名与课程都不能为空（课程请从下拉里选）',1);return;}
   if(!ids.length){toast('至少选择一个账号',1);return;}
   const url=PLANMODE?`/api/plans/${PLANMODE}/update`:'/api/plans';
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1198,20 +1198,20 @@ function doPlan(){
   .then(r=>r.json()).then(d=>{
     if(!d.ok){toast('保存失败：'+d.error,1);return;}
     document.getElementById('planDlg').close();loadPlans();
-    toast(PLANMODE?`✔ 批次 #${PLANMODE} 已更新（${ids.length} 个账号）`
-                 :`✔ 已创建（默认为“已停用”）——点该批次「▶ 启用」后才会到点开刷（${ids.length} 个账号）`);
+    toast(PLANMODE?`✔ 学习安排 #${PLANMODE} 已更新（${ids.length} 个账号）`
+                 :`✔ 已创建（默认为“已停用”）——点该学习安排「▶ 启用」后才会到点开刷（${ids.length} 个账号）`);
     PLANMODE=null;});
 }
 function togglePlan(id,en){
   fetch(`/api/plans/${id}/toggle`,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({enabled:!!en})}).then(r=>r.json()).then(d=>{
     if(!d.ok){toast('操作失败：'+d.error,1);loadPlans();return;}
-    toast(en?'✔ 批次已启用（到点按各账号时间错峰开刷）':'✔ 批次已停用');
+    toast(en?'✔ 学习安排已启用（到点按各账号时间错峰开刷）':'✔ 学习安排已停用');
     loadPlans();});}
 function delPlan(id){
-  if(!confirm('删除该批次？（不影响已完成的刷课与作业）'))return;
+  if(!confirm('删除该学习安排？（不影响已完成的刷课与作业）'))return;
   fetch(`/api/plans/${id}`,{method:'DELETE'}).then(r=>r.json()).then(()=>{
-    toast('✔ 批次已删除');loadPlans();});}
+    toast('✔ 学习安排已删除');loadPlans();});}
 let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
 function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
 function startGrind(id,course,pid){
@@ -1493,8 +1493,8 @@ def create_app(settings: Settings) -> FastAPI:
                 a["max_minutes"] = a.pop("daily_max_minutes", None)
                 a["max_tasks"] = a.pop("daily_max_tasks", None)
                 a["days_left"] = days_left(a)
-                # 画像（姓名/学号/年级/专业/学期）：卡片与批次弹窗都要显示，一并下发
-                # 学校/院系/班级一并下发：批次弹窗的课程下拉要用它标注「这门课是哪所学校的」
+                # 画像（姓名/学号/年级/专业/学期）：卡片与学习安排弹窗都要显示，一并下发
+                # 学校/院系/班级一并下发：学习安排弹窗的课程下拉要用它标注「这门课是哪所学校的」
                 a["profile"] = {k: (get_profile(conn, a["id"]).get(k) or "") for k in
                                 ("name", "student_no", "grade", "major", "term",
                                  "school", "dept", "cls")}
@@ -1934,7 +1934,7 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
-    # ---------- 批次（统一排课，开跑时间仍按各账号定时/窗口错峰） ----------
+    # ---------- 学习安排（统一排课，开跑时间仍按各账号定时/窗口错峰） ----------
 
     @app.get("/api/plans")
     def plans_api():
@@ -1981,7 +1981,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/plans/{plan_id}/update")
     def plans_update_api(plan_id: int, body: dict):
-        """编辑已建批次：改名 / 换课程 / 增删账号（None = 不变）。"""
+        """编辑已建学习安排：改名 / 换课程 / 增删账号（None = 不变）。"""
         from ..core import plans as planmod
 
         ids = body.get("account_ids")
@@ -2161,12 +2161,20 @@ def create_app(settings: Settings) -> FastAPI:
             n = conn.execute(
                 "SELECT COUNT(*) AS c FROM courses WHERE account_id=?", (account_id,)
             ).fetchone()["c"]
+            # 缺课保护（2026-10-26）：该号没抓过这门课就直接拒——spawn 了也会 `[FAIL] 退出`，
+            # 但调用方（定时守护）会收到 ok=True 并记为“今日已触发”，当日机会白白消耗。
+            from ..core import plans as planmod  # 本地查库，零平台访问
+
+            cpid0 = str(body.get("course_pid") or "").strip()
+            if n and not planmod.account_has_course(conn, account_id, pid=cpid0, name=course):
+                return {"ok": False,
+                        "error": f"该账号没有这门课（{('课程ID ' + cpid0) if cpid0 else '课名'}），已跳过"}
         finally:
             conn.close()
         if not n:
             return {"ok": False, "error": "该账号还没有课程数据，先为其抓取课程（xxt courses --account）"}
         root = pathlib.Path(settings.root)
-        # 批次带平台课程ID时透传（运行按 pid 精确匹配，避免同名歧义）
+        # 学习安排带平台课程ID时透传（运行按 pid 精确匹配，避免同名歧义）
         cpid = str(body.get("course_pid") or "").strip()
         argv = ["mlearn", course]
         if cpid:
