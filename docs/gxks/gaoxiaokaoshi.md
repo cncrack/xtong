@@ -30,7 +30,7 @@
 
 | 等级 | 含义 | 本档案里有什么 |
 |---|---|---|
-| **A 已实测** | 我们自己验证过 | **8 条**（§七）：① 公开页可 `httpx` 取到（带重试；间歇 503 为服务不稳非拦截）② 技术栈 IIS 10 + ASP.NET 4.0 ③ 登录 = 账号+密码+**可选**图形验证码（无短信）④ 验证码仅在 `?needVerify=1` 时出现（= 可升级闸门）⑤ 页面与 JS **零客户端指纹/机器人检测代码** ⑥ 任意登录页 URL 直接 GET 一律 `302 → /Default.aspx`（**不带 ReturnUrl**），业务页则是 `302 → Default.aspx?ReturnUrl=…` ⑦ `Default.aspx` 是**纯 JS 分流器**：按 UA 与 `screen.width` 分发到 `Login.aspx`(宽<1400)/`Loginb.aspx`(宽≥1400)/`Loginm.aspx`(手机)/`Loginp.aspx`(平板)——**`b` = big screen，不是教师端** ⑧ **Edge 被 `alert` 明确拒进**（`_pass = !isEdge`）|
+| **A 已实测** | 我们自己验证过 | **14 条**（§七 + §2.5）：① 公开页可 `httpx` 取到（带重试；间歇 503 为服务不稳非拦截）② 技术栈 IIS 10 + ASP.NET 4.0 ③ 登录 = 账号+密码+**可选**图形验证码（无短信）④ 验证码仅在 `?needVerify=1` 时出现（= 可升级闸门）⑤ 页面与 JS **零客户端指纹/机器人检测代码** ⑥ 任意登录页 URL 直接 GET 一律 `302 → /Default.aspx`（**不带 ReturnUrl**），业务页则是 `302 → Default.aspx?ReturnUrl=…` ⑦ `Default.aspx` 是**纯 JS 分流器**：按 UA 与 `screen.width` 分发到 `Login.aspx`(宽<1400)/`Loginb.aspx`(宽≥1400)/`Loginm.aspx`(手机)/`Loginp.aspx`(平板)——**`b` = big screen，不是教师端** ⑧ **Edge 被 `alert` 明确拒进**（`_pass = !isEdge`）⑨ **登录后主框架 = `MainPage.aspx?menu=N&subMenu=N`，内容全在 `#mainIframe`** ⑩ **六大功能入口路由已全部拿到**（§2.5） ⑪ **业务页声明 `charset=gb2312`，登录页却是 utf-8**（编码按页不同） ⑫ WebForms 三件套齐全（`__VIEWSTATE`/`__VIEWSTATEGENERATOR`/`__EVENTVALIDATION`） ⑬ 顶部直接显示**真实姓名**（与超星“name 实为昵称”不同） ⑭ 考试类页面可能走 `window.open` **新窗口** + `pageLoad()` 有 frame-busting |
 | **B 多源一致** | ≥ 2 个独立来源互相印证，但仍未实测 | 仅“**倍速无效**”（#404599 同类做法 + v2.0 的 `#spTitle` 机制 + README 表述一致） |
 | **C 单源（可能过期）** | 来自单一第三方代码 | **下表§二、§三的所有选择器与流程，全部是 C 级** |
 | **D 推断/设计偏好** | 我们自己拍的 | §四红线、§六复用度与人天估算 |
@@ -98,8 +98,14 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | 页面类型 | URL 片段 | 用途 |
 |---|---|---|
 | login | `loginb.aspx`（真实入口）；脚本判的是 `login.aspx` | 登录 |
-| courseList | `librarystudylist` | 课程列表 |
-| main | `mainpage` | 主框架（含 `#mainIframe`） |
+| courseList | ~~`librarystudylist`~~ → **`Study/LibraryStudyList.aspx?rnd=100`**（**A 级实测 2026-10-27**）| 课程列表（**刷课入口**）|
+| main | ~~`mainpage`~~ → **`MainPage.aspx?menu=N&subMenu=N`**（**A 级实测**）| 主框架（含 `#mainIframe`）|
+| message | **`Message/MessageList.aspx`**（A）| 我的消息 |
+| examApply | **`ExamList/ExamApply.aspx`**（A）| 考试报名 |
+| examList | **`ExamList/ExamList.aspx`**（A）| 我的考试 |
+| score | **`ExamList/MyCj.aspx`**（A）| 成绩分析 |
+| tkTest | **`ExamList/TkTest.aspx`**（A）| 题库练习（**S4 题库三来源的关键入口**）|
+| admin | **`admin/Default.aspx`**（A，本账号 `display:none`）| ❌ **红线：不碰**（见 §四·实现红线 7）|
 | exam | `examtmstepdo`、`examdo.aspx` | 答题页 |
 | examHeader | `examtmstepheader` | 交卷（顶部框架） |
 | examMessage | `exammessage` | 交卷成功 |
@@ -109,8 +115,9 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 
 | 用途 | 选择器 |
 |---|---|
-| 主框架 iframe | `#mainIframe` |
-| 视频所在 iframe | **`#ExamView`**（内部 `document.querySelector('video')`）→ 与我们超星的 `pagesync.find_frame_with` **同构** |
+| 主框架 iframe | `#mainIframe`（**A 级实测**：`name=main`、`width=850`、`src` 由 `initUI()` 用 `#hidUrl.value` 在 `onload` 时赋值）|
+| 子菜单高亮 / 首屏地址 | `#hidObjId`（高亮哪个菜单）/ `#hidUrl`（iframe 首屏 URL）——**A 级实测** |
+| 视频所在 iframe | ~~**`#ExamView`**~~ → ⚠ **已被 §2.5 实测推翻**：`#ExamView` 在主框架里是**“考试详情”弹窗（`#viewBox`）的 iframe**，不是视频容器。上游“在 `#ExamView` 里找 `video`”可能是在答题场景复用同一弹窗——**视频容器所在 iframe 仍需实测（A6 未答）** |
 | 播放器容器 | **`#J_prismPlayer`**（需 `player.click()` 才真播，防浏览器自动播放策略） |
 | 课程行 | 纯 `tr` 六列：课程名 / 类型 / 总时长 / 已学时长 / 状态（文本 `已完成`）/ 学习按钮 |
 | 分页按钮 | `#PageSplit1_BtnNext`（WebForms postback） |
@@ -137,6 +144,25 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 - 答题页：命中题库则按选项文字匹配并 `click()`；未命中跳过。
 - 交卷后自动进 `viewexam`，读 `.green` 标色内容回收正确答案入库（判断题会把 `对/正确`、`错/错误` 都写进答案数组，选择题按 A~H 字母反查选项文字）→ **多考几轮题库自然变全**。
 - 跨 iframe 协作：答题页写 `localStorage.examAction = done:<时间戳>`，交卷框架 5 秒内看到该标记才交卷。
+
+---
+
+### 2.5 登录后首屏实测（**A 级**，2026-10-27 用户提供页面源码）
+> 用户原话：「这是我用账号登陆第二平台后进去，右键查看网页源码得到的数据」。**这是本档案第一次拿到登录后的真实页面**（之前所有登录后情报均为 C 级、抄自第三方脚本）。原件存 `data/debug/gxks_html/mainpage_after_login.html`（**含真实姓名与 viewstate，不入库、不复粘到任何文档**）。
+
+| # | 实测事实 | 对规划的影响 |
+|---|---|---|
+| 1 | 主框架页 = **`MainPage.aspx?menu=3&subMenu=4`**；`menu`/`subMenu` 是服务端选菜单的编号 | adapter 定位业务页靠这两个参数；`#hidObjId` 决定高亮、`#hidUrl` 决定 iframe 首屏 |
+| 2 | **框架 + iframe 结构**：内容全在 `#mainIframe`（`name=main`，宽 850，`min-height:480`），`src` 不在 HTML 里写死，而是 `onload → initUI()` 从 `#hidUrl.value` 赋上 | 与超星“章节树在 iframe”**同构**，`pagesync.find_frame_with` 可复用；但菜单链接是 `javascript:subMenuClick($('subMenuN'),'../…aspx')`——**URL 在 HTML 里明文可见，所以 httpx 侧不必模拟 JS，直接带会话 cookie GET 业务页即可** |
+| 3 | **六大功能入口路由全部拿到**：消息 `Message/MessageList.aspx`、考试报名 `ExamList/ExamApply.aspx`、我的考试 `ExamList/ExamList.aspx`、**我的课程 `Study/LibraryStudyList.aspx?rnd=100`**、成绩分析 `ExamList/MyCj.aspx`、**题库练习 `ExamList/TkTest.aspx`** | §2.1 多行由 C 升 A；`?rnd=100` 是**防缓存随机参数**（比对 URL 时先剔掉）；刷课 = “我的课程”，题库闭环 = “题库练习”+“成绩分析”+“我的考试”——**与§0.4 那三条“答案三来源”逐一对上了** |
+| 4 | ⚠ **编码按页不同**：本页 `<meta http-equiv=Content-Type charset=gb2312>`，而登录页/`Default.aspx` 响应头是 `charset=utf-8` | **纠正我 10-27 探针里“全部 utf-8 解码 OK”的说法——只对登录侧成立**。技术路线必须记一条：**httpx 侧按页取编码（先看响应头、再看 meta 声明，最后才兜底猜）；Playwright 侧无此问题** |
+| 5 | WebForms **三件套齐全**：`__VIEWSTATE` + `__VIEWSTATEGENERATOR=8EAF6FEA` + `__EVENTVALIDATION`；`form method=post action=./MainPage.aspx?menu=3&subMenu=4`（自指）；`closeView()` 还会跳去 iframe 里调 `__doPostBack('btnSearch','')` | 拿到“是否要逆向”的第一手实证（对应 D11）：回发需带上三个隐藏域，且 `__EVENTVALIDATION` 与控件状态绑定 → **逆向成本随页面数线性上升，支持把 `protocol` 定为 ❌ 默认档**（但仍不推翻“待辨别”，开工时再拍） |
+| 6 | ⭐ 顶部直接显示**真实姓名**（非昵称）；另有 `Changepwd.aspx`（弹窗 460×270）、退出 = `../Default.aspx` | **与超星差别最大的地方**：超星 `name` 实为昵称（我们已踩坑并写了拦截）。新站这行若是真名 → **两平台可按姓名自动匹配“自然人 person”**，不必全手工录入（见 `PLAN-GXKS.md` §五）。⚠ **仅一例，不得当定论**：需多账号核实“这一行到底是登录名/学籍姓名还是昵称” |
+| 7 | 页面里藏着 `../admin/Default.aspx`，对本账号 `style="display:none"` | 已追加为 §四·实现红线 7：**隐藏≠授权，任何会话不得试 admin 路径** |
+| 8 | `pageLoad()` 做 frame-busting（被嵌入时把父窗口跳到本页）；`menuItemClick()` 用 `window.open(p_url, p_flag, fullscreen…)` 开窗，开窗前还先做 `p_url.replace("/ExamList","")` | **新增能力点**：考试/详情类页面可能以 **`window.open` 新窗口**出现 → Playwright 要处理 `popup`（超星只处理 iframe，这块得新写，入 S3/S4 工作量）；`replace` 这种古怪处理属于上游补丁，**不跟抄** |
+| 9 | 本页**没有任何**指纹采集/机器人检测代码；只引 `index.js` + `easydialog.min.js`（弹窗库）+ 4 个 css | 与 §7.1“客户端零检测”一致，**A 级再确认一次（而且这次是登录后的页面，比公开页更有说服力）** |
+
+**版本指纹（§0.3 第 1 步要求，以后先比指纹）**：`__VIEWSTATEGENERATOR=8EAF6FEA`；资源 `../js/index.js`、`../js/easydialog.min.js`、`../App_Themes/blue/css/{css,examcss,iframe,main}.css`；`<head id="Head1">`、XHTML 1.0 Transitional 文档类型。抓取日期 2026-10-27，**未登录页（Default.aspx）当时为 3717 字节 / utf-8**。
 
 ---
 
@@ -169,12 +195,13 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 4. **题库 key 用 `question_hash`（sha256(题干+选项)），不用题干原文** —— 上游 `bank[题干]` + 截断正则，题干标点/空格一变就 miss。
 5. **必带低频拟人化**：`pace` 三档间隔 + `daily_max_minutes` 额度 + 每日窗口。上游是零间隔、零额度、零并发控制（`onpause` 后 1 秒立即 `play()`、`volume=0`、全天可跑），这恰好是风控最典型的机器人形态。
 6. 平台细节只写在 `src/xxt/adapters/gaoxiaokaoshi/` 内（AGENTS 硬性约定）；开工前先把 **Q27**（超星用词漏进 `core/diagnose.py`）还清，否则新站会照着错误示范写。
+7. **不得访问 `admin/` 与任何越权路径**（A 级实测：普通账号页面里就藏着 `../admin/Default.aspx`，只是 `display:none`）。隐藏≠授权；任何会话/代码**不得尝试请求 admin 路径**，也不得拿别人的学号试登录。
 
 ---
 
 ## 五、待验证假设清单（开工时一次合并侦察逐条核对，最小访问原则）
 
-> 分级说明（见 §0.2）：**除 A1 为 A 级（我们自己实测）外，下表其余条目全部为 C 级（单一第三方来源，可能过期）**。
+> 分级说明（见 §0.2）：**A1/A2/A3 为 A 级；§2.5 已把“六大功能路由 + 主框架结构 + 编码 + viewstate 形态”升为 A 级**；下表其余条目仍为 C 级（单一第三方来源，可能过期）。
 
 | # | 假设（来源均为第三方，未实测） | 核对方式 |
 |---|---|---|
@@ -182,7 +209,7 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | A2 | 登录凭据形态未知：**账号+密码 还是 手机号+短信验证码？有无图形验证码？** | ✅ **已答（A 级，§7.4）**：账号+密码+可选图形验证码（`VerifyCode.ashx`，4 位），**无短信验证码**；`Login.js` 含 `isEmail`/注册相关函数→账号可能是邮箱 |
 | A3 | `Loginb` 的 "b" 是否意味着还有另一套入口（教师端/管理端） | ✅ **已答（A 级，§7.4）**：`b` = **big screen**。`Default.aspx` 按 `screen.width` 分 `Login.aspx`(<1400) / `Loginb.aspx`(≥1400)，另有 `Loginm`(手机)/`Loginp`(平板)。同一张表单的不同宽度版，**无教师端/管理端** |
 | A4 | 计时按服务器时钟、倍速无效 | 实跑一节，比对平台侧"已学时长"增量与墙钟/倍速关系 |
-| A5 | 课程表列序与状态文案（`已完成`） | 一次真实页面 DOM 转储核对 |
+| A5 | 课程表列序与状态文案（`已完成`） | ⚠ **半答**：入口路由已 A 级实测（`Study/LibraryStudyList.aspx`），但**列表行内容需课程页本体转储**（在 `#mainIframe` 里，用户这份是框架页） |
 | A6 | 播放器 `#J_prismPlayer` 与 `#ExamView` iframe 层级稳定 | 实跑核对；注意播放器可能随版本更换 |
 | A7 | 答卷页 `.green` 标色即"正确答案"（而非"我的作答"） | 需一次真实答卷页核对 —— **判错会污染题库** |
 | A8 | 无动态字体/题目混淆 | 首次抓题即知 |
@@ -306,3 +333,4 @@ else                         location.href = "Loginb.aspx";   // 大屏版
 - 2026-10-27（同日 21:40）：**用户一次性回答了八个问题**（要模拟真人操作吗 / `login.aspx` 能用吗 / 学号+密码无图形码但担心暗地里指纹 / `b` 的含义不清楚“你可以试试看” / 做好规则再动手 / 可以落规划但开工前必须再核实 / 目录与端口暂定 / **账号是同一批人但多对多**）。做了第二轮合规探针（约 20 个公开页请求，无凭据不提交）→ **谜底：`b` = big screen**，`Default.aspx` 是按 UA + `screen.width` 分流的纯 JS 分流器（`Login`/`Loginb`/`Loginm`/`Loginp` 四支）且 **Edge 被 `alert` 拒进**；登录页直接 GET 一律 302。产出：§7.1 修正“仅 `Dialog.js` 看 UA”的不准确说法、§7.4 重写为“登录形态与跳转链”、§7.5 新增对策 8/9/10（UA/视口/登录只走浏览器）、§五 A3 改为✅已答、§0.2 A 级 5→8 条。**同时第二次自纠**：§7.3 把“登录可走轻量 HTTP”收回——登录页有跳转门，最终分层是“内容走 httpx、登录与业务走真浏览器”。同日另立 **`PLAN-GXKS.md`** 为**排期与规则 SSOT**（本文件保留为**平台情报与实测事实 SSOT**）。
 - 2026-10-27（同日 22:20）：**用户要求“第二项目资料单独存，不要和现有超星文件存一起”**（并告知远端是私有库）。本文件与治理侧文件、第三方脚本存档一并 `git mv` 到 **`docs/gxks/`**（旧的 `docs/reference/` 已删除）；`STATUS.md` 的 Q35 整条移出台账只留一行指针；超星侧 devlog 15 的 §十~§十六 加了“历史快照、现状以本目录为准、不得据此写代码”横幅。**本目录从此是新站细节的唯一存放地**：新内容不得往超星侧文件写。同步在 §一 补“私有库结论：存档可留，但仅内部参考不可分发”。本轮零代码改动。
 - 2026-10-27（同日 23:30）：**用户追加运行形态要求：多账号也要同时跑（前期就规划好）、登录是否需逆向待辨别、学校要显示或用代号**。本文件只改措辞与现状冲突，治理细则归 `PLAN-GXKS.md` §七：① **对策① 修正歧义**——原文“首版不开多开”被用户读成“不能多账号”，现拆为“禁止**同账号**多开 + 多账号并行是需求（首版上限建议 2、同出口 IP 砍半）”；② 对策④ 补锁粒度（**账号**不是“人”）；③ 对策⑦ 登记“逆向 = 待辨别（D11）”；④ **对策⑨ 加现状冲突警告**：本轮读超星代码发现 `core/stealth.py:83-84` 固定 `viewport/screen = 1280×800`，按分流规则**照搬就永远只能进窄版 `Login.aspx`**。本轮零代码改动。
+- 2026-10-27（同日 23:55）：**重大情报升级——用户首次提供登录后页面源码**（`MainPage.aspx?menu=3&subMenu=4`，9171 字节）。新增 **§2.5 登录后首屏实测（A 级）**，并因此改动：① §0.2 A 级由 **8 条 → 14 条**；② §2.1 **六个功能路由全部由 C 升 A**（消息/考试报名/我的考试/**我的课程**/成绩分析/**题库练习**），其内容与 `PLAN-GXKS.md` §1.1 需求清单逐条对应；③ ⚠ **推翻两条旧结论**：`#ExamView` 在主框架里是“考试详情”弹窗的 iframe、**不是视频容器**（A6 仍未答）；10-27 探针“全部 utf-8 解码 OK”**只对登录侧成立**——业务页声明 `charset=gb2312`，**httpx 侧必须按页取编码**；④ 新增**实现红线 7**（页面里藏着 `admin/Default.aspx`，隐藏≠授权）；⑤ 记下**版本指纹**（`__VIEWSTATEGENERATOR=8EAF6FEA` + 资源清单）供日后比对；⑥ 顶部显示**真名**→ 可能成为跨平台自然人匹配锚点（D14，仅 1 例不当定论）。原件存 `data/debug/gxks_html/mainpage_after_login.html`（**含真名与 viewstate，不入库、不复粘进文档**）。本轮零代码改动，**未开工**。
