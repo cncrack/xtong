@@ -135,6 +135,7 @@ class TestPanel(unittest.TestCase):
         """2026-10-27 用户：守护/节级策略“必为配置项，面板可改”。"""
         body = {
             "auto_max_tries": 3, "auto_retry_minutes": 20, "auto_confirm_seconds": 30,
+            "auto_retry_jitter_pct": 55, "auto_retry_max_minutes": 150,
             "learn_enter_retries": 3, "learn_max_skip_chapters": 4,
             "learn_non_video_streak": 5, "learn_partial_retries": 2,
             "learn_partial_retry_ratio_pct": 70, "learn_login_budget_per_day": 3,
@@ -149,9 +150,26 @@ class TestPanel(unittest.TestCase):
         for bad in ({"auto_max_tries": 11}, {"auto_max_tries": -1},
                     {"learn_partial_retries": 9}, {"learn_partial_retry_ratio_pct": 10},
                     {"learn_login_budget_per_day": 0}, {"auto_confirm_seconds": 5},
+                    {"auto_retry_jitter_pct": 101}, {"auto_retry_max_minutes": 9999},
                     {"auto_max_tries": "3"}):
             r = self.client.put("/api/settings", json=bad)
             self.assertFalse(r.json()["ok"], bad)
+
+    def test_settings_writes_audit_trail(self):
+        """每次保存都留痕旧值→新值（用户 2026-10-27：方便查阅和调整）。"""
+        self.client.put("/api/settings", json={"auto_max_tries": 5})
+        self.client.put("/api/settings", json={"auto_max_tries": 6})
+        rows = [r for r in self.client.get("/api/settings").json()["recent_changes"]
+                if r["key"] == "auto.max_tries"]
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertEqual(rows[0]["new_value"], "6")
+        self.assertEqual(rows[0]["old_value"], "5")
+        # 写同值不再刷记录（否则每点一次保存都刷一条，反而没法查）
+        n = len(rows)
+        self.client.put("/api/settings", json={"auto_max_tries": 6})
+        rows2 = [r for r in self.client.get("/api/settings").json()["recent_changes"]
+                 if r["key"] == "auto.max_tries"]
+        self.assertEqual(len(rows2), n)
 
     def test_progress_shape(self):
         r = self.client.get("/api/progress")

@@ -58,6 +58,14 @@ DEFAULTS: dict[str, Any] = {
         "courses_per_day": [1, 3],
         "priorities": {},
     },
+    # 守护重试（2026-10-27 配置化 + 随机退避；面板⏱守护与节级策略可改）
+    "auto": {
+        "max_tries": 2,
+        "retry_minutes": 15,
+        "confirm_seconds": 25,
+        "retry_jitter_pct": 40,
+        "retry_max_minutes": 90,
+    },
     "stealth": {"headless": True},
 }
 

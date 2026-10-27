@@ -514,24 +514,23 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <dialog id="dlg"><h3>⚙ 全局设置</h3>
 <div class="tabs">
-  <button class="tab active" onclick="switchTab(0,this)">📚 学习与作业</button>
-  <button class="tab" onclick="switchTab(1,this)">🤖 AI 模型</button>
+  <button class="tab active" onclick="switchTab(0,this)">⏱ 守护与节级策略</button>
+  <button class="tab" onclick="switchTab(1,this)">📚 学习与作业</button>
+  <button class="tab" onclick="switchTab(2,this)">🤖 AI 模型</button>
 </div>
 <div id="tab0">
-  <div class="frow"><label>弹题 AI 作答（P2 功能，计分项）</label>
-    <span class="switch"><input type="checkbox" id="s_quiz"><i></i></span></div>
-  <div class="frow"><label>学习窗口开始</label><input type="time" id="s_ws"></div>
-  <div class="frow"><label>学习窗口结束</label><input type="time" id="s_we"></div>
-  <div class="frow"><label>每日时长额度（分钟，0 不限）<small style="display:block;color:var(--muted);font-size:.72rem">按会话在场时长计（含拟人休息）——限制的是平台视角的总占用，更安全</small></label><input type="number" id="s_min" style="width:90px"></div>
-  <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
-  <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
-    <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
-  <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
-  <h3 style="margin:.2rem 0 .5rem;font-size:.9rem">⏱ 守护与节级策略 <span class="muted" style="font-size:.72rem;font-weight:400">全部为配置项；保存后对「之后新启动的守护/会话」生效（守护需重启一次）</span></h3>
   <div class="llmgrid">
     <label>每日最多自动发起<small>0=不限，1~10（安全默认 2）</small><input type="number" id="s_mt" min="0" max="10"></label>
-    <label>失败退避（分钟）<small>1~240；避免连续敲平台</small><input type="number" id="s_rm" min="1" max="240"></label>
     <label>开跑回读（秒）<small>15~300；确认会话真在跑</small><input type="number" id="s_cs" min="15" max="300"></label>
+  </div>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">失败怎么退避 <span class="muted" style="font-size:.72rem;font-weight:400">指数递增 + 随机浮动，不像机器人</span></h3>
+  <div class="llmgrid">
+    <label>退避基数（分钟）<small>1~240；第一次失败等多久</small><input type="number" id="s_rm" min="1" max="240"></label>
+    <label>随机浮动（%）<small>0~100；±这个比例内随机，不固定节奏</small><input type="number" id="s_rj" min="0" max="100"></label>
+    <label>退避封顶（分钟）<small>15~480；再糟也不会超这个间隔</small><input type="number" id="s_rx" min="15" max="480"></label>
+  </div>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">单节怎么处理 <span class="muted" style="font-size:.72rem;font-weight:400">失败的节保持待学，不会被当成“已学”</span></h3>
+  <div class="llmgrid">
     <label>单节点最多点几次<small>1~5；点不开算这节失败</small><input type="number" id="s_er" min="1" max="5"></label>
     <label>连续几节打不开收工<small>1~10；失败的节保持待学</small><input type="number" id="s_ms" min="1" max="10"></label>
     <label>连续非视频收工<small>1~20；作业/阅读穿过去</small><input type="number" id="s_ns" min="1" max="20"></label>
@@ -540,9 +539,22 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <label>每日登录预算<small>1~5 次；失败尝试也算</small><input type="number" id="s_lb" min="1" max="5"></label>
     <label class="span2">非视频节点关键词<small>逗号分隔；名字含这些词的节不会被当成“播放失败”</small><input type="text" id="s_nvm" placeholder="作业,测验,讨论,阅读,考试,练习,公告"></label>
   </div>
+  <div class="hint" style="margin-top:.55rem">守护类改动需在面板「■ 停调度 → ▶ 启调度」后生效（守护只在启动时读一次）；节级改动对下一次学习会话生效。</div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
+  <h3 style="margin:.2rem 0 .4rem;font-size:.86rem">🕘 最近配置变更 <span class="muted" style="font-size:.72rem;font-weight:400">每次保存都留痕旧值→新值（溯源用）</span></h3>
+  <div id="auditList" style="font-size:.76rem;line-height:1.55"></div>
 </div>
 <div id="tab1" style="display:none">
+  <div class="frow"><label>弹题 AI 作答（P2 功能，计分项）</label>
+    <span class="switch"><input type="checkbox" id="s_quiz"><i></i></span></div>
+  <div class="frow"><label>学习窗口开始</label><input type="time" id="s_ws"></div>
+  <div class="frow"><label>学习窗口结束</label><input type="time" id="s_we"></div>
+  <div class="frow"><label>每日时长额度（分钟，0 不限）<small style="display:block;color:var(--muted);font-size:.72rem">按本会话“真播完并记账”的视频时长计（拟人间隔/加载不算）；240 是上限，实际会乘一个随机系数</small></label><input type="number" id="s_min" style="width:90px"></div>
+  <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
+  <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
+    <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
+</div>
+<div id="tab2" style="display:none">
   <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型 <span class="muted" style="font-size:.75rem;font-weight:400">全局，所有账号共用</span></h3>
   <div class="llmbox">
     <div style="margin-bottom:.5rem"><span class="muted" style="font-size:.75rem">提供商（点选载入；自定义项⨯删除）</span>
@@ -563,7 +575,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 </div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="saveSettings()">保存</button></div>
-  <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）</div>
+  <div class="hint">保存写入数据库全局覆盖层（对之后启动的学习会话生效；账号级覆盖仍用 xxt account set）。⚠ 一旦在这里保存过某键，该键就以数据库为准，再改 config/settings.toml 不会生效。</div>
 </dialog>
 
 <dialog id="planDlg"><h3 id="planTitle">📚 新建学习安排</h3>
@@ -828,7 +840,7 @@ function renderLogs(n){if(n)LOGN=n;
         (l.event==='session-start'||l.event==='auto-start'||l.event==='auto-plan'||
          l.event==='auto-request'||l.event==='auto-replan')?'ev-info':
         (l.event==='session-stop'||l.event==='auto-skip'||l.event==='auto-stop'||
-         l.event==='auto-error'||l.event==='auto-plan-stale'||
+         l.event==='auto-error'||l.event==='auto-revoke'||l.event==='auto-plan-stale'||
          l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
         <td class="mono">${esc(l.who)}</td><td class="ev ${cls}">${esc(l.event)}</td>
@@ -845,10 +857,12 @@ function loadSettings(){
     s_wm.value=d.work_mode_default||'owner';
     s_mt.value=d.auto_max_tries??2; s_rm.value=d.auto_retry_minutes??15;
     s_cs.value=d.auto_confirm_seconds??25;
+    s_rj.value=d.auto_retry_jitter_pct??40; s_rx.value=d.auto_retry_max_minutes??90;
     s_er.value=d.learn_enter_retries??2; s_ms.value=d.learn_max_skip_chapters??3;
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
     s_nvm.value=d.learn_non_video_marks||'';
+    renderAudit(d.recent_changes||[]);
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
     s_lkeyv.value='';s_lkeyv.dataset.hasKey=d.llm_key_stored?'1':'0';
     window.LLM_NAME=d.llm_provider_name||'Agnès';
@@ -861,8 +875,28 @@ function loadSettings(){
 function switchTab(i,btn){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   btn.classList.add('active');
-  document.getElementById('tab0').style.display=i===0?'':'none';
-  document.getElementById('tab1').style.display=i===1?'':'none';}
+  [0,1,2].forEach(k=>{const el=document.getElementById('tab'+k);
+    if(el)el.style.display=(k===i?'':'none');});}
+function renderAudit(rows){
+  const el=document.getElementById('auditList'); if(!el)return;
+  const NAME={auto_max_tries:'每日最多自动发起',auto_retry_minutes:'退避基数(分)',
+    auto_retry_jitter_pct:'退避随机浮动(%)',auto_retry_max_minutes:'退避封顶(分)',
+    auto_confirm_seconds:'开跑回读(秒)',learn_enter_retries:'单节点点几次',
+    learn_max_skip_chapters:'连续打不开收工',learn_non_video_streak:'连续非视频收工',
+    learn_partial_retries:'中断续播次数',learn_partial_retry_ratio_pct:'续播门槛(%)',
+    learn_login_budget_per_day:'每日登录预算',learn_non_video_marks:'非视频关键词',
+    daily_minutes:'时长额度',daily_tasks:'任务额度',window_start:'窗口开始',
+    window_end:'窗口结束',quiz_enabled:'弹题AI',work_mode_default:'作业策略'};
+  if(!rows.length){el.innerHTML='<span class="muted">暂无变更记录</span>';return;}
+  el.innerHTML=rows.map(r=>{
+    const t=(r.ts||'').replace('T',' ').slice(5,16);
+    const nm=NAME[r.key]||r.key;
+    return `<div style="padding:.12rem 0;border-bottom:1px dashed var(--line)">
+      <span class="muted">${esc(t)}</span>　<b>${esc(nm)}</b>
+      <span style="color:var(--muted)">${esc(String(r.old_value??'—'))}</span>
+      <span style="color:var(--accent)">→ ${esc(String(r.new_value??'—'))}</span></div>`;
+  }).join('');
+}
 function presetLLM(name,url,model){s_lname.value=name;s_lurl.value=url;s_lmodel.value=model;
   s_lhint.textContent=`已填入 ${name} 预设——点"保存到厂商列表"生效（可改模型名）`;}
 let PROV={builtin:[],custom:[],current:''};
@@ -925,6 +959,7 @@ function saveSettings(){
     window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
     work_mode_default:s_wm.value};
   for(const [k,el] of [['auto_max_tries',s_mt],['auto_retry_minutes',s_rm],
+      ['auto_retry_jitter_pct',s_rj],['auto_retry_max_minutes',s_rx],
       ['auto_confirm_seconds',s_cs],['learn_enter_retries',s_er],
       ['learn_max_skip_chapters',s_ms],['learn_non_video_streak',s_ns],
       ['learn_partial_retries',s_pr],['learn_partial_retry_ratio_pct',s_prr],
@@ -1986,6 +2021,25 @@ def create_app(settings: Settings) -> FastAPI:
             conn.close()
         return {"ok": True}
 
+    def _recent_changes(limit: int = 12) -> list[dict]:
+        """最近配置变更（config_audit）→ 「守护与节级策略」页底部展示。
+
+        2026-10-27 用户要求：“每次调整都要记录清楚，方便查阅和调整”。
+        读失败绝不能阻塞设置页本身。
+        """
+        try:
+            c = db()
+            try:
+                return [{"ts": r["ts"], "key": r["key"],
+                         "old_value": r["old_value"], "new_value": r["new_value"]}
+                        for r in c.execute(
+                            "SELECT ts, key, old_value, new_value FROM config_audit"
+                            " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                c.close()
+        except Exception:
+            return []
+
     @app.get("/api/settings")
     def get_settings():
         fresh = Settings(root=settings.root)  # 重新加载（含 app_config 覆盖层）
@@ -2008,6 +2062,8 @@ def create_app(settings: Settings) -> FastAPI:
             # 守护与节级策略（2026-10-27 用户：“必为配置项，面板可改”）
             "auto_max_tries": _i(auto_cfg, "max_tries", 2),
             "auto_retry_minutes": _i(auto_cfg, "retry_minutes", 15),
+            "auto_retry_jitter_pct": _i(auto_cfg, "retry_jitter_pct", 40),
+            "auto_retry_max_minutes": _i(auto_cfg, "retry_max_minutes", 90),
             "auto_confirm_seconds": _i(auto_cfg, "confirm_seconds", 25),
             "learn_enter_retries": _i(learn_cfg, "enter_retries", 2),
             "learn_max_skip_chapters": _i(learn_cfg, "max_skip_chapters", 3),
@@ -2020,6 +2076,7 @@ def create_app(settings: Settings) -> FastAPI:
             "llm_model": fresh.llm["model"],
             "llm_provider_name": fresh.llm.get("provider_name", ""),
             "llm_key_stored": conn2_has_key(settings),
+            "recent_changes": _recent_changes(),
         }
 
     @app.put("/api/settings")
@@ -2029,10 +2086,26 @@ def create_app(settings: Settings) -> FastAPI:
         import re as _re
 
         def upsert(conn: sqlite3.Connection, key: str, value) -> None:
+            """写覆盖层 + 变更审计（2026-10-27 用户：“每次调整都要记录清楚”）。
+
+            值没变就不写——否则用户每点一次保存都刷一条无意义记录，反而没法查。
+            """
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key=?", (key,)).fetchone()
+            old = row["value"] if row else None
+            new_txt = _json.dumps(value)
+            if old == new_txt:
+                return
             conn.execute(
                 "INSERT INTO app_config(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, _json.dumps(value)),
+                (key, new_txt),
+            )
+            conn.execute(
+                "INSERT INTO config_audit(ts, source, key, old_value, new_value)"
+                " VALUES(?,?,?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), "panel", key,
+                 "" if old is None else str(old).strip('"'), str(value)),
             )
 
         conn = db()
@@ -2062,6 +2135,8 @@ def create_app(settings: Settings) -> FastAPI:
             int_rules = {
                 "auto_max_tries": ("auto.max_tries", 0, 10),
                 "auto_retry_minutes": ("auto.retry_minutes", 1, 240),
+                "auto_retry_jitter_pct": ("auto.retry_jitter_pct", 0, 100),
+                "auto_retry_max_minutes": ("auto.retry_max_minutes", 15, 480),
                 "auto_confirm_seconds": ("auto.confirm_seconds", 15, 300),
                 "learn_enter_retries": ("learn.enter_retries", 1, 5),
                 "learn_max_skip_chapters": ("learn.max_skip_chapters", 1, 10),

@@ -588,6 +588,8 @@ def _replay_auto_events(events) -> tuple[bool, int]:
       - `auto-try`：确实发起了会话（触发成功，等回读确认）；
       - `auto-fire`：回读确认会话真在跑（成功标记，今天不再重复）；
       - `auto-error`：该轮失败（可退避后重试，直到尝试次数上限）。
+      - `auto-revoke`：撤回“今日已学”（会话早退、今日 0 个视频）——
+        旧版这条也写成 `auto-error`，导致用户 2026-10-27 看到日志**以为是新一次失败**。
     老数据没有 `auto-try`，用“`auto-fire` 后 5 分钟内紧跟 `auto-error`”识别为失败。
     """
     events = list(events)
@@ -600,16 +602,19 @@ def _replay_auto_events(events) -> tuple[bool, int]:
             ok = False  # 新一轮尝试开始，上一轮的成败不再算今日已跑
         elif ev == "auto-fire":
             ok, last_fire = True, _epoch(ts)
+        elif ev == "auto-revoke":
+            ok, last_fire = False, 0.0  # 明确撤回：无论隔多久都算今日未学
         elif ev == "auto-error" and last_fire and _epoch(ts) - last_fire <= 300:
-            ok, last_fire = False, 0.0  # 秒退：这条 auto-fire 不算成功
+            ok, last_fire = False, 0.0  # 秒退（历史数据兼容）：这条 auto-fire 不算成功
     return ok, tries
 
 
-def _auto_limits(raw: dict | None) -> tuple[int, int, int]:
-    """读 `[auto]` 配置 → (每日最多尝试次数, 失败退避分钟, 回读等待秒)。
+def _auto_limits(raw: dict | None) -> tuple[int, int, int, int, int]:
+    """读 `[auto]` 配置 → (次数上限, 退避基数分钟, 回读等待秒, 退避抖动%, 退避封顶分钟)。
 
     2026-10-27 用户要求：别把次数写死在代码里。默认 2 次 / 15 分钟 / 25 秒；
-    `max_tries = 0` 表示不限（其余两项仍受上下限约束，防手滑写坏）。
+    `max_tries = 0` 表示不限（其余项仍受上下限约束，防手滑写坏）。
+    同日追加：退避不能是固定节奏（固定间隔最像机器人），加抖动系数与封顶。
     """
     cfg = raw or {}
 
@@ -622,7 +627,24 @@ def _auto_limits(raw: dict | None) -> tuple[int, int, int]:
 
     return (_int("max_tries", 2, 0, 10),
             _int("retry_minutes", 15, 1, 240),
-            _int("confirm_seconds", 25, 15, 300))
+            _int("confirm_seconds", 25, 15, 300),
+            _int("retry_jitter_pct", 40, 0, 100),
+            _int("retry_max_minutes", 90, 15, 480))
+
+
+def _backoff_minutes(base: int, n_fail: int, jitter_pct: int, cap: int) -> int:
+    """第 n 次失败后的退避分钟数：base × 2^(n-1)，上下浮动 jitter%，封顶 cap。
+
+    2026-10-27 用户要求“可以设置随机，模拟人的行为”：固定 15/30/60 的等差节奏
+    与真人差异太大，改为指数退避 + 随机抖动（默认 ±40%）。纯本地计算，零平台请求。
+    例：base=15, jitter=40 → 第一次 9~21 分钟；第二次 18~42；封顶 90。
+    """
+    import random as _r
+
+    wait = max(1, base) * (2 ** max(0, min(n_fail, 6) - 1))
+    if jitter_pct > 0:
+        wait *= 1 + _r.uniform(-jitter_pct, jitter_pct) / 100.0
+    return max(1, min(cap or 480, int(round(wait))))
 
 
 def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
@@ -698,7 +720,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
     tries: dict[int, int] = {}      # 今日触发尝试次数（auto-try 计数，含老数据 auto-fire）
     retry_after: dict[int, str] = {}  # 失败退避：早于该时刻不再重试
     # 次数/退避/回读等待做成配置（config/settings.toml 的 [auto]，2026-10-27 用户要求）
-    max_tries, retry_minutes, confirm_seconds = _auto_limits(s.raw.get("auto"))
+    (max_tries, retry_minutes, confirm_seconds,
+     retry_jitter_pct, retry_max_minutes) = _auto_limits(s.raw.get("auto"))
     wait_noted: set[int] = set()   # 已提示过“等学习窗口开启”的账号（不重复写日志）
     plan_date = _time.strftime("%Y-%m-%d")
     panel_port = int(s.raw.get("panel", {}).get("port", 8300))
@@ -783,9 +806,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
         if wait_m:
             retry_after[aid] = _hhmm_in(wait_m)
         cap = max_tries or "不限"
-        _ev(aid, "auto-error",
-            f"已确认开跑但会话已退出、今日 0 个视频（今日已试 {n_aid}/{cap} 次）"
-            f"→ 收回“今日已学”，"
+        # 2026-10-27 用户困惑「为什么是 auto-error」：这条其实是“撤回今日已学”，
+        # 不是“本轮发起失败”。旧事件名把两件事揉成一个词，排查时极易误读。
+        # 改为 auto-revoke；历史 auto-error 仍由 _replay_auto_events 兼容解析。
+        _ev(aid, "auto-revoke",
+            f"撤回「今日已学」：上次发起后会话已退出、今日 0 个视频"
+            f"（今日已试 {n_aid}/{cap} 次）→ "
             + (f"{wait_m} 分钟后补跑（约 {retry_after[aid]}）" if wait_m else "下一轮即补跑"),
             "WARNING")
         return True
@@ -832,7 +858,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
         return "｜今日计划 " + "、".join(f"#{k} {planned[k]}" for k in sorted(planned))
 
     _ev(0, "auto-start", "守护启动（每 30 秒巡检）" + _plan_brief()
-        + f"｜失败重试 {max_tries or '不限'} 次 / 间隔 {retry_minutes} 分钟")
+        + f"｜失败重试 {max_tries or '不限'} 次 / 退避 {retry_minutes} 分钟"
+          f"（±{retry_jitter_pct}% 随机，封顶 {retry_max_minutes} 分钟）")
     started_at = _time.monotonic()  # 供退出时汇报运行时长
     first_pass = True  # 首轮：缓存计划与当前定时不一致时按 WARNING 记（便于追溯残留）
 
@@ -886,12 +913,16 @@ def cmd_auto(args: argparse.Namespace) -> int:
                             f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
                             f"{tail}。今日不再自动重试，可手动 ▶ 补跑", "WARNING")
                     else:
-                        retry_after[aid_p] = _hhmm_in(retry_minutes)
+                        # 退避随机化（2026-10-27 用户要求“模拟人的行为”）：
+                        # 固定 15/30/60 的等差节奏太像机器，改为指数 + ±jitter% 抖动。
+                        wait_p = _backoff_minutes(retry_minutes, n_p,
+                                                  retry_jitter_pct, retry_max_minutes)
+                        retry_after[aid_p] = _hhmm_in(wait_p)
                         planned.pop(aid_p, None)  # 下一轮按 start_at 重新排
                         skipped.discard(aid_p)
                         _ev(aid_p, "auto-error",
                             f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
-                            f"{tail}，{retry_minutes} 分钟后自动重试"
+                            f"{tail}，{wait_p} 分钟后自动重试"
                             f"（约 {retry_after[aid_p]}）", "WARNING")
             new_plan: list[str] = []
             conn = connect(s.db_path)

@@ -1,9 +1,11 @@
 """守护「失败处理」两支（2026-10-27 P0-3d）。
 
-1) `_auto_limits`：次数/退避/回读等待来自 `config/settings.toml` 的 `[auto]`，
+1) `_auto_limits`：次数/退避/回读等待/抖动/封顶来自 `config/settings.toml` 的 `[auto]`，
    不再写死在代码里；写坏或越界要有兜底，`max_tries=0` 表示不限。
 2) `_session_end_reason`：把子进程 `session-end` 自报的停止原因抄进 auto-error，
    不再用"多为窗口外或额度已满"这类猜测。
+3) `_backoff_minutes`：退避指数递增 + 随机抖动 + 封顶（2026-10-27 用户要求
+   "可以设置随机，模拟人的行为"）。
 """
 
 from __future__ import annotations
@@ -12,37 +14,66 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from xxt.cli import _auto_limits, _epoch, _revive_plan, _session_end_reason
+from xxt.cli import (_auto_limits, _backoff_minutes, _epoch, _revive_plan,
+                     _session_end_reason)
 from xxt.store.db import connect
 
 
 class TestAutoLimits(unittest.TestCase):
     def test_defaults(self):
-        # 未配置 [auto] 时用内置默认：每日 2 次 / 退避 15 分钟 / 回读 25 秒
-        self.assertEqual(_auto_limits(None), (2, 15, 25))
-        self.assertEqual(_auto_limits({}), (2, 15, 25))
+        # 未配置 [auto] 时用内置默认：2 次 / 退避 15 分 / 回读 25 秒 / 抖动 40% / 封顶 90 分
+        self.assertEqual(_auto_limits(None), (2, 15, 25, 40, 90))
+        self.assertEqual(_auto_limits({}), (2, 15, 25, 40, 90))
 
     def test_override(self):
-        cfg = {"max_tries": 3, "retry_minutes": 30, "confirm_seconds": 40}
-        self.assertEqual(_auto_limits(cfg), (3, 30, 40))
+        cfg = {"max_tries": 3, "retry_minutes": 30, "confirm_seconds": 40,
+               "retry_jitter_pct": 50, "retry_max_minutes": 120}
+        self.assertEqual(_auto_limits(cfg), (3, 30, 40, 50, 120))
 
     def test_zero_tries_means_unlimited(self):
         self.assertEqual(_auto_limits({"max_tries": 0})[0], 0)
 
     def test_out_of_range_is_clamped(self):
-        # 上限防手滑（10 次 / 240 分钟 / 300 秒），下限防刷风控（1 分钟 / 15 秒）
+        # 上限防手滑（10 次 / 240 分 / 300 秒 / 100% / 480 分），下限防刷风控
         self.assertEqual(
-            _auto_limits({"max_tries": 99, "retry_minutes": 0, "confirm_seconds": 5}),
-            (10, 1, 15),
+            _auto_limits({"max_tries": 99, "retry_minutes": 0, "confirm_seconds": 5,
+                          "retry_jitter_pct": 999, "retry_max_minutes": 5}),
+            (10, 1, 15, 100, 15),
         )
         self.assertEqual(
-            _auto_limits({"max_tries": -3, "retry_minutes": 999, "confirm_seconds": 9999}),
-            (0, 240, 300),
+            _auto_limits({"max_tries": -3, "retry_minutes": 999, "confirm_seconds": 9999,
+                          "retry_jitter_pct": -5, "retry_max_minutes": 9999}),
+            (0, 240, 300, 0, 480),
         )
 
     def test_bad_value_falls_back_to_default(self):
-        cfg = {"max_tries": "abc", "retry_minutes": None, "confirm_seconds": ""}
-        self.assertEqual(_auto_limits(cfg), (2, 15, 25))
+        cfg = {"max_tries": "abc", "retry_minutes": None, "confirm_seconds": "",
+               "retry_jitter_pct": [], "retry_max_minutes": {}}
+        self.assertEqual(_auto_limits(cfg), (2, 15, 25, 40, 90))
+
+
+class TestBackoffMinutes(unittest.TestCase):
+    """退避：指数递增 + 抖动 + 封顶（纯本地计算，零平台请求）。"""
+
+    def test_grows_exponentially_without_jitter(self):
+        self.assertEqual(_backoff_minutes(15, 1, 0, 90), 15)
+        self.assertEqual(_backoff_minutes(15, 2, 0, 90), 30)
+        self.assertEqual(_backoff_minutes(15, 3, 0, 90), 60)
+
+    def test_capped(self):
+        self.assertEqual(_backoff_minutes(15, 4, 0, 90), 90)
+        self.assertEqual(_backoff_minutes(60, 6, 0, 90), 90)
+
+    def test_jitter_stays_within_band(self):
+        # base=15, jitter=40% → 9~21 分钟；多抽几次都必须落在这个区间里
+        for _ in range(200):
+            v = _backoff_minutes(15, 1, 40, 90)
+            self.assertGreaterEqual(v, 9)
+            self.assertLessEqual(v, 21)
+
+    def test_jitter_actually_varies(self):
+        seen = {_backoff_minutes(30, 1, 40, 240) for _ in range(60)}
+        self.assertGreater(len(seen), 1, "固定值等于没有随机")
 
 
 class TestSessionEndReason(unittest.TestCase):

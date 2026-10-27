@@ -3,6 +3,9 @@
 背景：旧逻辑只要写过 `auto-fire` 就算今天已触发，哪怕子进程 30 秒后秒退——
 08:11 的 #2 与 01:40 的 #1 就是这样白掉一整天的机会，且重启守护也补不回来
 （fired 从 run_logs 恢复）。现在 `auto-fire` 只在回读确认会话真在跑时才写。
+
+2026-10-27 追加：`_revive_if_dead` 撤销“今日已学”原本也写 `auto-error`，
+用户看到日志问“为什么是 auto-error”——已拆为 `auto-revoke`。
 """
 
 from __future__ import annotations
@@ -56,6 +59,31 @@ class TestReplayAutoEvents(unittest.TestCase):
         ok, tries = _replay_auto_events([(T.format("08:11:14"), "auto-fire")])
         self.assertTrue(ok)
         self.assertEqual(tries, 1)
+
+    def test_auto_revoke_rolls_back_fired(self):
+        """`auto-revoke` = 撤回“今日已学”（会话早退、今日 0 个视频）。
+
+        2026-10-27 用户看到日志写“auto-error”很困惑：那条其实不是新一轮失败，
+        而是撤销。改为独立事件名后，无论隔多久都必须被判为“今日未学”。
+        """
+        ok, tries = _replay_auto_events([
+            (T.format("14:03:56"), "auto-try"),
+            (T.format("14:04:20"), "auto-fire"),
+            (T.format("16:30:00"), "auto-revoke"),  # 隔了 2 小时也要撤销
+        ])
+        self.assertFalse(ok)
+        self.assertEqual(tries, 1)
+
+    def test_revoke_then_retry_can_still_succeed(self):
+        ok, tries = _replay_auto_events([
+            (T.format("09:10:00"), "auto-try"),
+            (T.format("09:10:43"), "auto-fire"),
+            (T.format("09:14:00"), "auto-revoke"),
+            (T.format("14:10:00"), "auto-try"),
+            (T.format("14:10:40"), "auto-fire"),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(tries, 2)
 
     def test_no_events(self):
         self.assertEqual(_replay_auto_events([]), (False, 0))

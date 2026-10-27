@@ -104,6 +104,16 @@ CREATE TABLE IF NOT EXISTS run_logs (
     detail TEXT,
     account_id INTEGER DEFAULT 1
 );
+-- 配置变更审计（2026-10-27 用户要求“每次调整都要记录清楚，方便查阅和调整”）：
+-- 只要经过面板/CLI 改了配置，就落一行旧值→新值；面板「⚙ 设置」底部直接展示。
+CREATE TABLE IF NOT EXISTS config_audit (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT NOT NULL,
+    source    TEXT NOT NULL,      -- panel / cli / file
+    key       TEXT NOT NULL,      -- 点分键，如 auto.max_tries
+    old_value TEXT,
+    new_value TEXT
+);
 CREATE TABLE IF NOT EXISTS work_questions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     cache_key  TEXT NOT NULL,
