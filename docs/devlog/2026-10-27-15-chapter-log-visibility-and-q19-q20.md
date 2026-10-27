@@ -238,3 +238,27 @@
 
 用户结论：“**这个做后期项目要着手入手的，目前先把这个超星完善**” → Q35 只登记不排期；真开工时把侦察合并成一次取选择器（最小访问原则，不重复跑 recon）。
 
+## 十一、拿到第二站公开实现的完整源码（19:40–20:00）
+
+用户又给了 `https://greasyfork.org/zh-CN/scripts/558034-…/code`。记录获取过程（下次直接走可达路径）：
+
+1. greasyfork 直连**两次失败且每次解析到不同假 IP**（`128.242.240.85` → `31.13.87.9`）= **DNS 污染**，不是对方宕机
+2. 改走 `api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents` → 列出 `script.user.js`（51140 字节）——**API 域名可达**
+3. `raw.githubusercontent.com` **超时**（惯常被墙）
+4. ✅ **`https://cdn.jsdelivr.net/gh/EchoPing07/gaoxiaokaoshi-helper@main/script.user.js` 一次拉到全文**（1096 行）
+
+判定它就是 558034 同一份：元数据 `@name 高校考试网小助手` + `@version 2.0` + `@original-script-1 …/463301`（Yiero 刷课）+ `@original-script-2 …/404599`（Aisen 题库），与 README 一致。**已存 `data/reference/gaoxiaokaoshi-helper-v2.user.js`（data/ 不入库）**。
+
+### 11.1 白捡的平台地图（详表已入 Q35）
+
+最重要的一条：**`#spTitle` 是服务器同步时间，脚本每 60s 读它，两次相同就判“同步异常”刷新页面** —— 这坐实了“服务端按自己时钟累计学习时长”，所以**倍速无效**不是一句传闻而是机制结论（我们的 `speed_range` 在新站直接失效）。其余：页面类型七个（`login/librarystudylist/mainpage/examtmstepdo/examtmstepheader/exammessage/viewexam`）、`#mainIframe` → `#ExamView` 双层 iframe（与我们的 `find_frame_with` 同构）、播放器 `#J_prismPlayer` 需 `click()`、课程表是纯 `tr` 六列、分页 `#PageSplit1_BtnNext`、题目 `.exam_list dt` + `input[id^=tm_N_]`、正确卷用 `.green` 标色、交卷 `window.SubmitExam()`。这些把“选择器/时序实测”降为“小规模核对”，专有层估算从 1650 行降到 1200~1400 行。
+
+### 11.2 四条设计红线（对方能跑不代表我们对，这档价值最高）
+
+1. **绝不全局劫持 `window.confirm/alert`**。它用 `Object.defineProperty(..., {writable:false, configurable:false})` 把 confirm 恒返 true 求“不被弹窗卡住”——一旦平台用 confirm 确认“确实交卷？”就是**误交卷**。我们处理弹窗应显式 accept/dismiss **并写事件记账**（与“失败透传原文”同一路子）。
+2. **自愈不能退化成 `location.reload()` 循环**。它出错/暂停/加载超时（计数器 8 次）全部刷新整页，会丢定时器状态。我们有 `runmark` + 事件记账 + 四档状态机，新站照搬这套而不是照搬它。
+3. **题库 key 用 `question_hash`，不用题干原文**。它 `bank[题干]` + 正则 `/\d+\.(.*)\(/`（只取到括号前的文字），题干标点/空格/选项写法一变就 miss；我们的 `sha256(题干+选项)` + `(question_hash, account_id)` 主键更稳，**不学它**。
+4. **它零间隔、零额度、零并发控制**（`onpause` 1 秒后立即 `play()`、`volume=0`、全天可跑）。这恰好是风控最典型的机器人形态 → 新站必带 `pace` 三档间隔 + `daily_max_minutes` + 每日窗口（Q35 已写“低频拟人化必须带过去”）。
+
+另：`initLoginPage()` 只注入面板、**没有任何自动登录代码** → 印证我们“人工辅助登录 + 存会话”的路线正确，新站这块无白捡代码（验证码有无仍需实测）；`@grant none` 连 GM_* 都不靠，题库直接用 `localStorage`（清浏览器数据会丢，我们落库更安全）。
+
