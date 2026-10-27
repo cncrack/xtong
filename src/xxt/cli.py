@@ -563,6 +563,87 @@ def _course_ref(pick) -> tuple[str, str | None]:
     return pick["name"], (pick["platform_course_id"] if "platform_course_id" in keys else None)
 
 
+def _epoch(ts: str) -> float:
+    """`2026-10-27T08:11:14` → epoch 秒；解析不了返回 0。"""
+    import time as _t
+
+    try:
+        return _t.mktime(_t.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return 0.0
+
+
+def _hhmm_in(minutes: int) -> str:
+    """当前时刻 + N 分钟 → HH:MM（失败退避用）。"""
+    import time as _t
+
+    return _t.strftime("%H:%M", _t.localtime(_t.time() + minutes * 60))
+
+
+def _replay_auto_events(events) -> tuple[bool, int]:
+    """回放某账号当天的 auto-* 事件 → （今日是否已确认开跑, 今日触发尝试次数）。
+
+    2026-10-27 方案 A：旧版只要写过 `auto-fire` 就算“今天已触发”，哪怕子进程 30 秒后
+    就秒退——08:11 的 #2 与 01:40 的 #1 就是这样白掉一整天的。现在语义改为：
+      - `auto-try`：确实发起了会话（触发成功，等回读确认）；
+      - `auto-fire`：回读确认会话真在跑（成功标记，今天不再重复）；
+      - `auto-error`：该轮失败（可退避后重试，直到尝试次数上限）。
+    老数据没有 `auto-try`，用“`auto-fire` 后 5 分钟内紧跟 `auto-error`”识别为失败。
+    """
+    events = list(events)
+    has_try = any(ev == "auto-try" for _, ev in events)
+    tries = sum(1 for _, ev in events
+                if ev == ("auto-try" if has_try else "auto-fire"))
+    ok, last_fire = False, 0.0
+    for ts, ev in events:
+        if ev == "auto-try":
+            ok = False  # 新一轮尝试开始，上一轮的成败不再算今日已跑
+        elif ev == "auto-fire":
+            ok, last_fire = True, _epoch(ts)
+        elif ev == "auto-error" and last_fire and _epoch(ts) - last_fire <= 300:
+            ok, last_fire = False, 0.0  # 秒退：这条 auto-fire 不算成功
+    return ok, tries
+
+
+def _auto_limits(raw: dict | None) -> tuple[int, int, int]:
+    """读 `[auto]` 配置 → (每日最多尝试次数, 失败退避分钟, 回读等待秒)。
+
+    2026-10-27 用户要求：别把次数写死在代码里。默认 2 次 / 15 分钟 / 25 秒；
+    `max_tries = 0` 表示不限（其余两项仍受上下限约束，防手滑写坏）。
+    """
+    cfg = raw or {}
+
+    def _int(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            val = int(cfg.get(key, default))
+        except Exception:
+            return default
+        return max(lo, min(hi, val))
+
+    return (_int("max_tries", 2, 0, 10),
+            _int("retry_minutes", 15, 1, 240),
+            _int("confirm_seconds", 25, 15, 300))
+
+
+def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
+    """回读触发之后该账号的 `session-end` 详情 → 子进程自报的停止原因。
+
+    2026-10-27 用户要求“失败要说清原因”：以前 auto-error 只写“多为窗口外或额度
+    已满”这种猜测（8:11 的真实原因是防双开误判），现在把子进程写的
+    `课程｜停止原因｜视频 N 个` 后两段原样抄进告警。
+    """
+    try:
+        row = conn.execute(
+            "SELECT detail FROM run_logs WHERE account_id=? AND event='session-end'"
+            " AND ts>=? ORDER BY id DESC LIMIT 1", (account_id, since_iso)).fetchone()
+    except Exception:
+        return ""
+    if not row or not row["detail"]:
+        return ""
+    parts = [p.strip() for p in str(row["detail"]).split("｜") if p.strip()]
+    return "｜".join(parts[-2:]) if len(parts) >= 3 else "｜".join(parts)
+
+
 def cmd_auto(args: argparse.Namespace) -> int:
     """常驻调度：各账号在计划时刻（start_at 或窗口内随机）自动开始当日学习会话。
 
@@ -586,6 +667,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
     fired: set[int] = set()        # 今日已触发（含手动已开）
     skipped: set[int] = set()      # 今日跳过（未登录/无课程）
     pending: dict[int, tuple[float, str]] = {}  # 已触发待回读：aid → (monotonic, ISO)
+    tries: dict[int, int] = {}      # 今日触发尝试次数（auto-try 计数，含老数据 auto-fire）
+    retry_after: dict[int, str] = {}  # 失败退避：早于该时刻不再重试
+    # 次数/退避/回读等待做成配置（config/settings.toml 的 [auto]，2026-10-27 用户要求）
+    max_tries, retry_minutes, confirm_seconds = _auto_limits(s.raw.get("auto"))
     wait_noted: set[int] = set()   # 已提示过“等学习窗口开启”的账号（不重复写日志）
     plan_date = _time.strftime("%Y-%m-%d")
     panel_port = int(s.raw.get("panel", {}).get("port", 8300))
@@ -626,7 +711,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         except Exception:
             return False
 
-    # 重启续跑：今日计划与已触发/已跳过从库里恢复——否则守护一重启就重新随机时刻，
+    # 重启续跑：今日计划与「已确认开跑」从库里恢复——否则守护一重启就重新随机时刻，
     # 已刷完的号还会被再刷一次（“每账号每天只自动启动一次”会被打破）。
     try:
         conn = connect(s.db_path)
@@ -639,12 +724,24 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 info = _json_t.loads(row["value"])
                 if info.get("date") == plan_date:
                     planned = {int(k): v for k, v in (info.get("times") or {}).items()}
-            for r in conn.execute(
-                    "SELECT DISTINCT account_id FROM run_logs WHERE ts LIKE ? AND event='auto-fire'",
-                    (plan_date + "%",)):
-                fired.add(int(r["account_id"]))
+            # 2026-10-27 方案 A：只有“回读确认在跑”的 auto-fire 算今日已学；
+            # 失败轮次（auto-try + auto-error，老数据是 auto-fire + 紧随的 auto-error）
+            # 不计入 fired，允许补跑（旧逻辑会把秒退当“今天已触发”，白掉一整天）。
+            ev_rows = conn.execute(
+                "SELECT account_id, ts, event FROM run_logs WHERE ts LIKE ?"
+                " AND account_id > 0"
+                " AND event IN ('auto-try','auto-fire','auto-error') ORDER BY id",
+                (plan_date + "%",)).fetchall()
+            by_aid: dict[int, list[tuple[str, str]]] = {}
+            for r in ev_rows:
+                by_aid.setdefault(int(r["account_id"]), []).append((r["ts"], r["event"]))
+            for aid_r, evs in by_aid.items():
+                ok_r, n_r = _replay_auto_events(evs)
+                tries[aid_r] = n_r
+                if ok_r:
+                    fired.add(aid_r)
             # 刻意不恢复 skipped：未登录/缺课这类原因当天可修（登进去、补抓课程），
-            # 修好后重启守护应能补跑；只有“已真正触发过”不能被重复刷。
+            # 修好后重启守护应能补跑。
         finally:
             conn.close()
     except Exception:
@@ -655,7 +752,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
             return "｜今日计划待首轮巡检确定"
         return "｜今日计划 " + "、".join(f"#{k} {planned[k]}" for k in sorted(planned))
 
-    _ev(0, "auto-start", "守护启动（每 30 秒巡检）" + _plan_brief())
+    _ev(0, "auto-start", "守护启动（每 30 秒巡检）" + _plan_brief()
+        + f"｜失败重试 {max_tries or '不限'} 次 / 间隔 {retry_minutes} 分钟")
     started_at = _time.monotonic()  # 供退出时汇报运行时长
     first_pass = True  # 首轮：缓存计划与当前定时不一致时按 WARNING 记（便于追溯残留）
 
@@ -668,24 +766,54 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 skipped.clear()
                 err_once.clear()
                 wait_noted.clear()
-            # 回读上一轮触发的账号（2026-10-27 加固）：面板只保证“进程起来了”，若定时
-            # 落在学习窗口外或额度已满，子进程会秒退——而 auto-fire 已把当日机会记掉，
-            # 界面看着一切正常。这里补一条告警；不自动重试，避免连续访问触发风控。
+                tries.clear()
+                retry_after.clear()
+            # 回读上一轮已发起的账号（2026-10-27 方案 A 重写）：以前“发起成功”就当作
+            # 今日已触发，子进程秒退也不回滚 → 一次失败白掉一整天。现在只有回读确认
+            # 会话真在跑才记 auto-fire（成功）；秒退记 auto-error 并退避 15 分钟重试，
+            # 每号每天最多 max_tries 次，避免连续访问触发风控。
             if pending:
                 from .core.runmark import marker_process_alive
 
                 for aid_p, (ts_p, iso_p) in list(pending.items()):
-                    if _time.monotonic() - ts_p < 25:  # 至少跑完一轮再回读
+                    if _time.monotonic() - ts_p < confirm_seconds:  # 至少跑完一轮再回读
                         continue
                     pending.pop(aid_p, None)
                     if marker_process_alive(s.data_dir, aid_p):
-                        continue  # 会话真在跑
+                        if aid_p not in fired:
+                            fired.add(aid_p)
+                            _ev(aid_p, "auto-fire", "已确认开跑（回读会话进程存活）")
+                        continue  # 会话真在跑 → 今日已学
                     if _stopped_since(aid_p, iso_p):
                         continue  # 手动停的，不算异常
-                    _ev(aid_p, "auto-error",
-                        f"触发后不足 {max(1, int((_time.monotonic() - ts_p) // 60))} 分钟"
-                        "会话已退出且未见学习记录（多为定时落在学习窗口外或额度已满）；"
-                        "本次不自动重试，改窗口/定时后重启守护或手动 ▶ 补跑", "WARNING")
+                    n_p = tries.get(aid_p, 1)
+                    mins_p = max(1, int((_time.monotonic() - ts_p) // 60))
+                    # 失败原因透传（2026-10-27 P0-3d）：抄子进程 session-end 的停止原因，
+                    # 不再写“多为窗口外或额度已满”这种猜测。
+                    why = ""
+                    try:
+                        conn_w = connect(s.db_path)
+                        try:
+                            why = _session_end_reason(conn_w, aid_p, iso_p)
+                        finally:
+                            conn_w.close()
+                    except Exception:
+                        why = ""
+                    tail = f"；子进程报：{why}" if why else ""
+                    cap = max_tries or "不限"
+                    if max_tries and n_p >= max_tries:
+                        fired.add(aid_p)  # 今日试满上限：不再自动重试
+                        _ev(aid_p, "auto-error",
+                            f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
+                            f"{tail}。今日不再自动重试，可手动 ▶ 补跑", "WARNING")
+                    else:
+                        retry_after[aid_p] = _hhmm_in(retry_minutes)
+                        planned.pop(aid_p, None)  # 下一轮按 start_at 重新排
+                        skipped.discard(aid_p)
+                        _ev(aid_p, "auto-error",
+                            f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
+                            f"{tail}，{retry_minutes} 分钟后自动重试"
+                            f"（约 {retry_after[aid_p]}）", "WARNING")
             new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
@@ -695,6 +823,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 conn.close()
             for row in rows:
                 aid = row["id"]
+                if aid in pending:
+                    continue  # 本轮已发起、还在等回读（confirm_seconds），不要重复触发
                 if aid in fired or aid in skipped:
                     # 已触发/已跳过的号也要让缓存跟上当前定时：否则面板「今日定时」会
                     # 一整天显示旧时刻（2026-10-27 实测：#2 改回 09:20 后仍显示 08:11，
@@ -731,6 +861,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     print(f"[auto] 账号#{aid} {row['label']} 今日计划 {planned[aid]} 开刷")
                     new_plan.append(f"#{aid} {row['label']} {planned[aid]}")
                 now_hm = _time.strftime("%H:%M")
+                if aid in retry_after:
+                    if now_hm < retry_after[aid]:
+                        continue  # 上一轮失败，退避中
+                    retry_after.pop(aid, None)
                 if now_hm < planned[aid]:
                     continue
                 # 窗口预校验（2026-10-27 加固）：start_at 落在窗口外时子进程会立刻
@@ -809,14 +943,20 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 except Exception:
                     ok, reason = False, "面板未响应（保持面板运行）"
                 if ok:
-                    fired.add(aid)
+                    # 只是“发起成功”，还不能算今日已学：`confirm_seconds` 秒后回读会话进程，
+                    # 真在跑才补写 auto-fire（2026-10-27 方案 A）。
+                    tries[aid] = tries.get(aid, 0) + 1
                     pending[aid] = (_time.monotonic(), _time.strftime("%Y-%m-%dT%H:%M:%S"))
-                    print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》")
-                    _ev(aid, "auto-fire", f"《{course_name}》｜来源={src_cn}")
+                    print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》"
+                          f"（第 {tries[aid]}/{max_tries or '不限'} 次，待回读）")
+                    _ev(aid, "auto-try",
+                        f"《{course_name}》｜来源={src_cn}｜第 {tries[aid]}/{max_tries or '不限'} 次"
+                        f"发起，{confirm_seconds} 秒后回读")
                 elif "已有进行中的会话" in str(reason):
-                    fired.add(aid)  # 手动已开（面板▶），视为今日已学
-                    print(f"[auto] 账号#{aid} 已有会话（手动开的），今日不再触发")
-                    _ev(aid, "auto-fire", f"《{course_name}》｜已有会话（手动开的），今日不再触发")
+                    fired.add(aid)  # 别的路径已开（面板 ▶/手动），视为今日已学
+                    print(f"[auto] 账号#{aid} 已有会话在跑，今日不再触发")
+                    _ev(aid, "auto-fire",
+                        f"《{course_name}》｜已有会话在跑（面板 ▶ 或另一路启动），今日不再触发")
                 elif "没有这门课" in str(reason):
                     skipped.add(aid)
                     print(f"[auto] 账号#{aid} 面板侧判定缺课：{reason}（今日跳过）")
