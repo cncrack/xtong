@@ -185,17 +185,22 @@ class TestPanel(unittest.TestCase):
         self.assertNotIn("password", body)
         self.assertNotIn("username_enc", body)
 
-    def _seed_account_and_event(self, event: str, detail: str) -> None:
+    def _seed_account_and_event(self, event: str, detail: str,
+                                code: str | None = None) -> None:
         import time as _t
 
         conn = connect(self.settings.db_path)
         if not conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone():
             conn.execute("INSERT INTO accounts(label, created_at) VALUES('测试号','x')")
         conn.execute(
-            "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,1)",
-            (_t.strftime("%Y-%m-%d") + "T10:00:00", "WARNING", event, detail))
+            "INSERT INTO run_logs(ts, level, event, detail, account_id, code)"
+            " VALUES(?,?,?,?,1,?)",
+            (_t.strftime("%Y-%m-%d") + "T10:00:00", "WARNING", event, detail, code))
         conn.commit()
         conn.close()
+
+    def _alert(self):
+        return self.client.get("/api/accounts").json()["accounts"][0]["alert"]
 
     def test_alert_surfaces_suspend_with_actions(self):
         """Q20/Q19（2026-10-27）：今日失败要变成卡片上一句话 + 能点的按钮。"""
@@ -208,16 +213,20 @@ class TestPanel(unittest.TestCase):
         # 守护落库的退避时刻表 → 警示条要能回答“什么时候自动重试”
         import time as _t
 
+        _now = _t.strftime("%H:%M")
+        _later = _t.strftime("%H:%M", _t.localtime(_t.time() + 3600))
         conn = connect(self.settings.db_path)
         conn.execute("INSERT INTO app_config(key, value) VALUES('auto.retry_after', ?)",
-                     (_json.dumps({"date": _t.strftime("%Y-%m-%d"), "times": {"1": "10:30"}}),))
+                     (_json.dumps({"date": _t.strftime("%Y-%m-%d"),
+                                   "times": {"1": _later}}),))
         conn.commit()
         conn.close()
         al = self.client.get("/api/accounts").json()["accounts"][0]["alert"]
         self.assertEqual(al["label"], "页面打不开")
         self.assertEqual(al["tier"], "suspended")
         self.assertIn("立即补跑", al["actions"])
-        self.assertEqual(al["resume_at"], "10:30")
+        # 跨零点后 _later 会变成“已过的时刻” → 服务端不显示（见 Q28 旁的 resume_at 修正）
+        self.assertEqual(al["resume_at"], _later if _later > _now else "")
 
     def test_alert_clears_after_progress_and_flags_hard_stop(self):
         self._seed_account_and_event("chapter-fail", "测试课｜1.2｜点了 2 次仍未进任务页")
@@ -243,6 +252,50 @@ class TestPanel(unittest.TestCase):
         self.assertIn("alert", ov)
         self.assertEqual(ov["alert"]["label"], "页面打不开")
         self.assertIn("立即补跑", ov["alert"]["actions"])
+
+    def test_video_interrupt_is_not_page_failure(self):
+        """Q28（2026-10-28）：播放中断是 B3 自愈事件，不能报“页面打不开”。
+
+        用户截图里第 1 个账号的卡片就是它——课明明在播，警示条却写
+        「⚠ 页面打不开·已停手」，人就被引导去点“立即补跑”（反而多开一个会话）。
+        """
+        self._seed_account_and_event("video-interrupt",
+                                     "测试课｜1.2 测试节｜重载任务页续播")
+        al = self._alert()
+        self.assertEqual(al["label"], "播放中断")
+        self.assertEqual(al["code"], "interrupt")
+        self.assertEqual(al["tier"], "suspended")
+
+    def test_alert_suppressed_while_session_alive(self):
+        """存活总闸：会话还活着（标记文件 pid 成立）→ 卡片不挂任何失败警示。"""
+        import json as _json
+        import os
+
+        run = self.settings.data_dir / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        marker = run / "1.json"
+        marker.write_text(_json.dumps({"pid": os.getpid(), "course": "测试课",
+                                       "since": "10:00"}), encoding="utf-8")
+        self._seed_account_and_event("video-interrupt", "测试课｜1.2｜重载续播")
+        self.assertIsNone(self._alert())
+        self.assertTrue(marker.exists())  # 探活不能把活着的标记清掉
+
+    def test_session_start_clears_old_alert(self):
+        """手动 ▶ 重开后旧警示要立刻消失（事件清单以前没有 session-start）。"""
+        self._seed_account_and_event("auto-error",
+                                     "硬停（页面打不开）：短退避与长退避都已用尽")
+        self.assertIsNotNone(self._alert())
+        self._seed_account_and_event("session-start", "测试课｜2.1")
+        self.assertIsNone(self._alert())
+
+    def test_alert_prefers_machine_code(self):
+        """Q30：文案里带“打不开”也不能盖掉守护写入的机器码。"""
+        self._seed_account_and_event(
+            "auto-suspend", "挂起（网络异常）：子进程报：打不开是因为代理掉线",
+            code="network")
+        al = self._alert()
+        self.assertEqual(al["code"], "network")
+        self.assertEqual(al["label"], "网络异常")
 
     def test_index_renders(self):
         self.assertEqual(self.client.get("/").status_code, 200)

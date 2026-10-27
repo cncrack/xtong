@@ -1863,12 +1863,26 @@ def create_app(settings: Settings) -> FastAPI:
 
         用户原话：「打不开要反馈原因，要有提示，不能就收工，要让人家能够有对应的方法
         和入口」。规则（纯本地、零平台访问）：
+        - 会话还活着（面板在跑 或 data/run 标记活着）→ 一律不示警；
         - 取该账号今日最后一条章节/会话/守护事件；
         - 已经又播完一节、正在学、或已达成（auto-done）→ 不显示；
         - 最后是 session-end：只有含「打不开/异常/失败/中断」才警示（正常达标收工不打扰）；
-        - 其余失败类交给 `core/diagnose` 归类；auto-error 带「硬停」按硬停展示。
+        - 其余失败类交给 `core.diagnose` 归类；auto-error 带「硬停」按硬停展示。
+
+        2026-10-28（Q28）两条修正：
+        ① 加存活总闸。以前没有这道门，一次 `video-interrupt`（B3 自愈事件）就够把
+           卡片钉上「⚠ 页面打不开·已停手」——人明明看着课在播（用户截图报的就是这个）；
+        ② `video-interrupt` 不再硬归 `structure`，改用 `interrupt`（播放中断，会自动续播）。
         """
         from ..core.diagnose import actions_for, classify, describe, tier_for
+
+        # 存活总闸：标记文件覆盖“面板重启后仍在跑”的会话，_JOBS 覆盖刚启动的。
+        try:
+            live = set(_marker_jobs(settings)) | {
+                int(a) for a, j in list(_JOBS.items())
+                if j.get("proc") is not None and j["proc"].poll() is None}
+        except Exception:
+            live = set()
 
         # 挂起中的账号要回答“多久才轮回来”：退避时刻表由守护落进 app_config
         # （2026-10-27 同一个表也用于守护重启续跑，两边看到的是同一个事实）。
@@ -1887,11 +1901,11 @@ def create_app(settings: Settings) -> FastAPI:
 
         try:
             rows = conn.execute(
-                "SELECT account_id, ts, event, detail FROM run_logs"
+                "SELECT account_id, ts, event, detail, code FROM run_logs"
                 " WHERE ts LIKE ? AND account_id > 0 AND event IN"
                 " ('auto-error','auto-revoke','auto-suspend','auto-done',"
                 "  'video-interrupt','chapter-fail',"
-                "  'chapter-start','video-done','session-end')"
+                "  'chapter-start','video-done','session-start','session-end')"
                 " ORDER BY id DESC", (day + "%",)).fetchall()
         except Exception:
             return {}
@@ -1899,27 +1913,37 @@ def create_app(settings: Settings) -> FastAPI:
         for r in rows:
             last.setdefault(int(r["account_id"]), r)
         out: dict[int, dict] = {}
+        now_hm = time.strftime("%H:%M")
         for aid, r in last.items():
+            if aid in live:
+                continue  # 会话还活着：不该有任何“异常”卡片
             ev, detail = str(r["event"]), str(r["detail"] or "")
-            if ev in ("chapter-start", "video-done", "auto-done"):
+            # 守护写的行自带机器码，优先用它；旧行/子进程写的行退回关键词。
+            raw_code = str(r["code"] or "")
+            if ev in ("chapter-start", "video-done", "auto-done", "session-start"):
                 continue  # 又跑起来了 / 今日已达成 → 不示警
             if ev == "session-end":
                 if not any(w in detail for w in ("打不开", "异常", "失败", "中断")):
                     continue  # 正常收工（达标/完成/无待学章节）
-                code = classify(detail)
-            elif ev in ("chapter-fail", "video-interrupt"):
-                code = "structure"
+                code = raw_code or classify(detail)
+            elif ev == "chapter-fail":
+                code = raw_code or "structure"
+            elif ev == "video-interrupt":
+                code = raw_code or "interrupt"
             else:
-                code = classify(detail)
+                code = raw_code or classify(detail)
             tier = tier_for(code)
             if tier == "achieved":
                 continue  # 达成不算异常，不占卡片
             if ev == "auto-error" and "硬停" in detail:
                 tier = "hard_stop"   # 守护已判今日不再自动 → 警示条标硬停
             label, hint = describe(code)
+            resume_at = resume.get(aid, "")
+            if resume_at and resume_at <= now_hm:
+                resume_at = ""   # 已过的时刻不再显示（否则卡片写着“约 09:16 自动重试”实际早过了）
             out[aid] = {"code": code, "tier": tier, "label": label, "hint": hint,
                         "detail": detail[:160], "ts": str(r["ts"]),
-                        "resume_at": resume.get(aid, ""),
+                        "resume_at": resume_at,
                         "actions": actions_for(code)}
         return out
 

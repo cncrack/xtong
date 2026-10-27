@@ -32,6 +32,10 @@ CATEGORIES: dict[str, tuple[str, str]] = {
     "login": ("登录失效", "会话文件过期或被平台踢下线，需要重新登录这个账号"),
     "risk": ("疑似风控", "出现验证码或异常访问提示，建议先停一段时间再试"),
     "structure": ("页面打不开", "任务页/下一节按钮异常，多为页面结构变化或 iframe 失效"),
+    # 2026-10-28（Q28）：`video-interrupt` 是 B3 自愈事件（播放中断→重载任务页续播），
+    # 与「页面打不开」不是一回事。以前面板把它硬归 structure，卡片就写着
+    # 「⚠ 页面打不开·已停手」而课其实在播——用户截图问的第 1 个账号报错就是它。
+    "interrupt": ("播放中断", "本节视频播放被打断（会话活着会自动重载续播）"),
     "network": ("网络异常", "连接超时或被重置，多为网络/代理波动"),
     "crash": ("会话异常中止", "浏览器或事件管道自保退出（不是平台拒访），重开会话即可恢复"),
     "window": ("学习时段外", "已超出每日学习窗口，明天窗口开启后再跑"),
@@ -47,7 +51,8 @@ TIERS: dict[str, str] = {
 }
 
 # 可自动恢复的类别：失败不判"今日收工"，退避后自动重试
-_SUSPENDABLE = frozenset({"structure", "network", "risk", "crash", "unknown"})
+_SUSPENDABLE = frozenset({"structure", "network", "risk", "crash", "unknown",
+                         "interrupt"})
 
 # 关键词表：按顺序匹配，先命中先返回（顺序即优先级）
 # 注意顺序：login 必须早于 structure（"打不开章节树…请重新登录"两句同时出现）；
@@ -112,6 +117,6 @@ def actions_for(code: str) -> list[str]:
     """
     if code == "login":
         return ["重新登录", "看日志"]
-    if code in ("structure", "network", "unknown", "crash"):
+    if code in ("structure", "network", "unknown", "crash", "interrupt"):
         return ["立即补跑", "看日志"]
     return ["看日志"]

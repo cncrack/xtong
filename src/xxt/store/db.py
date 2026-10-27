@@ -6,7 +6,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+# v9（2026-10-28）：run_logs 补 `code` 列——守护判定的机器码（core.diagnose 的类别）
+# 直接落库，面板不再拿人话文案二次归类（Q30：文案里带引号/重复词就会归错）。
+SCHEMA_VERSION = 9
 
 # v7：账号作业策略——ai（AI代答semi）/ owner（号主自理，默认）/ reference（面板出参考答案人工填）
 _ACCOUNT_COLS = {
@@ -102,7 +104,10 @@ CREATE TABLE IF NOT EXISTS run_logs (
     level  TEXT NOT NULL,
     event  TEXT NOT NULL,
     detail TEXT,
-    account_id INTEGER DEFAULT 1
+    account_id INTEGER DEFAULT 1,
+    -- 机器码（core.diagnose 的类别：structure/network/quota…）：由判定方写入，
+    -- 面板优先读它；NULL 表示这行没带码（旧行或子进程写的），退回按 detail 关键词归类。
+    code   TEXT
 );
 -- 配置变更审计（2026-10-27 用户要求“每次调整都要记录清楚，方便查阅和调整”）：
 -- 只要经过面板/CLI 改了配置，就落一行旧值→新值；面板「⚙ 设置」底部直接展示。
@@ -192,6 +197,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     lcols = {r["name"] for r in conn.execute("PRAGMA table_info(run_logs)")}
     if "account_id" not in lcols:
         _ensure_col(conn, "run_logs", "account_id", "INTEGER DEFAULT 1")
+    if "code" not in lcols:
+        _ensure_col(conn, "run_logs", "code", "TEXT")
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(account_profiles)")}
     for name, decl in (("name", "TEXT"),            # 姓名（默认取平台昵称，可手改）
                        ("student_no", "TEXT"),      # 学号（2026-10-26 用户要求）
@@ -218,8 +225,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
                     " SELECT question_hash, 0, answer, 'legacy', datetime('now')"
                     " FROM questions WHERE answer IS NOT NULL")
                 conn.execute("UPDATE questions SET answer = NULL WHERE answer IS NOT NULL")
+        # 版本号要走“覆盖”而不是 OR IGNORE：否则迁移后 meta 里永远停在上一个版本，
+        # 以后查问题会以为没迁过（2026-10-28 补 code 列时才发现这条一直是摆设）。
         conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
         # 单用户阶段固定使用 id=1 的默认账号

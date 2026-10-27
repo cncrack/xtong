@@ -11,7 +11,9 @@ from pathlib import Path
 from xxt.adapters.chaoxing.study import match_chapter_id
 from xxt.config import DEFAULTS
 from xxt.core.quota import (
+    budget_floor,
     parse_duration_seconds,
+    reached_locally,
     remaining_minutes,
     sample_daily_budget,
     sum_done_seconds,
@@ -36,6 +38,38 @@ class TestQuota(unittest.TestCase):
         quota = dict(DEFAULTS["quota"], daily_minutes=0, daily_tasks=0)
         minutes, tasks = sample_daily_budget(rng, quota)
         self.assertEqual((minutes, tasks), (0.0, 0))
+
+
+class TestQuotaFloor(unittest.TestCase):
+    """额度**下限**判定（2026-10-28 P1：守护侧的“达成闸门”）。
+
+    子会话每次启动都会重抽一次额度，所以“今天算不算学够”必须拿下限比；
+    否则子进程报一句“额度达标”、本地其实差很多时，守护会直接钉死今天。
+    """
+
+    def test_floor_uses_ratio_low_bound(self):
+        quota = {"daily_minutes": 240, "daily_tasks": 60, "float_ratio": [0.5, 1.0]}
+        self.assertEqual(budget_floor(quota), (120, 30))
+
+    def test_zero_means_unlimited(self):
+        self.assertEqual(budget_floor({"daily_minutes": 0, "daily_tasks": 0,
+                                       "float_ratio": [0.7, 1.0]}), (0, 0))
+        self.assertTrue(reached_locally({"daily_minutes": 0, "daily_tasks": 0},
+                                        0, 0))
+
+    def test_reached_by_tasks_or_minutes(self):
+        quota = {"daily_minutes": 100, "daily_tasks": 30, "float_ratio": [0.5, 1.0]}
+        # 下限：15 个 / 50 分钟（都是 base × 浮动下限）
+        self.assertEqual(budget_floor(quota), (50, 15))
+        self.assertFalse(reached_locally(quota, 14, 0))
+        self.assertTrue(reached_locally(quota, 15, 0))          # 任务数达标
+        self.assertTrue(reached_locally(quota, 0, 50 * 60))     # 时长达标
+        self.assertFalse(reached_locally(quota, 1, 49 * 60))
+
+    def test_bad_ratio_falls_back(self):
+        """老配置缺 float_ratio 时按 1.0 算，不能直接抛异常。"""
+        self.assertEqual(budget_floor({"daily_minutes": 10, "daily_tasks": 4}),
+                         (10, 4))
 
 
 class TestDurationQuota(unittest.TestCase):

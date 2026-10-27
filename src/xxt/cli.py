@@ -769,6 +769,54 @@ def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
     return "｜".join(parts[-2:]) if len(parts) >= 3 else "｜".join(parts)
 
 
+def _last_auto_start(conn, account_id: int, day: str) -> str:
+    """今日该账号最近一次“守护发起”的时刻（auto-try / auto-fire）→ 本轮起点。
+
+    2026-10-28（P1）：`_revive_if_dead` 以前拿“今天最后一条 session-end”当本轮原因，
+    根本分不清是哪一轮——上一轮打不开 → 复活白撞；上一轮额度达标 → 今天就钉死了。
+    """
+    try:
+        row = conn.execute(
+            "SELECT ts FROM run_logs WHERE account_id=?"
+            " AND event IN ('auto-try','auto-fire') AND ts LIKE ?"
+            " ORDER BY id DESC LIMIT 1", (account_id, day + "%")).fetchone()
+    except Exception:
+        return ""
+    return str(row["ts"]) if row else ""
+
+
+def _session_end_after(conn, account_id: int, since_iso: str):
+    """`since_iso` 之后该账号最后一条 `session-end`（ts + detail）；没有则 None。"""
+    try:
+        return conn.execute(
+            "SELECT ts, detail FROM run_logs WHERE account_id=? AND ts>=?"
+            " AND event='session-end' ORDER BY id DESC LIMIT 1",
+            (account_id, since_iso)).fetchone()
+    except Exception:
+        return None
+
+
+def _manual_stopped(conn, account_id: int, since_iso: str) -> bool:
+    """`since_iso` 之后有人手动停过、且此后**没有**再开新会话 → True。
+
+    Q29（2026-10-27 用户拍板）：手动停要能区分于“秒退”——但又不能把
+    “手动停一下 → 又手动 ▶ → 这次会话自己退出”也当成手动停（否则整天让位）。
+    """
+    try:
+        stop = conn.execute(
+            "SELECT ts FROM run_logs WHERE account_id=? AND event='session-stop'"
+            " AND ts>=? ORDER BY id DESC LIMIT 1",
+            (account_id, since_iso)).fetchone()
+        if not stop:
+            return False
+        again = conn.execute(
+            "SELECT 1 FROM run_logs WHERE account_id=? AND event='session-start'"
+            " AND ts>? LIMIT 1", (account_id, stop["ts"])).fetchone()
+    except Exception:
+        return False
+    return again is None
+
+
 def _current_activity(conn, account_id: int, since_iso: str) -> str:
     """回读“已开跑”时回答：现在到底在学哪一节、本次已播完几个。
 
@@ -869,19 +917,23 @@ def cmd_auto(args: argparse.Namespace) -> int:
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
     print("[auto] 守护启动。到点后经面板启动学习会话（面板可见、可 ■ 停止）。Ctrl+C 退出。")
 
-    def _ev(aid: int, event: str, detail: str, level: str = "INFO") -> None:
+    def _ev(aid: int, event: str, detail: str, level: str = "INFO",
+            code: str = "") -> None:
         """守护决策写入 run_logs → 面板「📜 日志」直接可见（aid=0 为系统级）。
 
         只写“状态变化”（首次算出计划 / 触发 / 跳过 / 退出），不随 30 秒巡检重复写，
         否则一天就刷出上千行把真事件顶掉（2026-10-26 用户要求“日志页能看到守护做了什么”）。
+        `code`：判定用的机器码（core.diagnose 的类别），面板优先读它——
+        以前面板拿人话文案二次归类，文案里带引号/重复词就归错（2026-10-28 Q30）。
         """
         try:
             conn = connect(s.db_path)
             with conn:
                 conn.execute(
-                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
-                    " VALUES(?,?,?,?,?)",
-                    (_time.strftime("%Y-%m-%dT%H:%M:%S"), level, event, detail, aid),
+                    "INSERT INTO run_logs(ts, level, event, detail, account_id, code)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (_time.strftime("%Y-%m-%dT%H:%M:%S"), level, event, detail, aid,
+                     code or None),
                 )
             conn.close()
         except Exception:  # 日志失败绝不影响调度
@@ -890,18 +942,45 @@ def cmd_auto(args: argparse.Namespace) -> int:
     err_once: set[tuple[int, str]] = set()  # 同账号同原因只记一次，避免重试刷屏
 
     def _stopped_since(account_id: int, iso_ts: str) -> bool:
-        """触发之后是否有人手动停过会话（用于区分“秒退”与“用户主动停”）。"""
+        """触发之后是否有人手动停过会话（语义见 `_manual_stopped`）。"""
         try:
             conn = connect(s.db_path)
             try:
-                row = conn.execute(
-                    "SELECT 1 FROM run_logs WHERE account_id=? AND event='session-stop'"
-                    " AND ts>=? LIMIT 1", (account_id, iso_ts)).fetchone()
+                return _manual_stopped(conn, account_id, iso_ts)
             finally:
                 conn.close()
-            return row is not None
         except Exception:
             return False
+
+    def _local_quota_reached(aid: int, day: str) -> tuple[bool, str]:
+        """今日本地进度是否已够额度**下限** → (达标?, 一句人话的现状)。
+
+        纯本地（run_logs + 账号额度覆盖），零平台访问。额度在上限内随机浮动、
+        且子会话**每次启动重抽一次**，所以“够不够”只能拿下限比（core.quota.budget_floor），
+        与子进程同一套口径。
+        """
+        from .core.accounts import effective_quota
+        from .core.quota import budget_floor, reached_locally, sum_done_seconds
+
+        try:
+            conn_q = connect(s.db_path)
+            try:
+                row_a = conn_q.execute(
+                    "SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
+                rows_v = conn_q.execute(
+                    "SELECT detail FROM run_logs WHERE event='video-done'"
+                    " AND account_id=? AND ts LIKE ?", (aid, day + "%")).fetchall()
+            finally:
+                conn_q.close()
+        except Exception:
+            return (True, "")   # 查不到就别改判：交给原来的“信子进程”逻辑
+        n_v = len(rows_v)
+        secs = sum_done_seconds(r["detail"] or "" for r in rows_v)
+        q = effective_quota(s, row_a) if row_a is not None else dict(s.quota)
+        m_lo, t_lo = budget_floor(q)
+        facts = (f"{n_v} 个 / {secs // 60} 分钟"
+                 f"（额度下限 {t_lo or '不限'} 个 / {m_lo or '不限'} 分钟）")
+        return (reached_locally(q, n_v, secs), facts)
 
     def _revive_if_dead(aid: int, day: str) -> bool:
         """已 `fired` 但会话已退出 → 判是否收回“今日已学”（返回是否收回）。
@@ -912,6 +991,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         """
         from .core.runmark import marker_process_alive
 
+        since = ""
         try:
             if marker_process_alive(s.data_dir, aid):
                 return False  # 还在跑（或刚结束还没来得及清理，下一轮再说）
@@ -928,13 +1008,27 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
                 videos_today = _cnt("video-done")
                 auto_tries_today = _cnt("auto-try")
-                row_end = conn_r.execute(
-                    "SELECT ts, detail FROM run_logs WHERE account_id=?"
-                    " AND event='session-end' AND ts LIKE ? ORDER BY id DESC LIMIT 1",
-                    (aid, day + "%")).fetchone()
+                # P1（2026-10-28）：只有“本轮发起之后”的 session-end 才是这一轮的停止原因
+                # （旧实现整天取最后一条，会把上一轮的原因当成本轮）。
+                since = _last_auto_start(conn_r, aid, day) or (day + "T00:00:00")
+                row_end = _session_end_after(conn_r, aid, since)
             finally:
                 conn_r.close()
         except Exception:
+            return False
+        # Q29（2026-10-27 用户拍板）：用户手动停是最高优先级——不算失败、不占次数、
+        # 今日让位（明天按定时自动恢复）。2026-10-27 18:21:17 手动停、18:21:40 就被
+        # 写成「硬停（今日已试 4/4 轮）」，就是漏了这一条：回读分支挡住了，这里没挡。
+        if since and _stopped_since(aid, since):
+            fired.discard(aid)
+            skipped.add(aid)
+            retry_after.pop(aid, None)
+            _persist_retry_after(s.db_path, day, retry_after)
+            if aid not in noted:
+                noted.add(aid)
+                _ev(aid, "auto-skip",
+                    "检测到手动停止：本次不算失败、不设退避，今日不再自动发起"
+                    "（明日按定时恢复；要现在跑可点卡片 ▶）")
             return False
         from .core.diagnose import classify, describe, is_suspendable, tier_for
 
@@ -943,14 +1037,29 @@ def cmd_auto(args: argparse.Namespace) -> int:
         code = classify(why or "会话已退出且无停止说明")
         label, _hint = describe(code)
         tier = tier_for(code)
-        if tier == "achieved":
+        # P1（2026-10-28）：达成不能只信子进程一句话。子进程报「额度达标」时，
+        # 若本地今日总量连额度**下限**都没到，说明这轮是提前停的（额度每次启动重抽），
+        # 以本地为准按未达标补跑——否则用户把额度调大也看不出任何变化。
+        quota_short = False
+        if tier == "achieved" and code == "quota":
+            ok_local, facts = _local_quota_reached(aid, day)
+            if not ok_local:
+                quota_short = True
+                label = "子进程报额度达标、本地未达下限"
+                if aid not in noted:
+                    noted.add(aid)
+                    _ev(aid, "auto-suspend",
+                        f"子进程报「今日目标达成」，但本地今日只播 {facts}，未到额度下限"
+                        " → 以本地为准，按未达标继续补跑", "WARNING", code="quota")
+        if tier == "achieved" and not quota_short:
             # 达成（额度/任务数达标、本地无待学）→ 今天真的不用再跑。
             # 注意：fired 必须**保留**——2026-10-27 实测写错成 discard，
             # 结果 #2 刚记完“已达成”又立刻被重新发起（第 3/3 次），白跑一趟。
             if aid not in noted:
                 noted.add(aid)
                 _ev(aid, "auto-done",
-                    f"今日目标已达成（{label}）：{why} → 今天不再自动发起", "INFO")
+                    f"今日目标已达成（{label}）：{why} → 今天不再自动发起", "INFO",
+                    code=code)
             return False
         if tier == "needs_you":
             # 登录失效：自动重试只会白撞，停下并给「重新登录」按钮（重启守护可重置）
@@ -960,9 +1069,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
             _ev(aid, "auto-suspend",
                 f"挂起·等你操作（{label}）：上次发起后会话已退出"
                 " → 点账号卡片「重新登录」，登录后手动 ▶ 或重启守护即可补跑",
-                "WARNING")
+                "WARNING", code=code)
             return False
-        if tier == "hard_stop" and videos_today > 0:
+        if tier == "hard_stop" and videos_today > 0 and not quota_short:
             # 今天已经学过一些，只是时段到/额度到 → 正常收工，不再折腾
             return False
         # 可恢复的失败：次数用尽也先转长退避（硬上限 hard_tries_cap 才真硬停）；
@@ -970,13 +1079,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
         revive, wait_m = _revive_plan(
             _time.time(), row_end["ts"] if row_end else "", videos_today,
             n_aid, auto_tries_today, hard_tries_cap or max_tries, retry_minutes,
-            force=is_suspendable(code))
+            force=is_suspendable(code) or quota_short)
         if not revive:
-            if is_suspendable(code) and aid not in noted:
+            if (is_suspendable(code) or quota_short) and aid not in noted:
                 noted.add(aid)
                 _ev(aid, "auto-error",
                     f"硬停（{label}）：今日已试 {n_aid}/{hard_tries_cap} 轮仍未成功，"
-                    "不再自动重试；可点账号卡片警示条的「立即补跑」", "WARNING")
+                    "不再自动重试；可点账号卡片警示条的「立即补跑」", "WARNING",
+                    code=code)
             return False
         fired.discard(aid)
         planned.pop(aid, None)
@@ -998,7 +1108,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
             + " → "
             + (f"{wait_m} 分钟后自动恢复（约 {retry_after[aid]}）"
                if wait_m else "下一轮即恢复"),
-            "WARNING")
+            "WARNING", code=code)
         return True
 
     # 重启续跑：今日计划与「已确认开跑」从库里恢复——否则守护一重启就重新随机时刻，
@@ -1107,6 +1217,16 @@ def cmd_auto(args: argparse.Namespace) -> int:
                                 + (f"｜{act}" if act else ""))
                         continue  # 会话真在跑 → 今日已学
                     if _stopped_since(aid_p, iso_p):
+                        # Q29（2026-10-27 用户拍板）：手动停 → 不占次数、不设退避、今日让位。
+                        # 以前只 `continue`，fired 还留着 → 下一轮被 `_revive_if_dead`
+                        # 当“异常退出”又复活一次（18:21 那 23 秒的错账就是这么来的）。
+                        fired.discard(aid_p)
+                        skipped.add(aid_p)
+                        retry_after.pop(aid_p, None)
+                        _persist_retry_after(s.db_path, today, retry_after)
+                        _ev(aid_p, "auto-skip",
+                            "检测到手动停止：本次不算失败、不设退避，今日不再自动发起"
+                            "（明日按定时恢复；要现在跑可点卡片 ▶）")
                         continue  # 手动停的，不算异常
                     n_p = tries.get(aid_p, 1)
                     mins_p = max(1, int((_time.monotonic() - ts_p) // 60))
@@ -1137,7 +1257,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         fired.add(aid_p)   # 达成：今天真的不用再跑
                         _ev(aid_p, "auto-done",
                             f"今日目标达成（{label}）{tail} → 今天不再自动发起；"
-                            "要再刷可在账号卡片点 ▶")
+                            "要再刷可在账号卡片点 ▶", code=code)
                         continue
                     if tier == "needs_you":
                         # 等人工登录：自动重试只会白撞（不耗次数，重启守护可重置）
@@ -1145,7 +1265,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         _ev(aid_p, "auto-suspend",
                             f"挂起·等你操作（{label}）{head}{tail} → "
                             "点账号卡片「重新登录」，登录后手动 ▶ 或重启守护即可补跑",
-                            "WARNING")
+                            "WARNING", code=code)
                         continue
                     action, wait_p = _failure_action(
                         code, n_p, max_tries, suspend_n.get(aid_p, 0),
@@ -1162,19 +1282,19 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         _ev(aid_p, "auto-suspend",
                             f"挂起（{label}）{head}{tail}，{wait_p} 分钟后自动恢复"
                             f"（约 {retry_after[aid_p]}）；今日挂起 "
-                            f"{suspend_n[aid_p]}/{hard_tries_cap} 次", "WARNING")
+                            f"{suspend_n[aid_p]}/{hard_tries_cap} 次", "WARNING", code=code)
                     else:
                         fired.add(aid_p)  # 硬停：今日不再自动发起，面板留「立即补跑」
                         if code == "window":
                             _ev(aid_p, "auto-error",
                                 f"硬停（{label}）{head}{tail}：今日学习时段已过，"
                                 "明天窗口开启后自动恢复；要现在跑可点「立即补跑」",
-                                "WARNING")
+                                "WARNING", code=code)
                         else:
                             _ev(aid_p, "auto-error",
                                 f"硬停（{label}）{head}{tail}：短退避与长退避都已用尽"
                                 "（硬上限见设置页），不再自动重试；"
-                                "可点账号卡片警示条的「立即补跑」", "WARNING")
+                                "可点账号卡片警示条的「立即补跑」", "WARNING", code=code)
             new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
