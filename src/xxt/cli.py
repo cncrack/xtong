@@ -647,6 +647,9 @@ def _replay_auto_events(events) -> tuple[bool, int]:
         旧版这条也写成 `auto-error`，导致用户 2026-10-27 看到日志**以为是新一次失败**。
       - `auto-suspend`：挂起（打不开/网络/风控）→ 退避后自动恢复，语义同撤回。
       - `auto-done`：今日目标达成（额度/任务数达标、无待学章节）→ 今天不再自动发起。
+      - `auto-hardstop`：硬停（次数/退避都用尽，或时段已过）→ 今天不再自动发起。
+        2026-10-28（B）从 `auto-error` 拆出：硬停借用 `auto-error` 时，回放只认
+        “5 分钟内紧跟 auto-fire”，秒退型硬停重启后又撞一次平台。
     老数据没有 `auto-try`，用“`auto-fire` 后 5 分钟内紧跟 `auto-error`”识别为失败。
     """
     events = list(events)
@@ -661,8 +664,9 @@ def _replay_auto_events(events) -> tuple[bool, int]:
             ok, last_fire = True, _epoch(ts)
         elif ev in ("auto-revoke", "auto-suspend"):
             ok, last_fire = False, 0.0  # 撤回/挂起：无论隔多久都算今日未学
-        elif ev == "auto-done":
-            ok, last_fire = True, _epoch(ts)  # 达成：今天真的不用再跑
+        elif ev in ("auto-done", "auto-hardstop"):
+            # 达成 / 硬停：今天都真的不用再跑（重启后也不许再撞一次）
+            ok, last_fire = True, _epoch(ts)
         elif ev == "auto-error" and last_fire and _epoch(ts) - last_fire <= 300:
             ok, last_fire = False, 0.0  # 秒退（历史数据兼容）：这条 auto-fire 不算成功
     return ok, tries
@@ -895,7 +899,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
     from .core import accounts as acc
     from .core.accounts import effective_pace, is_valid
-    from .core.pace import within_daily_window
+    from .core.pace import hm_waiting, within_daily_window
     from .core.rotation import pick_courses
     from .store.db import connect
 
@@ -1083,7 +1087,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         if not revive:
             if (is_suspendable(code) or quota_short) and aid not in noted:
                 noted.add(aid)
-                _ev(aid, "auto-error",
+                _ev(aid, "auto-hardstop",
                     f"硬停（{label}）：今日已试 {n_aid}/{hard_tries_cap} 轮仍未成功，"
                     "不再自动重试；可点账号卡片警示条的「立即补跑」", "WARNING",
                     code=code)
@@ -1131,7 +1135,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 "SELECT account_id, ts, event FROM run_logs WHERE ts LIKE ?"
                 " AND account_id > 0"
                 " AND event IN ('auto-try','auto-fire','auto-error','auto-revoke',"
-                "               'auto-suspend','auto-done') ORDER BY id",
+                "               'auto-suspend','auto-done','auto-hardstop') ORDER BY id",
                 (plan_date + "%",)).fetchall()
             by_aid: dict[int, list[tuple[str, str]]] = {}
             for r in ev_rows:
@@ -1149,8 +1153,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
             # 账号会被立刻重新发起，白撞一次）；已过时刻的条目直接丢弃。
             _ra = _load_retry_after(s.db_path, plan_date)
             _now_hm = _time.strftime("%H:%M")
-            retry_after.update({k: v for k, v in _ra.items() if v > _now_hm})
-            for k in [k for k, v in _ra.items() if not v or v <= _now_hm]:
+            retry_after.update({k: v for k, v in _ra.items()
+                                if hm_waiting(_now_hm, v)})
+            for k in [k for k, v in _ra.items() if not hm_waiting(_now_hm, v)]:
                 _ra.pop(k, None)
             if set(_ra) != set(retry_after):
                 _persist_retry_after(s.db_path, plan_date, retry_after)
@@ -1286,12 +1291,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     else:
                         fired.add(aid_p)  # 硬停：今日不再自动发起，面板留「立即补跑」
                         if code == "window":
-                            _ev(aid_p, "auto-error",
+                            _ev(aid_p, "auto-hardstop",
                                 f"硬停（{label}）{head}{tail}：今日学习时段已过，"
                                 "明天窗口开启后自动恢复；要现在跑可点「立即补跑」",
                                 "WARNING", code=code)
                         else:
-                            _ev(aid_p, "auto-error",
+                            _ev(aid_p, "auto-hardstop",
                                 f"硬停（{label}）{head}{tail}：短退避与长退避都已用尽"
                                 "（硬上限见设置页），不再自动重试；"
                                 "可点账号卡片警示条的「立即补跑」", "WARNING", code=code)
@@ -1347,8 +1352,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     new_plan.append(f"#{aid} {row['label']} {planned[aid]}")
                 now_hm = _time.strftime("%H:%M")
                 if aid in retry_after:
-                    if now_hm < retry_after[aid]:
-                        continue  # 上一轮失败，退避中
+                    if hm_waiting(now_hm, retry_after[aid]):
+                        continue  # 上一轮失败，退避中（环形比较，跨零点安全）
                     retry_after.pop(aid, None)
                     _persist_retry_after(s.db_path, today, retry_after)
                 if now_hm < planned[aid]:

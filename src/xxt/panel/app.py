@@ -855,7 +855,7 @@ const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-
   'chapter-fail':'打不开','session-start':'会话开始','session-end':'会话结束',
   'session-stop':'手动停止','auto-fire':'已开跑','auto-try':'发起尝试',
   'auto-revoke':'撤回今日已学','auto-suspend':'已挂起','auto-done':'今日已达成',
-  'auto-error':'硬停/失败','auto-skip':'今日跳过','auto-plan':'今日计划',
+  'auto-error':'硬停/失败','auto-hardstop':'已硬停','auto-skip':'今日跳过','auto-plan':'今日计划',
   'auto-start':'守护启动','auto-stop':'守护停止',
   'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
   'auto-exit':'守护异常退出','diag-visited-fix':'数据修复'};
@@ -873,6 +873,7 @@ function renderLogs(n){if(n)LOGN=n;
          l.event==='auto-try')?'ev-info':
         (l.event==='video-interrupt'||l.event==='chapter-fail'||l.event==='session-stop'||
          l.event==='auto-skip'||l.event==='auto-stop'||l.event==='auto-error'||
+         l.event==='auto-hardstop'||
          l.event==='auto-revoke'||l.event==='auto-suspend'||l.event==='auto-plan-stale'||
          l.event==='auto-exit'||
          l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
@@ -1867,7 +1868,7 @@ def create_app(settings: Settings) -> FastAPI:
         - 取该账号今日最后一条章节/会话/守护事件；
         - 已经又播完一节、正在学、或已达成（auto-done）→ 不显示；
         - 最后是 session-end：只有含「打不开/异常/失败/中断」才警示（正常达标收工不打扰）；
-        - 其余失败类交给 `core.diagnose` 归类；auto-error 带「硬停」按硬停展示。
+        - 其余失败类交给 `core.diagnose` 归类；`auto-hardstop` 直接按硬停展示。
 
         2026-10-28（Q28）两条修正：
         ① 加存活总闸。以前没有这道门，一次 `video-interrupt`（B3 自愈事件）就够把
@@ -1875,6 +1876,7 @@ def create_app(settings: Settings) -> FastAPI:
         ② `video-interrupt` 不再硬归 `structure`，改用 `interrupt`（播放中断，会自动续播）。
         """
         from ..core.diagnose import actions_for, classify, describe, tier_for
+        from ..core.pace import hm_waiting
 
         # 存活总闸：标记文件覆盖“面板重启后仍在跑”的会话，_JOBS 覆盖刚启动的。
         try:
@@ -1903,7 +1905,7 @@ def create_app(settings: Settings) -> FastAPI:
             rows = conn.execute(
                 "SELECT account_id, ts, event, detail, code FROM run_logs"
                 " WHERE ts LIKE ? AND account_id > 0 AND event IN"
-                " ('auto-error','auto-revoke','auto-suspend','auto-done',"
+                " ('auto-error','auto-hardstop','auto-revoke','auto-suspend','auto-done',"
                 "  'video-interrupt','chapter-fail',"
                 "  'chapter-start','video-done','session-start','session-end')"
                 " ORDER BY id DESC", (day + "%",)).fetchall()
@@ -1935,12 +1937,12 @@ def create_app(settings: Settings) -> FastAPI:
             tier = tier_for(code)
             if tier == "achieved":
                 continue  # 达成不算异常，不占卡片
-            if ev == "auto-error" and "硬停" in detail:
-                tier = "hard_stop"   # 守护已判今日不再自动 → 警示条标硬停
+            if ev == "auto-hardstop" or (ev == "auto-error" and "硬停" in detail):
+                tier = "hard_stop"   # 守护已判今日不再自动 → 警示条标硬停（旧行仍兼容文案）
             label, hint = describe(code)
             resume_at = resume.get(aid, "")
-            if resume_at and resume_at <= now_hm:
-                resume_at = ""   # 已过的时刻不再显示（否则卡片写着“约 09:16 自动重试”实际早过了）
+            if resume_at and not hm_waiting(now_hm, resume_at):
+                resume_at = ""   # 已过的时刻不再显示（环形比较：23:50 时 00:20 仍算未到）
             out[aid] = {"code": code, "tier": tier, "label": label, "hint": hint,
                         "detail": detail[:160], "ts": str(r["ts"]),
                         "resume_at": resume_at,

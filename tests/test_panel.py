@@ -213,7 +213,6 @@ class TestPanel(unittest.TestCase):
         # 守护落库的退避时刻表 → 警示条要能回答“什么时候自动重试”
         import time as _t
 
-        _now = _t.strftime("%H:%M")
         _later = _t.strftime("%H:%M", _t.localtime(_t.time() + 3600))
         conn = connect(self.settings.db_path)
         conn.execute("INSERT INTO app_config(key, value) VALUES('auto.retry_after', ?)",
@@ -225,8 +224,9 @@ class TestPanel(unittest.TestCase):
         self.assertEqual(al["label"], "页面打不开")
         self.assertEqual(al["tier"], "suspended")
         self.assertIn("立即补跑", al["actions"])
-        # 跨零点后 _later 会变成“已过的时刻” → 服务端不显示（见 Q28 旁的 resume_at 修正）
-        self.assertEqual(al["resume_at"], _later if _later > _now else "")
+        # 2026-10-28（A）：改成环形比较后，跨零点（如 23:50 → 00:30）也算“未到”，
+        # 不能再用字符串比较把未来的时刻误清成空。
+        self.assertEqual(al["resume_at"], _later)
 
     def test_alert_clears_after_progress_and_flags_hard_stop(self):
         self._seed_account_and_event("chapter-fail", "测试课｜1.2｜点了 2 次仍未进任务页")
@@ -238,6 +238,17 @@ class TestPanel(unittest.TestCase):
         # 硬停：守护已判今日不再自动 → 警示条要标硬停（仍然给「立即补跑」入口）
         self._seed_account_and_event("auto-error", "硬停（页面打不开）：短退避与长退避都已用尽")
         al = self.client.get("/api/accounts").json()["accounts"][0]["alert"]
+        self.assertEqual(al["tier"], "hard_stop")
+        self.assertIn("立即补跑", al["actions"])
+
+    def test_hardstop_event_marks_card(self):
+        """B（2026-10-28）：硬停改成独立事件 `auto-hardstop`，卡片照样标硬停 + 留补跑入口。
+
+        以前硬停写的是 `auto-error`，面板靠“文案里有「硬停」”猜档位——正是 Q30 的老毛病。
+        """
+        self._seed_account_and_event(
+            "auto-hardstop", "硬停（页面打不开）：短退避与长退避都已用尽")
+        al = self._alert()
         self.assertEqual(al["tier"], "hard_stop")
         self.assertIn("立即补跑", al["actions"])
 

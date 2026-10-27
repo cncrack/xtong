@@ -41,6 +41,30 @@ def within_daily_window(pace: dict[str, Any], now: datetime | None = None) -> bo
     return t >= start or t <= end  # 跨午夜
 
 
+def _hhmm_minutes(hm: str) -> int:
+    """'HH:MM' → 当天第几分钟；解析不了返回 -1。"""
+    try:
+        h, m = str(hm).strip().split(":")
+        return int(h) * 60 + int(m)
+    except (TypeError, ValueError):
+        return -1
+
+
+def hm_waiting(now_hm: str, target_hm: str, *, span_hours: int = 12) -> bool:
+    """`target_hm` 是否尚未到（环形比较，跨午夜安全）。
+
+    2026-10-28（A）：退避时刻以前直接比字符串（`now_hm < target`），23:50 退避到
+    00:20 时 `"23:51" < "00:20"` 为假 → 判“已过”立刻重试，夜里退避形同虚设。
+    改为按“距现在多少分钟”环形算：`0 < gap <= span_hours*60` 视为还没到。
+    退避封顶 8 小时 < 12 小时，所以不会把“真的已过”误判成“还没到”。
+    """
+    now, target = _hhmm_minutes(now_hm), _hhmm_minutes(target_hm)
+    if now < 0 or target < 0:
+        return False  # 值坏了当已过：宁可重试，也不永久卡住
+    gap = (target - now) % 1440
+    return 0 < gap <= span_hours * 60
+
+
 class FocusTimer:
     """专注会话模型：连续学习 focus_minutes 区间随机时长后，休息 rest_minutes 区间随机。"""
 

@@ -108,6 +108,29 @@ class TestReplayAutoEvents(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(tries, 1)
 
+    def test_auto_hardstop_blocks_restart(self):
+        """`auto-hardstop` = 硬停（次数/退避用尽）→ 重启守护不能再撞一次。
+
+        2026-10-28（B）：硬停以前借用 `auto-error`，而回放只认“5 分钟内紧跟
+        auto-fire”才算失败——秒退型硬停重启后会被重新发起。
+        """
+        ok, tries = _replay_auto_events([
+            (T.format("09:16:00"), "auto-try"),
+            (T.format("09:16:30"), "auto-fire"),
+            (T.format("09:16:50"), "auto-hardstop"),   # 秒退型硬停（<300 秒）
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(tries, 1)
+
+    def test_hardstop_then_manual_try_starts_a_new_round(self):
+        # 硬停后用户手动又开一轮：以最后一轮为准（不能被旧的硬停锁住）
+        ok, _tries = _replay_auto_events([
+            (T.format("09:16:00"), "auto-try"),
+            (T.format("09:16:50"), "auto-hardstop"),
+            (T.format("15:00:00"), "auto-try"),
+        ])
+        self.assertFalse(ok)
+
     def test_done_then_try_starts_a_new_round(self):
         # 达成后又手动开了一轮：以最后一轮为准（不能被旧的 auto-done 锁住）
         ok, _tries = _replay_auto_events([

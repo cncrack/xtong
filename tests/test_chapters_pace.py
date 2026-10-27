@@ -9,7 +9,7 @@ from pathlib import Path
 
 from xxt.adapters.chaoxing.chapters import parse_chapter_tree
 from xxt.config import DEFAULTS
-from xxt.core.pace import sample_gap, sample_speed, within_daily_window
+from xxt.core.pace import hm_waiting, sample_gap, sample_speed, within_daily_window
 
 FIXTURE = Path(__file__).parent / "fixtures" / "chapter_tree_sample.html"
 
@@ -62,6 +62,39 @@ class TestPace(unittest.TestCase):
         self.assertTrue(within_daily_window(cross, datetime(2026, 1, 1, 23, 0)))
         self.assertTrue(within_daily_window(cross, datetime(2026, 1, 1, 5, 0)))
         self.assertFalse(within_daily_window(cross, datetime(2026, 1, 1, 12, 0)))
+
+
+class TestHmWaiting(unittest.TestCase):
+    """退避时刻是否未到（2026-10-28 A：跨零点不能再用字符串比较）。"""
+
+    def test_same_day_future_waits(self):
+        self.assertTrue(hm_waiting("09:00", "09:16"))
+
+    def test_same_day_passed_runs(self):
+        self.assertFalse(hm_waiting("09:20", "09:16"))
+
+    def test_exact_moment_runs(self):
+        # 到点即可跑（旧语义：`now < target` 为假 → 不再等）
+        self.assertFalse(hm_waiting("09:16", "09:16"))
+
+    def test_across_midnight_waits(self):
+        # 23:50 挂起 30 分钟 → 00:20；字符串比较会误判“已过”立刻重试
+        self.assertTrue(hm_waiting("23:51", "00:20"))
+        self.assertTrue(hm_waiting("23:59", "00:05"))
+
+    def test_across_midnight_passed_runs(self):
+        self.assertFalse(hm_waiting("00:25", "00:20"))
+        self.assertFalse(hm_waiting("08:00", "00:20"))
+
+    def test_twelve_hour_boundary(self):
+        # 退避封顶 8 小时 < 12 小时，所以环形判据不会把真的已过当成未到
+        self.assertTrue(hm_waiting("10:00", "22:00"))
+        self.assertFalse(hm_waiting("10:00", "22:01"))
+
+    def test_broken_value_runs(self):
+        # 值坏了当已过：宁可重试，也不能永久卡在退避里
+        self.assertFalse(hm_waiting("09:00", ""))
+        self.assertFalse(hm_waiting("09:00", "abc"))
 
 
 if __name__ == "__main__":
