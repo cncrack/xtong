@@ -580,6 +580,61 @@ def _hhmm_in(minutes: int) -> str:
     return _t.strftime("%H:%M", _t.localtime(_t.time() + minutes * 60))
 
 
+def _load_retry_after(db_path, day: str) -> dict[int, str]:
+    """读回当日的退避时刻表（守护重启后不能把“正在退避”忘掉）。
+
+    2026-10-27 实测隐患：退避只存内存，重启即清零 → 刚失败的账号被立刻重新发起，
+    既违反“随机退避”的设计，也平白多一次访问（风控第一）。跨日自动作废。
+    """
+    import json as _json
+
+    from .store.db import connect
+
+    try:
+        conn = connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key='auto.retry_after'").fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return {}
+        info = _json.loads(row["value"])
+        if info.get("date") != day:
+            return {}
+        return {int(k): v for k, v in (info.get("times") or {}).items() if v}
+    except Exception:
+        return {}
+
+
+def _persist_retry_after(db_path, day: str, mapping: dict[int, str]) -> None:
+    """把退避时刻表写进 app_config（同 `auto.plan` 的做法），供重启续跑与面板展示。"""
+    import json as _json
+
+    from .store.db import connect
+
+    live = {aid: hm for aid, hm in mapping.items() if hm}
+    try:
+        conn = connect(db_path)
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO app_config(key, value) VALUES('auto.retry_after', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (_json.dumps({"date": day, "times": {str(k): v for k, v in live.items()},
+                                  "updated": _strftime_now()},),))
+        finally:
+            conn.close()
+    except Exception:
+        pass   # 退避落库失败只影响重启续跑，绝不影响调度本体
+
+
+def _strftime_now(fmt: str = "%Y-%m-%dT%H:%M:%S") -> str:
+    import time as _t
+
+    return _t.strftime(fmt, _t.localtime())
+
+
 def _replay_auto_events(events) -> tuple[bool, int]:
     """回放某账号当天的 auto-* 事件 → （今日是否已确认开跑, 今日触发尝试次数）。
 
@@ -590,6 +645,8 @@ def _replay_auto_events(events) -> tuple[bool, int]:
       - `auto-error`：该轮失败（可退避后重试，直到尝试次数上限）。
       - `auto-revoke`：撤回“今日已学”（会话早退、今日 0 个视频）——
         旧版这条也写成 `auto-error`，导致用户 2026-10-27 看到日志**以为是新一次失败**。
+      - `auto-suspend`：挂起（打不开/网络/风控）→ 退避后自动恢复，语义同撤回。
+      - `auto-done`：今日目标达成（额度/任务数达标、无待学章节）→ 今天不再自动发起。
     老数据没有 `auto-try`，用“`auto-fire` 后 5 分钟内紧跟 `auto-error`”识别为失败。
     """
     events = list(events)
@@ -602,19 +659,23 @@ def _replay_auto_events(events) -> tuple[bool, int]:
             ok = False  # 新一轮尝试开始，上一轮的成败不再算今日已跑
         elif ev == "auto-fire":
             ok, last_fire = True, _epoch(ts)
-        elif ev == "auto-revoke":
-            ok, last_fire = False, 0.0  # 明确撤回：无论隔多久都算今日未学
+        elif ev in ("auto-revoke", "auto-suspend"):
+            ok, last_fire = False, 0.0  # 撤回/挂起：无论隔多久都算今日未学
+        elif ev == "auto-done":
+            ok, last_fire = True, _epoch(ts)  # 达成：今天真的不用再跑
         elif ev == "auto-error" and last_fire and _epoch(ts) - last_fire <= 300:
             ok, last_fire = False, 0.0  # 秒退（历史数据兼容）：这条 auto-fire 不算成功
     return ok, tries
 
 
-def _auto_limits(raw: dict | None) -> tuple[int, int, int, int, int]:
-    """读 `[auto]` 配置 → (次数上限, 退避基数分钟, 回读等待秒, 退避抖动%, 退避封顶分钟)。
+def _auto_limits(raw: dict | None) -> tuple[int, int, int, int, int, int]:
+    """读 `[auto]` 配置 → (次数上限, 退避基数, 回读秒, 抖动%, 退避封顶, 单日硬上限)。
 
     2026-10-27 用户要求：别把次数写死在代码里。默认 2 次 / 15 分钟 / 25 秒；
     `max_tries = 0` 表示不限（其余项仍受上下限约束，防手滑写坏）。
     同日追加：退避不能是固定节奏（固定间隔最像机器人），加抖动系数与封顶。
+    同日追加（Q19）：次数用尽**不等于今天收工**——可恢复的失败转“长退避挂起”
+    继续努力，直到 `hard_tries_cap`（单日绝对发起上限）才硬停。
     """
     cfg = raw or {}
 
@@ -629,7 +690,8 @@ def _auto_limits(raw: dict | None) -> tuple[int, int, int, int, int]:
             _int("retry_minutes", 15, 1, 240),
             _int("confirm_seconds", 25, 15, 300),
             _int("retry_jitter_pct", 40, 0, 100),
-            _int("retry_max_minutes", 90, 15, 480))
+            _int("retry_max_minutes", 90, 15, 480),
+            _int("hard_tries_cap", 4, 1, 20))
 
 
 def _backoff_minutes(base: int, n_fail: int, jitter_pct: int, cap: int) -> int:
@@ -645,6 +707,47 @@ def _backoff_minutes(base: int, n_fail: int, jitter_pct: int, cap: int) -> int:
     if jitter_pct > 0:
         wait *= 1 + _r.uniform(-jitter_pct, jitter_pct) / 100.0
     return max(1, min(cap or 480, int(round(wait))))
+
+
+def _try_label(n_try: int, max_tries: int, hard_cap: int) -> str:
+    """发起次数的说法（2026-10-27 实测：“第 4/3 次发起”分母比序号小，看着像 bug）。
+
+    短退避内说「第 n/max 次」；超出后不能再写 `/max`，改说“走长退避，硬上限 N 轮”，
+    与 Q19 的分档一致（额度未完成时次数用尽不等于今日收工）。
+    """
+    if not max_tries or n_try <= max_tries:
+        return f"第 {n_try}/{max_tries or '不限'} 次发起"
+    return (f"第 {n_try} 次发起（短退避 {max_tries} 次已用尽，"
+            f"转长退避继续，硬上限 {hard_cap} 轮）")
+
+
+def _failure_action(code: str, n_try: int, max_tries: int, n_suspend: int,
+                    hard_cap: int, retry_minutes: int,
+                    jitter_pct: int, max_minutes: int) -> tuple[str, int]:
+    """失败归类 → (处置, 等待分钟)。纯函数，便于单测。
+
+    处置只有两种：
+      - `suspend`：挂起，退避后自动恢复（可恢复的失败不判“今天收工”）；
+      - `hard_stop`：今日不再自动发起（达成 / 需人工 / 时段外 / 硬上限用尽）。
+    用户 2026-10-27（Q19）：额度与任务数是最高优先级，高于重试次数——
+      ① 次数未到 `max_tries`：短退避（指数 + 抖动）；
+      ② 次数已到但挂起次数未到 `hard_tries_cap`：长退避（按封顶间隔），
+         继续在当天窗口里找机会，而不是判“今天没戏”；
+      ③ 两者都用尽：硬停，面板留「立即补跑」入口。
+    """
+    from .core.diagnose import is_suspendable
+
+    if code in ("quota", "done", "login", "window"):
+        return ("hard_stop", 0)   # 达成 / 需人工 / 时段外：自动重试没意义
+    if not is_suspendable(code):
+        return ("hard_stop", 0)
+    if not max_tries or n_try < max_tries:
+        return ("suspend",
+                _backoff_minutes(retry_minutes, n_try, jitter_pct, max_minutes))
+    if n_suspend < max(1, hard_cap):
+        return ("suspend",
+                _backoff_minutes(max_minutes, 1, jitter_pct, max_minutes))
+    return ("hard_stop", 0)
 
 
 def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
@@ -666,9 +769,42 @@ def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
     return "｜".join(parts[-2:]) if len(parts) >= 3 else "｜".join(parts)
 
 
+def _current_activity(conn, account_id: int, since_iso: str) -> str:
+    """回读“已开跑”时回答：现在到底在学哪一节、本次已播完几个。
+
+    2026-10-27 用户反馈：`auto-fire 已确认开跑（回读会话进程存活）` 看了不明白，
+    想知道正在跑哪个章节任务。章节事件由 `astudy._rec()` 写入：
+    `chapter-start`（开始）/ `video-done`（完成）/ `video-interrupt`（中断）/
+    `chapter-fail`（打不开）。detail 统一为 `课程｜章节｜其它`。
+    """
+    try:
+        row = conn.execute(
+            "SELECT event, detail FROM run_logs WHERE account_id=? AND ts>=?"
+            " AND event IN ('chapter-start','video-done','video-interrupt','chapter-fail')"
+            " ORDER BY id DESC LIMIT 1", (account_id, since_iso)).fetchone()
+        n_done = conn.execute(
+            "SELECT COUNT(*) n FROM run_logs WHERE account_id=? AND ts>=?"
+            " AND event='video-done'", (account_id, since_iso)).fetchone()["n"]
+    except Exception:
+        return ""
+    tail = f"（本次已播 {n_done} 个）" if n_done else ""
+    if not row:
+        return "会话已起，尚未开始播" if n_done == 0 else tail.strip("（）")
+    parts = [p.strip() for p in str(row["detail"] or "").split("｜") if p.strip()]
+    chapter = parts[1] if len(parts) >= 2 else ""
+    label = {"chapter-start": "正在学", "video-done": "刚播完",
+             "video-interrupt": "播放中断", "chapter-fail": "打不开"}.get(row["event"], "")
+    if chapter and label:
+        extra = ""
+        if row["event"] == "video-interrupt" and len(parts) >= 3:
+            extra = f"（{parts[2]}）"
+        return f"{label}：{chapter}{extra}{tail}"
+    return tail.strip("（）")
+
+
 def _revive_plan(now_epoch: float, end_ts: str, videos_today: int, tries_today: int,
                  auto_tries_today: int, max_tries: int,
-                 retry_minutes: int) -> tuple[bool, int]:
+                 retry_minutes: int, *, force: bool = False) -> tuple[bool, int]:
     """已 `fired` 的账号会话早退后 → (是否允许当日补跑, 还需等几分钟)。
 
     2026-10-27 补漏：回读只在 `confirm_seconds` 那一刻看一次，只能抓“秒退”。
@@ -676,8 +812,11 @@ def _revive_plan(now_epoch: float, end_ts: str, videos_today: int, tries_today: 
     收回“今日已学”的三个前提：今日 0 个视频、这轮确由守护发起（有 `auto-try`）、
     尝试次数未用尽。已退出超过 `retry_minutes` 就立刻补跑（#1 那种隔了一小时的
     不必再空等），否则按剩余分钟向上取整。
+
+    `force=True`（Q19，可恢复的失败）：即使今天已经学了一些，只要还没达标就
+    继续补跑——额度/任务数优先于“学过了就算完”，否则一碰到打不开就白掉半天。
     """
-    if videos_today > 0:
+    if videos_today > 0 and not force:
         return (False, 0)   # 今天真学过，会话退出属正常停机（额度/超窗/做完）
     if auto_tries_today <= 0:
         return (False, 0)   # 不是守护发起的（面板 ▶ / 手动），不代用户补跑
@@ -718,11 +857,13 @@ def cmd_auto(args: argparse.Namespace) -> int:
     skipped: set[int] = set()      # 今日跳过（未登录/无课程）
     pending: dict[int, tuple[float, str]] = {}  # 已触发待回读：aid → (monotonic, ISO)
     tries: dict[int, int] = {}      # 今日触发尝试次数（auto-try 计数，含老数据 auto-fire）
+    suspend_n: dict[int, int] = {}   # 今日挂起次数（Q19：短退避用尽后的长退避轮次）
     retry_after: dict[int, str] = {}  # 失败退避：早于该时刻不再重试
     # 次数/退避/回读等待做成配置（config/settings.toml 的 [auto]，2026-10-27 用户要求）
     (max_tries, retry_minutes, confirm_seconds,
-     retry_jitter_pct, retry_max_minutes) = _auto_limits(s.raw.get("auto"))
+     retry_jitter_pct, retry_max_minutes, hard_tries_cap) = _auto_limits(s.raw.get("auto"))
     wait_noted: set[int] = set()   # 已提示过“等学习窗口开启”的账号（不重复写日志）
+    noted: set[int] = set()        # 已写过“达成/硬停”结论的账号（巡检每 30 秒，不刷屏）
     plan_date = _time.strftime("%Y-%m-%d")
     panel_port = int(s.raw.get("panel", {}).get("port", 8300))
     get_logger("cli").info("auto 守护启动（每 30 秒巡检；Ctrl+C 退出）")
@@ -788,31 +929,75 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 videos_today = _cnt("video-done")
                 auto_tries_today = _cnt("auto-try")
                 row_end = conn_r.execute(
-                    "SELECT ts FROM run_logs WHERE account_id=? AND event='session-end'"
-                    " AND ts LIKE ? ORDER BY id DESC LIMIT 1",
+                    "SELECT ts, detail FROM run_logs WHERE account_id=?"
+                    " AND event='session-end' AND ts LIKE ? ORDER BY id DESC LIMIT 1",
                     (aid, day + "%")).fetchone()
             finally:
                 conn_r.close()
         except Exception:
             return False
+        from .core.diagnose import classify, describe, is_suspendable, tier_for
+
         n_aid = tries.get(aid, 0)
+        why = str(row_end["detail"] or "") if row_end else ""
+        code = classify(why or "会话已退出且无停止说明")
+        label, _hint = describe(code)
+        tier = tier_for(code)
+        if tier == "achieved":
+            # 达成（额度/任务数达标、本地无待学）→ 今天真的不用再跑。
+            # 注意：fired 必须**保留**——2026-10-27 实测写错成 discard，
+            # 结果 #2 刚记完“已达成”又立刻被重新发起（第 3/3 次），白跑一趟。
+            if aid not in noted:
+                noted.add(aid)
+                _ev(aid, "auto-done",
+                    f"今日目标已达成（{label}）：{why} → 今天不再自动发起", "INFO")
+            return False
+        if tier == "needs_you":
+            # 登录失效：自动重试只会白撞，停下并给「重新登录」按钮（重启守护可重置）
+            fired.discard(aid)
+            planned.pop(aid, None)
+            skipped.add(aid)
+            _ev(aid, "auto-suspend",
+                f"挂起·等你操作（{label}）：上次发起后会话已退出"
+                " → 点账号卡片「重新登录」，登录后手动 ▶ 或重启守护即可补跑",
+                "WARNING")
+            return False
+        if tier == "hard_stop" and videos_today > 0:
+            # 今天已经学过一些，只是时段到/额度到 → 正常收工，不再折腾
+            return False
+        # 可恢复的失败：次数用尽也先转长退避（硬上限 hard_tries_cap 才真硬停）；
+        # force=True 表示“今天学过但没达标也要接着补”，不让一次打不开白掉半天。
         revive, wait_m = _revive_plan(
             _time.time(), row_end["ts"] if row_end else "", videos_today,
-            n_aid, auto_tries_today, max_tries, retry_minutes)
+            n_aid, auto_tries_today, hard_tries_cap or max_tries, retry_minutes,
+            force=is_suspendable(code))
         if not revive:
+            if is_suspendable(code) and aid not in noted:
+                noted.add(aid)
+                _ev(aid, "auto-error",
+                    f"硬停（{label}）：今日已试 {n_aid}/{hard_tries_cap} 轮仍未成功，"
+                    "不再自动重试；可点账号卡片警示条的「立即补跑」", "WARNING")
             return False
         fired.discard(aid)
         planned.pop(aid, None)
         if wait_m:
-            retry_after[aid] = _hhmm_in(wait_m)
-        cap = max_tries or "不限"
+            # 等待时长也要随机（与回读失败那条同一套退避），否则重启路径又变固定节奏
+            wait_m = _backoff_minutes(retry_minutes, max(1, n_aid),
+                                      retry_jitter_pct, retry_max_minutes)
+        retry_after[aid] = _hhmm_in(wait_m) if wait_m else ""
+        _persist_retry_after(s.db_path, day, retry_after)
         # 2026-10-27 用户困惑「为什么是 auto-error」：这条其实是“撤回今日已学”，
         # 不是“本轮发起失败”。旧事件名把两件事揉成一个词，排查时极易误读。
-        # 改为 auto-revoke；历史 auto-error 仍由 _replay_auto_events 兼容解析。
-        _ev(aid, "auto-revoke",
-            f"撤回「今日已学」：上次发起后会话已退出、今日 0 个视频"
-            f"（今日已试 {n_aid}/{cap} 次）→ "
-            + (f"{wait_m} 分钟后补跑（约 {retry_after[aid]}）" if wait_m else "下一轮即补跑"),
+        # Q19 起语义再细分：可恢复的失败写 auto-suspend（挂起后自动恢复）。
+        # ⚠ 文案必须写**实际**已播个数：17:17:38 那条照抄“今日 0 个视频”，
+        #   而 #1 当天已播 18 个——数字一假，用户就再也读不懂这行（用户 16:09 的原话）。
+        _ev(aid, "auto-suspend",
+            f"挂起（{label}）：会话已退出，今日已播 {videos_today} 个"
+            f"｜短退避已用 {n_aid}/{max_tries or '不限'} 次，硬上限 {hard_tries_cap} 轮"
+            + (f"｜{why}" if why else "")
+            + " → "
+            + (f"{wait_m} 分钟后自动恢复（约 {retry_after[aid]}）"
+               if wait_m else "下一轮即恢复"),
             "WARNING")
         return True
 
@@ -835,16 +1020,30 @@ def cmd_auto(args: argparse.Namespace) -> int:
             ev_rows = conn.execute(
                 "SELECT account_id, ts, event FROM run_logs WHERE ts LIKE ?"
                 " AND account_id > 0"
-                " AND event IN ('auto-try','auto-fire','auto-error') ORDER BY id",
+                " AND event IN ('auto-try','auto-fire','auto-error','auto-revoke',"
+                "               'auto-suspend','auto-done') ORDER BY id",
                 (plan_date + "%",)).fetchall()
             by_aid: dict[int, list[tuple[str, str]]] = {}
             for r in ev_rows:
                 by_aid.setdefault(int(r["account_id"]), []).append((r["ts"], r["event"]))
+                if r["event"] == "auto-suspend":
+                    # 重启后要接上“已挂起几次”，否则长退避的硬上限形同虚设
+                    suspend_n[int(r["account_id"])] = \
+                        suspend_n.get(int(r["account_id"]), 0) + 1
             for aid_r, evs in by_aid.items():
                 ok_r, n_r = _replay_auto_events(evs)
                 tries[aid_r] = n_r
                 if ok_r:
                     fired.add(aid_r)
+            # 退避时刻表也要接上（2026-10-27 实测：只存内存，重启归零 → 刚挂起的
+            # 账号会被立刻重新发起，白撞一次）；已过时刻的条目直接丢弃。
+            _ra = _load_retry_after(s.db_path, plan_date)
+            _now_hm = _time.strftime("%H:%M")
+            retry_after.update({k: v for k, v in _ra.items() if v > _now_hm})
+            for k in [k for k, v in _ra.items() if not v or v <= _now_hm]:
+                _ra.pop(k, None)
+            if set(_ra) != set(retry_after):
+                _persist_retry_after(s.db_path, plan_date, retry_after)
             # 刻意不恢复 skipped：未登录/缺课这类原因当天可修（登进去、补抓课程），
             # 修好后重启守护应能补跑。
         finally:
@@ -858,8 +1057,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
         return "｜今日计划 " + "、".join(f"#{k} {planned[k]}" for k in sorted(planned))
 
     _ev(0, "auto-start", "守护启动（每 30 秒巡检）" + _plan_brief()
-        + f"｜失败重试 {max_tries or '不限'} 次 / 退避 {retry_minutes} 分钟"
-          f"（±{retry_jitter_pct}% 随机，封顶 {retry_max_minutes} 分钟）")
+        + f"｜短退避 {max_tries or '不限'} 次 / 基数 {retry_minutes} 分钟（±{retry_jitter_pct}%，"
+          f"封顶 {retry_max_minutes} 分钟）｜长退避封顶 {hard_tries_cap} 轮后才硬停"
+        + (f"｜沿用退避 " + "、".join(f"#{k} {retry_after[k]}" for k in sorted(retry_after))
+           if retry_after else ""))
     started_at = _time.monotonic()  # 供退出时汇报运行时长
     first_pass = True  # 首轮：缓存计划与当前定时不一致时按 WARNING 记（便于追溯残留）
 
@@ -873,7 +1074,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 err_once.clear()
                 wait_noted.clear()
                 tries.clear()
+                suspend_n.clear()
+                noted.clear()
                 retry_after.clear()
+                _persist_retry_after(s.db_path, today, retry_after)
             # 回读上一轮已发起的账号（2026-10-27 方案 A 重写）：以前“发起成功”就当作
             # 今日已触发，子进程秒退也不回滚 → 一次失败白掉一整天。现在只有回读确认
             # 会话真在跑才记 auto-fire（成功）；秒退记 auto-error 并退避 15 分钟重试，
@@ -888,7 +1092,19 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     if marker_process_alive(s.data_dir, aid_p):
                         if aid_p not in fired:
                             fired.add(aid_p)
-                            _ev(aid_p, "auto-fire", "已确认开跑（回读会话进程存活）")
+                            # 带上“正在学哪一节、已播几个”，不要只写一句空话。
+                            act = ""
+                            try:
+                                conn_a = connect(s.db_path)
+                                try:
+                                    act = _current_activity(conn_a, aid_p, iso_p)
+                                finally:
+                                    conn_a.close()
+                            except Exception:
+                                act = ""
+                            _ev(aid_p, "auto-fire",
+                                "已确认开跑（回读会话进程存活）"
+                                + (f"｜{act}" if act else ""))
                         continue  # 会话真在跑 → 今日已学
                     if _stopped_since(aid_p, iso_p):
                         continue  # 手动停的，不算异常
@@ -906,24 +1122,59 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     except Exception:
                         why = ""
                     tail = f"；子进程报：{why}" if why else ""
-                    cap = max_tries or "不限"
-                    if max_tries and n_p >= max_tries:
-                        fired.add(aid_p)  # 今日试满上限：不再自动重试
-                        _ev(aid_p, "auto-error",
-                            f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
-                            f"{tail}。今日不再自动重试，可手动 ▶ 补跑", "WARNING")
-                    else:
+                    from .core.diagnose import classify, describe, tier_for
+
+                    # Q19（2026-10-27 用户：“额度/任务数是最高优先级，高于重试次数”）：
+                    # 先把失败归类成四档，再决定挂起还是硬停——不能一碰次数就收工。
+                    code = classify(why or "会话已退出且无停止说明")
+                    label, _hint = describe(code)
+                    tier = tier_for(code)
+                    # 前缀已经写了「挂起（原因）」，这里不再重复 label；次数用
+                    # `_try_label` 说清是短退避还是长退避（避免“第 4/3 次”）。
+                    head = (f"触发后 {mins_p} 分钟会话已退出"
+                            f"（今日{_try_label(n_p, max_tries, hard_tries_cap)}）")
+                    if tier == "achieved":
+                        fired.add(aid_p)   # 达成：今天真的不用再跑
+                        _ev(aid_p, "auto-done",
+                            f"今日目标达成（{label}）{tail} → 今天不再自动发起；"
+                            "要再刷可在账号卡片点 ▶")
+                        continue
+                    if tier == "needs_you":
+                        # 等人工登录：自动重试只会白撞（不耗次数，重启守护可重置）
+                        skipped.add(aid_p)
+                        _ev(aid_p, "auto-suspend",
+                            f"挂起·等你操作（{label}）{head}{tail} → "
+                            "点账号卡片「重新登录」，登录后手动 ▶ 或重启守护即可补跑",
+                            "WARNING")
+                        continue
+                    action, wait_p = _failure_action(
+                        code, n_p, max_tries, suspend_n.get(aid_p, 0),
+                        hard_tries_cap, retry_minutes, retry_jitter_pct,
+                        retry_max_minutes)
+                    if action == "suspend":
                         # 退避随机化（2026-10-27 用户要求“模拟人的行为”）：
                         # 固定 15/30/60 的等差节奏太像机器，改为指数 + ±jitter% 抖动。
-                        wait_p = _backoff_minutes(retry_minutes, n_p,
-                                                  retry_jitter_pct, retry_max_minutes)
+                        suspend_n[aid_p] = suspend_n.get(aid_p, 0) + 1
                         retry_after[aid_p] = _hhmm_in(wait_p)
+                        _persist_retry_after(s.db_path, today, retry_after)
                         planned.pop(aid_p, None)  # 下一轮按 start_at 重新排
                         skipped.discard(aid_p)
-                        _ev(aid_p, "auto-error",
-                            f"触发后 {mins_p} 分钟会话已退出（今日已试 {n_p}/{cap} 次）"
-                            f"{tail}，{wait_p} 分钟后自动重试"
-                            f"（约 {retry_after[aid_p]}）", "WARNING")
+                        _ev(aid_p, "auto-suspend",
+                            f"挂起（{label}）{head}{tail}，{wait_p} 分钟后自动恢复"
+                            f"（约 {retry_after[aid_p]}）；今日挂起 "
+                            f"{suspend_n[aid_p]}/{hard_tries_cap} 次", "WARNING")
+                    else:
+                        fired.add(aid_p)  # 硬停：今日不再自动发起，面板留「立即补跑」
+                        if code == "window":
+                            _ev(aid_p, "auto-error",
+                                f"硬停（{label}）{head}{tail}：今日学习时段已过，"
+                                "明天窗口开启后自动恢复；要现在跑可点「立即补跑」",
+                                "WARNING")
+                        else:
+                            _ev(aid_p, "auto-error",
+                                f"硬停（{label}）{head}{tail}：短退避与长退避都已用尽"
+                                "（硬上限见设置页），不再自动重试；"
+                                "可点账号卡片警示条的「立即补跑」", "WARNING")
             new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
@@ -979,6 +1230,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     if now_hm < retry_after[aid]:
                         continue  # 上一轮失败，退避中
                     retry_after.pop(aid, None)
+                    _persist_retry_after(s.db_path, today, retry_after)
                 if now_hm < planned[aid]:
                     continue
                 # 窗口预校验（2026-10-27 加固）：start_at 落在窗口外时子进程会立刻
@@ -1062,10 +1314,11 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     tries[aid] = tries.get(aid, 0) + 1
                     pending[aid] = (_time.monotonic(), _time.strftime("%Y-%m-%dT%H:%M:%S"))
                     print(f"[auto] 已触发 账号#{aid} {row['label']} →《{course_name}》"
-                          f"（第 {tries[aid]}/{max_tries or '不限'} 次，待回读）")
+                          f"（{_try_label(tries[aid], max_tries, hard_tries_cap)}，待回读）")
                     _ev(aid, "auto-try",
-                        f"《{course_name}》｜来源={src_cn}｜第 {tries[aid]}/{max_tries or '不限'} 次"
-                        f"发起，{confirm_seconds} 秒后回读")
+                        f"《{course_name}》｜来源={src_cn}｜"
+                        f"{_try_label(tries[aid], max_tries, hard_tries_cap)}"
+                        f"，{confirm_seconds} 秒后回读")
                 elif "已有进行中的会话" in str(reason):
                     fired.add(aid)  # 别的路径已开（面板 ▶/手动），视为今日已学
                     print(f"[auto] 账号#{aid} 已有会话在跑，今日不再触发")

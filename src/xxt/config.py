@@ -65,6 +65,7 @@ DEFAULTS: dict[str, Any] = {
         "confirm_seconds": 25,
         "retry_jitter_pct": 40,
         "retry_max_minutes": 90,
+        "hard_tries_cap": 4,
     },
     "stealth": {"headless": True},
 }

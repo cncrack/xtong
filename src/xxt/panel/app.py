@@ -298,6 +298,15 @@ padding-top:.12rem}
    （此前放在 .head 里且 flex:none，宽度被 6 个按钮撑破，outer1 又 overflow:hidden） */
 .card .ops{display:flex;gap:.35rem;align-items:center;justify-content:flex-end;flex-wrap:wrap;
 margin:.05rem 0 .4rem}
+/* 失败警示条（2026-10-27 Q20 + Q26 布局约束）：只占一行、超长省略、按钮最多 3 个，
+   且不往 .head / .ops 里塞东西，避免把会话 51 调好的卡片布局再挤爆。 */
+.alertbar{display:flex;align-items:center;gap:.4rem;background:#fff8e9;border:1px solid #f0dcb4;
+border-radius:10px;padding:.24rem .5rem;margin:-.2rem 0 .45rem;font-size:.75rem;min-width:0}
+.alertbar .ab-tag{flex:none;font-weight:800;color:#96661a;white-space:nowrap}
+.alertbar .ab-txt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap;color:#7d6027}
+.alertbar .ab-acts{flex:none;display:flex;gap:.3rem}
+.alertbar .ab-acts .minibtn{padding:.1rem .45rem;font-size:.7rem}
 .minibtn{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:.22rem .6rem;
 font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink);white-space:nowrap}
 .minibtn:hover{border-color:var(--accent);color:var(--accent)}
@@ -528,6 +537,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <label>退避基数（分钟）<small>1~240；第一次失败等多久</small><input type="number" id="s_rm" min="1" max="240"></label>
     <label>随机浮动（%）<small>0~100；±这个比例内随机，不固定节奏</small><input type="number" id="s_rj" min="0" max="100"></label>
     <label>退避封顶（分钟）<small>15~480；再糟也不会超这个间隔</small><input type="number" id="s_rx" min="15" max="480"></label>
+    <label>单日硬上限（次）<small>1~20；打不开/网络这类可恢复失败长退避再试的轮数，用尽才真停</small><input type="number" id="s_hc" min="1" max="20"></label>
   </div>
   <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">单节怎么处理 <span class="muted" style="font-size:.72rem;font-weight:400">失败的节保持待学，不会被当成“已学”</span></h3>
   <div class="llmgrid">
@@ -774,6 +784,17 @@ function renderAccounts(){
       + (others.length ? `<button class="morebtn" onclick="toggleMore(${a.id})">${open?'▾':'▸'} 其他 ${others.length} 门课 · 已完成 ${doneSum} 个知识点</button>
         <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
     const stopBtn=run?`<button class="minibtn danger pulse" title="停止该账号正在刷的课：已完成视频全部保留，下次点▶从断点续播" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
+    // 失败警示（Q20）：今日最近一次失败 → 归类成一句话 + 最多 3 个真能点的按钮。
+    // 数据库为空的号不显示任何东西；已经重新跑起来的号也不显示（后端已判）。
+    const al=a.alert;
+    const ACT={'看日志':`gotoLogs(${a.id})`,'重新登录':`doLogin(${a.id})`,
+      '立即补跑':`resumeStudy(${a.id},'${esc(mainCourse?mainCourse.name:'').replace(/'/g,'&#39;')}')`};
+    const alertHtml = al ? `<div class="alertbar" title="${esc(al.hint||'')}${al.detail?'｜原文：'+esc(al.detail):''}">
+      <span class="ab-tag">⚠ ${esc(al.label||'异常')}${al.tier==='hard_stop'?'·已停手'
+        :al.tier==='needs_you'?'·等你操作':'·会自动重试'}</span>
+      <span class="ab-txt">${esc(al.hint||'')}${al.resume_at?'｜约 '+esc(al.resume_at)+' 自动重试':''}</span>
+      <span class="ab-acts">${(al.actions||[]).slice(0,3)
+        .map(x=>`<button class="minibtn" onclick="${ACT[x]||''}">${esc(x)}</button>`).join('')}</span></div>` : '';
     const bad=a.days_left!==null&&a.days_left<0;
     const avatar=String(a.display_name||a.platform_username||'?').trim().charAt(0)||'?';
     return `<div class="card${run?' running':''}${hits.length?' hit':''}">
@@ -795,6 +816,7 @@ function renderAccounts(){
           onclick="doWorkAll(${a.id})">📝 批量作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
+    ${alertHtml}
     ${(()=>{const bp=(PLANS||[]).find(p=>p.enabled&&p.account_ids.includes(a.id));
       return bp?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📚 学习安排《${esc(bp.name)}》→ 课程《${esc(bp.course_name)}》（开跑时间仍按本账号定时/窗口）</div>`:'';})()}
     <div class="chips">${chips}</div>${courses}</div>`;
@@ -815,8 +837,8 @@ function fillLogAccounts(){
 // 输入解析：`#2` / `2` → 该账号；“张” → 姓名/备注/平台昵称模糊命中（可能多账号）
 function logAccIds(){
   const raw=(LOGACC||'').trim(); if(!raw)return '';
-  const head=raw.split(/\s+/)[0].replace(/^#/,'');
-  if(/^\d+$/.test(head))return head;
+  const head=raw.split(/\\s+/)[0].replace(/^#/,'');
+  if(/^\\d+$/.test(head))return head;
   const q=raw.toLowerCase();
   return (ACCOUNTS||[]).filter(a=>[a.display_name,a.label,a.platform_username]
     .some(v=>v&&String(v).toLowerCase().includes(q))).map(a=>a.id).join(',');
@@ -828,6 +850,15 @@ function logSourceQs(){
   if(v==='sys-warn')return 'source=sys&min_level=WARNING';
   return 'source=event';
 }
+// 事件名 → 中文短标签（2026-10-27 用户反馈：日志全是英文事件名，看不懂在跑什么）
+const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-interrupt':'播放中断',
+  'chapter-fail':'打不开','session-start':'会话开始','session-end':'会话结束',
+  'session-stop':'手动停止','auto-fire':'已开跑','auto-try':'发起尝试',
+  'auto-revoke':'撤回今日已学','auto-suspend':'已挂起','auto-done':'今日已达成',
+  'auto-error':'硬停/失败','auto-skip':'今日跳过','auto-plan':'今日计划',
+  'auto-start':'守护启动','auto-stop':'守护停止',
+  'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
+  'auto-exit':'守护异常退出','diag-visited-fix':'数据修复'};
 function renderLogs(n){if(n)LOGN=n;
   const box=document.getElementById('logs'); if(!box)return;
   const ids=logAccIds();
@@ -836,14 +867,21 @@ function renderLogs(n){if(n)LOGN=n;
   fetch('/api/logs?n='+LOGN+'&'+logSourceQs()+(ids?`&accounts=${ids}`:'')).then(r=>r.json()).then(d=>{
     if(!d.logs.length){box.innerHTML='<div class="muted">暂无记录</div>';}
     else box.innerHTML='<table>'+d.logs.map(l=>{
-      const cls=l.event==='video-done'||l.event==='auto-fire'?'ev-good':
-        (l.event==='session-start'||l.event==='auto-start'||l.event==='auto-plan'||
-         l.event==='auto-request'||l.event==='auto-replan')?'ev-info':
-        (l.event==='session-stop'||l.event==='auto-skip'||l.event==='auto-stop'||
-         l.event==='auto-error'||l.event==='auto-revoke'||l.event==='auto-plan-stale'||
+      const cls=l.event==='video-done'||l.event==='auto-fire'||l.event==='auto-done'?'ev-good':
+        (l.event==='chapter-start'||l.event==='session-start'||l.event==='auto-start'||
+         l.event==='auto-plan'||l.event==='auto-request'||l.event==='auto-replan'||
+         l.event==='auto-try')?'ev-info':
+        (l.event==='video-interrupt'||l.event==='chapter-fail'||l.event==='session-stop'||
+         l.event==='auto-skip'||l.event==='auto-stop'||l.event==='auto-error'||
+         l.event==='auto-revoke'||l.event==='auto-suspend'||l.event==='auto-plan-stale'||
+         l.event==='auto-exit'||
          l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
+      const nm=EVNAME[l.event]||'';
+      // 账号列必须 nowrap：中文名会被挤成“林鑫/阳”两行（用户 2026-10-27 截图反馈）
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
-        <td class="mono">${esc(l.who)}</td><td class="ev ${cls}">${esc(l.event)}</td>
+        <td class="mono" style="white-space:nowrap">${esc(l.who)}</td>
+        <td class="ev ${cls}" style="white-space:nowrap" title="${esc(l.event)}">${esc(l.event)}
+          ${nm?`<span class="muted" style="display:block;font-size:.72em;line-height:1.1">${esc(nm)}</span>`:''}</td>
         <td>${esc(l.detail)}</td></tr>`;}).join('')+'</table>';
     const at=document.getElementById('logAt');
     if(at)at.textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
@@ -858,6 +896,7 @@ function loadSettings(){
     s_mt.value=d.auto_max_tries??2; s_rm.value=d.auto_retry_minutes??15;
     s_cs.value=d.auto_confirm_seconds??25;
     s_rj.value=d.auto_retry_jitter_pct??40; s_rx.value=d.auto_retry_max_minutes??90;
+    s_hc.value=d.auto_hard_tries_cap??4;
     s_er.value=d.learn_enter_retries??2; s_ms.value=d.learn_max_skip_chapters??3;
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
@@ -881,6 +920,7 @@ function renderAudit(rows){
   const el=document.getElementById('auditList'); if(!el)return;
   const NAME={auto_max_tries:'每日最多自动发起',auto_retry_minutes:'退避基数(分)',
     auto_retry_jitter_pct:'退避随机浮动(%)',auto_retry_max_minutes:'退避封顶(分)',
+    auto_hard_tries_cap:'单日硬上限(次)',
     auto_confirm_seconds:'开跑回读(秒)',learn_enter_retries:'单节点点几次',
     learn_max_skip_chapters:'连续打不开收工',learn_non_video_streak:'连续非视频收工',
     learn_partial_retries:'中断续播次数',learn_partial_retry_ratio_pct:'续播门槛(%)',
@@ -960,7 +1000,7 @@ function saveSettings(){
     work_mode_default:s_wm.value};
   for(const [k,el] of [['auto_max_tries',s_mt],['auto_retry_minutes',s_rm],
       ['auto_retry_jitter_pct',s_rj],['auto_retry_max_minutes',s_rx],
-      ['auto_confirm_seconds',s_cs],['learn_enter_retries',s_er],
+      ['auto_hard_tries_cap',s_hc],['auto_confirm_seconds',s_cs],['learn_enter_retries',s_er],
       ['learn_max_skip_chapters',s_ms],['learn_non_video_streak',s_ns],
       ['learn_partial_retries',s_pr],['learn_partial_retry_ratio_pct',s_prr],
       ['learn_login_budget_per_day',s_lb]]){
@@ -1424,6 +1464,18 @@ function startGrind(id,course,pid){
     body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已开始刷《'+course+'》（拟人节奏，额度内自动停）':'失败：'+d.error);
     syncRun();});}
+// 警示条「看日志」：切到日志页并把账号筛好，不用用户再手输
+function gotoLogs(id){
+  switchView('logs');
+  LOGACC='#'+id;
+  const el=document.getElementById('logAcc'); if(el)el.value=LOGACC;
+  renderLogs(LOGN);
+}
+// 警示条「立即补跑」：等同卡片 ▶（走同一个防双开接口，不占守护次数）
+function resumeStudy(id,course){
+  if(!course){toast('该账号当前没有可开始的课程（先抓课程/章节）',1);return;}
+  startGrind(id,course,'');
+}
 function stopGrind(id){
   if(!confirm('停止该账号当前刷课会话？（已完成视频保留）'))return;
   fetch('/api/study/stop',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1776,6 +1828,12 @@ def create_app(settings: Settings) -> FastAPI:
                 "SELECT COUNT(*) AS c FROM run_logs WHERE event='video-done' AND ts LIKE ?",
                 (f"{today}%",),
             ).fetchone()["c"]
+            # 警示条数据（Q20）：**必须挂在 /api/overview 上**——卡片是这里渲染出来的。
+            # 2026-10-27 实测踩过：只给 /api/accounts 挂了 alert，接口测试全绿，
+            # 真实页面却一条警示条都没出现过。两边都留下同一份数据才作数。
+            alerts = _account_alerts(conn, today)
+            for a in accounts:
+                a["alert"] = alerts.get(int(a["id"]))
             return {"today_videos": n, "accounts": accounts}
         finally:
             conn.close()
@@ -1800,11 +1858,80 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             conn.close()
 
+    def _account_alerts(conn, day: str) -> dict[int, dict]:
+        """今日每个账号最近一次失败 → 归类后的警示（2026-10-27 用户 Q20）。
+
+        用户原话：「打不开要反馈原因，要有提示，不能就收工，要让人家能够有对应的方法
+        和入口」。规则（纯本地、零平台访问）：
+        - 取该账号今日最后一条章节/会话/守护事件；
+        - 已经又播完一节、正在学、或已达成（auto-done）→ 不显示；
+        - 最后是 session-end：只有含「打不开/异常/失败/中断」才警示（正常达标收工不打扰）；
+        - 其余失败类交给 `core/diagnose` 归类；auto-error 带「硬停」按硬停展示。
+        """
+        from ..core.diagnose import actions_for, classify, describe, tier_for
+
+        # 挂起中的账号要回答“多久才轮回来”：退避时刻表由守护落进 app_config
+        # （2026-10-27 同一个表也用于守护重启续跑，两边看到的是同一个事实）。
+        import json as _json
+
+        resume: dict[int, str] = {}
+        try:
+            row_ra = conn.execute(
+                "SELECT value FROM app_config WHERE key='auto.retry_after'").fetchone()
+            if row_ra:
+                info = _json.loads(row_ra["value"])
+                if info.get("date") == day:
+                    resume = {int(k): v for k, v in (info.get("times") or {}).items() if v}
+        except Exception:
+            resume = {}
+
+        try:
+            rows = conn.execute(
+                "SELECT account_id, ts, event, detail FROM run_logs"
+                " WHERE ts LIKE ? AND account_id > 0 AND event IN"
+                " ('auto-error','auto-revoke','auto-suspend','auto-done',"
+                "  'video-interrupt','chapter-fail',"
+                "  'chapter-start','video-done','session-end')"
+                " ORDER BY id DESC", (day + "%",)).fetchall()
+        except Exception:
+            return {}
+        last: dict[int, object] = {}
+        for r in rows:
+            last.setdefault(int(r["account_id"]), r)
+        out: dict[int, dict] = {}
+        for aid, r in last.items():
+            ev, detail = str(r["event"]), str(r["detail"] or "")
+            if ev in ("chapter-start", "video-done", "auto-done"):
+                continue  # 又跑起来了 / 今日已达成 → 不示警
+            if ev == "session-end":
+                if not any(w in detail for w in ("打不开", "异常", "失败", "中断")):
+                    continue  # 正常收工（达标/完成/无待学章节）
+                code = classify(detail)
+            elif ev in ("chapter-fail", "video-interrupt"):
+                code = "structure"
+            else:
+                code = classify(detail)
+            tier = tier_for(code)
+            if tier == "achieved":
+                continue  # 达成不算异常，不占卡片
+            if ev == "auto-error" and "硬停" in detail:
+                tier = "hard_stop"   # 守护已判今日不再自动 → 警示条标硬停
+            label, hint = describe(code)
+            out[aid] = {"code": code, "tier": tier, "label": label, "hint": hint,
+                        "detail": detail[:160], "ts": str(r["ts"]),
+                        "resume_at": resume.get(aid, ""),
+                        "actions": actions_for(code)}
+        return out
+
     @app.get("/api/accounts")
     def accounts():
         conn = db()
         try:
-            return {"accounts": [dict(r) for r in list_accounts(conn)]}
+            rows = [dict(r) for r in list_accounts(conn)]
+            alerts = _account_alerts(conn, time.strftime("%Y-%m-%d"))
+            for r in rows:
+                r["alert"] = alerts.get(int(r["id"]))
+            return {"accounts": rows}
         finally:
             conn.close()
 
@@ -2064,6 +2191,7 @@ def create_app(settings: Settings) -> FastAPI:
             "auto_retry_minutes": _i(auto_cfg, "retry_minutes", 15),
             "auto_retry_jitter_pct": _i(auto_cfg, "retry_jitter_pct", 40),
             "auto_retry_max_minutes": _i(auto_cfg, "retry_max_minutes", 90),
+            "auto_hard_tries_cap": _i(auto_cfg, "hard_tries_cap", 4),
             "auto_confirm_seconds": _i(auto_cfg, "confirm_seconds", 25),
             "learn_enter_retries": _i(learn_cfg, "enter_retries", 2),
             "learn_max_skip_chapters": _i(learn_cfg, "max_skip_chapters", 3),
@@ -2137,6 +2265,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "auto_retry_minutes": ("auto.retry_minutes", 1, 240),
                 "auto_retry_jitter_pct": ("auto.retry_jitter_pct", 0, 100),
                 "auto_retry_max_minutes": ("auto.retry_max_minutes", 15, 480),
+                "auto_hard_tries_cap": ("auto.hard_tries_cap", 1, 20),
                 "auto_confirm_seconds": ("auto.confirm_seconds", 15, 300),
                 "learn_enter_retries": ("learn.enter_retries", 1, 5),
                 "learn_max_skip_chapters": ("learn.max_skip_chapters", 1, 10),

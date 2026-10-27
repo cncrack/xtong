@@ -266,6 +266,23 @@ class AsyncStudyRunner:
             except Exception as exc:
                 log.warning("弹题回填失败（选择器待核对）：%r", exc)
 
+    def _rec(self, event: str, detail: str, level: str = "INFO") -> None:
+        """写一条 run_logs（章节级进度：开始 / 完成 / 中断 / 打不开）。
+
+        2026-10-27 用户反馈：面板日志只有 `auto-fire 已确认开跑` 这类话，看不出
+        正在跑哪一节、是开始了还是播完了。会话内每节的可见进度统一走这里；
+        写日志失败不能影响学习主流程，故整体吞异常。
+        """
+        try:
+            self.conn.execute(
+                "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                " VALUES(?,?,?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), level, event, detail,
+                 self.account_id))
+            self.conn.commit()
+        except Exception:
+            pass
+
     def _on_event(self, source, payload: str) -> None:
         try:
             self.events.append(json.loads(payload))
@@ -488,6 +505,10 @@ class AsyncStudyRunner:
                         tried_entry.append(k2)
                         log.warning("[#%s] %s 打不开，保持待学（本会话内不再试）：%s",
                                     self.account_id, tag, n2)
+                        self._rec("chapter-fail",
+                                  f"{course_row['name']}｜{n2}｜"
+                                  f"点了 {enter_retries} 次仍未进任务页，保持待学",
+                                  "WARNING")
                     stats["stop_reason"] = (f"{tag}；连续 {max_skip} 节都打不开任务页"
                                             f"（{'、'.join(tried_entry[-3:])}）")
                     return None
@@ -503,6 +524,10 @@ class AsyncStudyRunner:
                     tried_entry.append(kid)
                     log.warning("[#%s] 首节打不开任务页，保持待学：%s",
                                 self.account_id, leaf_name)
+                    self._rec("chapter-fail",
+                              f"{course_row['name']}｜{leaf_name}｜"
+                              f"点了 {enter_retries} 次仍未进任务页，保持待学",
+                              "WARNING")
                     pick = pick_pending_after(self.conn, course_row["id"], kid, tried_entry)
                     if pick is None:
                         break
@@ -542,6 +567,11 @@ class AsyncStudyRunner:
                             if study_start is None:
                                 study_start = time.monotonic()
                             title = await _current_task_title(page) or leaf_name
+                            # 章节级进度（用户 2026-10-27 要求）：开始哪一节、播完、中断
+                            # 都要在日志里看得见，不能只有一句“已确认开跑”。
+                            self._rec("chapter-start",
+                                      f"{course_row['name']}｜{title}｜本会话第 "
+                                      f"{stats['videos'] + 1} 节")
                             played = await self._play_video(page, video_frame, title)
                             cid = match_chapter_id(self.conn, course_row["id"], title)
                             if cid is not None:
@@ -554,6 +584,21 @@ class AsyncStudyRunner:
                                     (cid,)).fetchone()
                                 if r_cur and r_cur["platform_chapter_id"]:
                                     kid, leaf_name = r_cur["platform_chapter_id"], r_cur["name"]
+                            if played is False:
+                                # 中断也要看得见，且说明“下一步是继续播还是留着下次学”。
+                                ratio_i = self._partial_ratio() * 100
+                                prog_i = getattr(self, "_last_progress", 0.0)
+                                dur_i = getattr(self, "_last_video_dur", 0) or 0
+                                will_retry = (partial_retries > 0
+                                              and kid not in partial_tried
+                                              and ratio_i >= partial_streak)
+                                self._rec(
+                                    "video-interrupt",
+                                    f"{course_row['name']}｜{title}｜"
+                                    f"{prog_i:.0f}/{dur_i}s（{ratio_i:.0f}%）→ "
+                                    + ("重载任务页续播一次" if will_retry
+                                       else "未过续播门槛，保持待学"),
+                                    "WARNING")
                             # B3（2026-10-27）：中断（ended=False）且已播 ≥阈值时，
                             # 重载任务页续播一次。 #1 就是 441/551s（80%）被当“结束”
                             # 直接换节，白丢一节进度。
@@ -578,13 +623,8 @@ class AsyncStudyRunner:
                                 stats["videos"] += 1
                                 dur_s = int(getattr(self, "_last_video_dur", 0) or 0)
                                 session_seconds += dur_s  # 只有记账的时长才进额度
-                                self.conn.execute(
-                                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
-                                    " VALUES(?,?,?,?,?)",
-                                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done",
-                                     f"{course_row['name']}｜{title}｜{dur_s}s",
-                                     self.account_id))
+                                self._rec("video-done",
+                                          f"{course_row['name']}｜{title}｜{dur_s}s")
                                 if cid is not None:
                                     self.conn.execute(
                                         "UPDATE chapters SET status='done' WHERE id=?", (cid,))

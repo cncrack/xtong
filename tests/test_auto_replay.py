@@ -85,6 +85,38 @@ class TestReplayAutoEvents(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(tries, 2)
 
+    def test_auto_suspend_rolls_back_like_revoke(self):
+        """`auto-suspend` = 挂起（打不开/网络/风控）→ 退避后自动恢复。
+
+        Q19（2026-10-27）：可恢复的失败不能算“今日已学”，否则一整天不再补跑。
+        """
+        ok, tries = _replay_auto_events([
+            (T.format("10:00:00"), "auto-try"),
+            (T.format("10:00:30"), "auto-fire"),
+            (T.format("10:20:00"), "auto-suspend"),
+        ])
+        self.assertFalse(ok)
+        self.assertEqual(tries, 1)
+
+    def test_auto_done_counts_as_finished(self):
+        """`auto-done` = 今日目标达成（额度/任务数达标）→ 重启守护不能再刷一次。"""
+        ok, tries = _replay_auto_events([
+            (T.format("10:00:00"), "auto-try"),
+            (T.format("10:00:30"), "auto-fire"),
+            (T.format("15:00:00"), "auto-done"),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(tries, 1)
+
+    def test_done_then_try_starts_a_new_round(self):
+        # 达成后又手动开了一轮：以最后一轮为准（不能被旧的 auto-done 锁住）
+        ok, _tries = _replay_auto_events([
+            (T.format("10:00:00"), "auto-try"),
+            (T.format("15:00:00"), "auto-done"),
+            (T.format("16:00:00"), "auto-try"),
+        ])
+        self.assertFalse(ok)
+
     def test_no_events(self):
         self.assertEqual(_replay_auto_events([]), (False, 0))
 

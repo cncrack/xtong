@@ -136,6 +136,7 @@ class TestPanel(unittest.TestCase):
         body = {
             "auto_max_tries": 3, "auto_retry_minutes": 20, "auto_confirm_seconds": 30,
             "auto_retry_jitter_pct": 55, "auto_retry_max_minutes": 150,
+            "auto_hard_tries_cap": 6,
             "learn_enter_retries": 3, "learn_max_skip_chapters": 4,
             "learn_non_video_streak": 5, "learn_partial_retries": 2,
             "learn_partial_retry_ratio_pct": 70, "learn_login_budget_per_day": 3,
@@ -151,6 +152,7 @@ class TestPanel(unittest.TestCase):
                     {"learn_partial_retries": 9}, {"learn_partial_retry_ratio_pct": 10},
                     {"learn_login_budget_per_day": 0}, {"auto_confirm_seconds": 5},
                     {"auto_retry_jitter_pct": 101}, {"auto_retry_max_minutes": 9999},
+                    {"auto_hard_tries_cap": 0}, {"auto_hard_tries_cap": 99},
                     {"auto_max_tries": "3"}):
             r = self.client.put("/api/settings", json=bad)
             self.assertFalse(r.json()["ok"], bad)
@@ -182,6 +184,65 @@ class TestPanel(unittest.TestCase):
         body = self.client.get("/api/accounts").text
         self.assertNotIn("password", body)
         self.assertNotIn("username_enc", body)
+
+    def _seed_account_and_event(self, event: str, detail: str) -> None:
+        import time as _t
+
+        conn = connect(self.settings.db_path)
+        if not conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone():
+            conn.execute("INSERT INTO accounts(label, created_at) VALUES('测试号','x')")
+        conn.execute(
+            "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,1)",
+            (_t.strftime("%Y-%m-%d") + "T10:00:00", "WARNING", event, detail))
+        conn.commit()
+        conn.close()
+
+    def test_alert_surfaces_suspend_with_actions(self):
+        """Q20/Q19（2026-10-27）：今日失败要变成卡片上一句话 + 能点的按钮。"""
+        import json as _json
+
+        self._seed_account_and_event(
+            "auto-suspend",
+            "挂起（页面打不开）触发后 1 分钟会话已退出（页面打不开｜今日已试 2/3 次）"
+            "｜子进程报：连续 3 节都打不开任务页，30 分钟后自动恢复（约 10:30）")
+        # 守护落库的退避时刻表 → 警示条要能回答“什么时候自动重试”
+        import time as _t
+
+        conn = connect(self.settings.db_path)
+        conn.execute("INSERT INTO app_config(key, value) VALUES('auto.retry_after', ?)",
+                     (_json.dumps({"date": _t.strftime("%Y-%m-%d"), "times": {"1": "10:30"}}),))
+        conn.commit()
+        conn.close()
+        al = self.client.get("/api/accounts").json()["accounts"][0]["alert"]
+        self.assertEqual(al["label"], "页面打不开")
+        self.assertEqual(al["tier"], "suspended")
+        self.assertIn("立即补跑", al["actions"])
+        self.assertEqual(al["resume_at"], "10:30")
+
+    def test_alert_clears_after_progress_and_flags_hard_stop(self):
+        self._seed_account_and_event("chapter-fail", "测试课｜1.2｜点了 2 次仍未进任务页")
+        self.assertEqual(self.client.get("/api/accounts").json()["accounts"][0]
+                         ["alert"]["tier"], "suspended")
+        # 又播完一节 → 自愈，不再示警
+        self._seed_account_and_event("video-done", "测试课｜1.2 测试节｜470s")
+        self.assertIsNone(self.client.get("/api/accounts").json()["accounts"][0]["alert"])
+        # 硬停：守护已判今日不再自动 → 警示条要标硬停（仍然给「立即补跑」入口）
+        self._seed_account_and_event("auto-error", "硬停（页面打不开）：短退避与长退避都已用尽")
+        al = self.client.get("/api/accounts").json()["accounts"][0]["alert"]
+        self.assertEqual(al["tier"], "hard_stop")
+        self.assertIn("立即补跑", al["actions"])
+
+    def test_alert_also_reaches_overview_endpoint(self):
+        """回归（2026-10-27 实测踩坑）：卡片是由 `/api/overview` 渲染的。
+
+        当初只给 `/api/accounts` 挂了 alert，接口测试全绿，真实页面却一条
+        警示条都没出现过。两个下发路径必须同源。
+        """
+        self._seed_account_and_event("chapter-fail", "测试课｜1.2｜点了 2 次仍未进任务页")
+        ov = self.client.get("/api/overview").json()["accounts"][0]
+        self.assertIn("alert", ov)
+        self.assertEqual(ov["alert"]["label"], "页面打不开")
+        self.assertIn("立即补跑", ov["alert"]["actions"])
 
     def test_index_renders(self):
         self.assertEqual(self.client.get("/").status_code, 200)
