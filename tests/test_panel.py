@@ -348,5 +348,43 @@ class TestPanel(unittest.TestCase):
         self.assertTrue(run_cmd.called)
 
 
+    def test_study_status_survives_concurrent_jobs_change(self):
+        """轮询接口与启停线程并发改 _JOBS 时不得 500（2026-10-27 实报 RuntimeError）。
+
+        前端每 1~2 秒拉一次 /api/study/status，同时点“开始/停止”或作业线程会增删
+        `_JOBS` → 直接 items() 遍历会抛 dictionary changed size during iteration。
+        """
+        import threading
+
+        import xxt.panel.app as appmod
+
+        class _Dead:
+            def poll(self):
+                return 1
+
+        stop = threading.Event()
+        keys = [901, 902, 903, 904, 905]
+
+        def churn():
+            i = 0
+            while not stop.is_set():
+                appmod._JOBS[keys[i % len(keys)]] = {
+                    "proc": _Dead(), "course": "测试", "since": "00:00"}
+                appmod._JOBS.pop(keys[(i + 2) % len(keys)], None)
+                i += 1
+
+        t = threading.Thread(target=churn, daemon=True)
+        t.start()
+        try:
+            for _ in range(40):
+                r = self.client.get("/api/study/status")
+                self.assertEqual(r.status_code, 200)
+        finally:
+            stop.set()
+            t.join(timeout=5)
+            for k in keys:
+                appmod._JOBS.pop(k, None)
+
+
 if __name__ == "__main__":
     unittest.main()

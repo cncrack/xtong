@@ -150,10 +150,23 @@ def busy_sessions(data_dir: Path, account_ids) -> dict[int, dict[str, Any]]:
     """传入的账号里，哪些已有**活着的**会话 → {account_id: 标记内容}。
 
     启动前统一查这一下（面板与 CLI 共用），防同账号双开。
+
+    2026-10-27 修：面板 `/api/study/start` 是“先 spawn、立刻写标记（pid=proc.pid）”的，
+    子进程（mlearn）启动后自查时会读到这条**自己**的标记，`pid_alive`/`pid_owns_file`
+    全部成立 → 被判成“账号已有会话在跑”而 [FAIL] 秒退（守护随后记 auto-error，
+    表现为“定时触发了但学不了”）。
+
+    判据要包括 ppid：`.venv/Scripts/python.exe` 是 venv 的重定向器，`Popen` 得到的
+    只是 shim 的 pid，真正跑代码的是它再拉起的孙进程（实测 shim 5908 / 真进程 22640），
+    而孙进程的 ppid 正是那个 shim——所以“标记 pid == 自 pid 或父 pid”都是自己人。
     """
+    me, parent = os.getpid(), os.getppid()
     out: dict[int, dict[str, Any]] = {}
     for aid in account_ids:
         info = live_session(data_dir, int(aid))
-        if info:
-            out[int(aid)] = info
+        if not info:
+            continue
+        if int(info.get("pid") or 0) in (me, parent):
+            continue
+        out[int(aid)] = info
     return out

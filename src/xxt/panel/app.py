@@ -2470,11 +2470,15 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/study/status")
     def study_status():
         out = {}
-        for aid, job in _JOBS.items():
+        # 快照遍历：本接口被前端每 1~2 秒轮询，同时在跑的学习/作业线程会增删 _JOBS
+        # → 直接 `for ... in _JOBS.items()` 会抛 RuntimeError: dictionary changed size
+        # during iteration（2026-10-27 实测，ASGI 500）。
+        for aid, job in list(_JOBS.items()):
             alive = job["proc"].poll() is None
             out[str(aid)] = {"course": job["course"], "running": alive,
                              "since": job["since"]}
-            if not alive:
+            # 只清“自己刚看到的那条”：期间可能已被新会话替换，删了界面就丢会话
+            if not alive and _JOBS.get(aid) is job:
                 _JOBS.pop(aid, None)
         for aid, info in _marker_jobs(settings).items():  # 定时/外部（含面板重启前的）
             out.setdefault(str(aid), {"course": info["course"], "running": True,
@@ -2525,7 +2529,8 @@ def create_app(settings: Settings) -> FastAPI:
                     "message": f"该账号作业策略=号主自理：请通知 {row['label']} 自己完成作业；"
                                f"如需 AI 参考答案，可在✎管理中把作业策略改为 reference"}
         if mode == "ai" or body.get("action") == "fill":
-            if account_id in _JOBS and _JOBS[account_id]["proc"].poll() is None:
+            job = _JOBS.get(account_id)  # 一次取值：避免两次查表之间被轮询线程 pop 掉
+            if job and job["proc"].poll() is None:
                 return {"ok": False, "error": "该账号已有进行中的会话/作业"}
             proc = _spawn(str(settings.root), "work", str(account_id), chapter, "--force")
             _JOBS[account_id] = {"proc": proc, "course": f"作业{chapter}", "since": time.strftime("%H:%M")}

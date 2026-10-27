@@ -696,6 +696,13 @@ def cmd_auto(args: argparse.Namespace) -> int:
             for row in rows:
                 aid = row["id"]
                 if aid in fired or aid in skipped:
+                    # 已触发/已跳过的号也要让缓存跟上当前定时：否则面板「今日定时」会
+                    # 一整天显示旧时刻（2026-10-27 实测：#2 改回 09:20 后仍显示 08:11，
+                    # 次日跨日才自愈）。只同步展示值，不再触发、不写决策日志。
+                    if row["start_at"]:
+                        planned[aid] = row["start_at"]
+                    else:
+                        planned.pop(aid, None)
                     continue
                 if aid in planned and not row["start_at"]:
                     # 定时被清空时不能沿用缓存计划（否则“改成随机”等于没改）——2026-10-27

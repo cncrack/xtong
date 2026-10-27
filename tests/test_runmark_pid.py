@@ -8,14 +8,16 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from xxt.core.runmark import (live_session, marker_path, marker_process_alive,
-                              pid_alive, pid_create_time, pid_owns_file,
-                              write_marker)
+from xxt.core.runmark import (busy_sessions, live_session, marker_path,
+                              marker_process_alive, pid_alive, pid_create_time,
+                              pid_owns_file, write_marker)
 
 
 class TestPidOwnership(unittest.TestCase):
@@ -56,6 +58,47 @@ class TestPidOwnership(unittest.TestCase):
 
     def test_missing_marker(self):
         self.assertFalse(marker_process_alive(self.data, 3))
+
+
+class TestBusySessionsSelf(unittest.TestCase):
+    """防双开不得把“自己”当“别人”（2026-10-27 实测：mlearn 一启动就自杀）。
+
+    面板 `/api/study/start` 先 spawn 并**替子进程**写标记（pid=子进程）防空窗双击；
+    子进程启动后自查读到这条标记，pid 活且归属成立 → 旧逻辑判成“已有会话在跑”。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+        self.procs: list[subprocess.Popen] = []
+
+    def tearDown(self):
+        for p in self.procs:
+            p.kill()
+            p.wait(timeout=10)
+        self.tmp.cleanup()
+
+    def _sleepy(self) -> int:
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.procs.append(p)
+        return p.pid
+
+    def test_own_pid_is_not_busy(self):
+        write_marker(self.data, 2, "测试课", pid=os.getpid())
+        self.assertTrue(marker_process_alive(self.data, 2))  # 标记本身有效
+        self.assertIsNotNone(live_session(self.data, 2))     # 面板仍要看得到会话
+        self.assertEqual(busy_sessions(self.data, [2]), {})  # 自己不算双开
+
+    def test_parent_pid_is_not_busy(self):
+        """venv 重定向器：面板 spawn 拿到的是 shim pid，真进程的 ppid 才是它。"""
+        write_marker(self.data, 2, "测试课", pid=os.getppid())
+        self.assertEqual(busy_sessions(self.data, [2]), {})
+
+    def test_other_process_is_busy(self):
+        pid = self._sleepy()
+        write_marker(self.data, 2, "测试课", pid=pid)
+        self.assertEqual(busy_sessions(self.data, [2]), {2: live_session(self.data, 2)})
+        self.assertIn(2, busy_sessions(self.data, [1, 2]))
 
 
 if __name__ == "__main__":
