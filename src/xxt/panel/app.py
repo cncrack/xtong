@@ -283,18 +283,23 @@ box-shadow:0 1px 4px rgba(25,35,70,.05);transition:.2s;position:relative;overflo
 .card.running{border-color:#9fe3c0}
 .card.running:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--ok)}
 .card.hit{outline:2px solid var(--accent);outline-offset:1px}
-.card .head{display:flex;align-items:flex-start;gap:.65rem;margin-bottom:.45rem;flex-wrap:wrap}
+.card .head{display:flex;align-items:flex-start;gap:.65rem;margin-bottom:.35rem;flex-wrap:wrap}
 .avatar{width:38px;height:38px;border-radius:12px;background:var(--grad);color:#fff;
 display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:700;flex:none;
 box-shadow:0 3px 8px rgba(70,80,220,.3)}
-.head .names{min-width:0;flex:1 1 150px}
+.head .names{min-width:0;flex:1 1 130px}
 .who{font-size:1.05rem;font-weight:800;line-height:1.25;word-break:break-all}
 .who .nicktag{font-size:.6rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
  border-radius:6px;padding:0 .25rem;margin-left:.35rem;vertical-align:2px;white-space:nowrap}
 .sub{font-size:.72rem;color:var(--muted);margin-top:.1rem}
-.head .ops{display:flex;gap:.35rem;flex:none;align-items:center;flex-wrap:wrap;margin-left:auto}
+.head .state{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;flex:none;margin-left:auto;
+padding-top:.12rem}
+/* 操作按钮单独一行、右对齐：2026-10-27 修复“■ 停止被卡片右边界裁掉”
+   （此前放在 .head 里且 flex:none，宽度被 6 个按钮撑破，outer1 又 overflow:hidden） */
+.card .ops{display:flex;gap:.35rem;align-items:center;justify-content:flex-end;flex-wrap:wrap;
+margin:.05rem 0 .4rem}
 .minibtn{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:.22rem .6rem;
-font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink)}
+font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink);white-space:nowrap}
 .minibtn:hover{border-color:var(--accent);color:var(--accent)}
 .minibtn.danger:hover{border-color:var(--bad);color:var(--bad)}
 .minibtn.ghost{opacity:.55;font-weight:400}
@@ -304,7 +309,7 @@ font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink)}
 .b-ok{background:#e3f6ec;color:var(--ok)}.b-warn{background:#fdf2df;color:var(--warn)}
 .b-info{background:#e8edff;color:#4353d8}
 .pulse{animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.55}}
-.chips{display:flex;gap:.3rem;flex-wrap:wrap;margin:.15rem 0 .6rem}
+.chips{display:flex;gap:.3rem;flex-wrap:wrap;margin:.05rem 0 .55rem}
 .chip{font-size:.68rem;color:var(--muted);background:var(--bg);border:1px solid var(--line);
 border-radius:7px;padding:.12rem .5rem}
 .course{margin:.5rem 0;padding:.45rem .55rem;border-radius:11px;border:1px solid transparent;transition:.15s}
@@ -316,11 +321,11 @@ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hi
 .nums{font-size:.78rem;color:var(--muted);font-weight:700;flex:none}
 .nums b{color:var(--ink);font-size:.82rem}
 .play{border:1px solid #bfe5d2;background:#eef9f3;color:var(--ok);border-radius:9px;
-padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap}
 .play:hover{background:var(--ok);color:#fff;border-color:var(--ok);
 box-shadow:0 3px 10px rgba(24,160,93,.35);transform:translateY(-1px)}
 .stopc{border:1px solid #bfe5d2;background:#e3f6ec;color:var(--ok);border-radius:9px;
-padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s}
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap}
 .stopc:hover{background:var(--bad);border-color:var(--bad);color:#fff;
 box-shadow:0 3px 10px rgba(214,69,69,.35);transform:translateY(-1px)}
 .morebtn{width:100%;margin-top:.5rem;background:none;border:1px dashed var(--line);
@@ -652,28 +657,31 @@ function renderAccounts(){
     const wmName={ai:'AI代答',reference:'参考答案',owner:'号主自理'};
     // 额度：今日已完成 / 上限（0 即不限）；上限来源（全局 or 账号单独）标在任务数后
     const qt=a.quota_tasks||0, qm=a.quota_minutes||0;
-    const qtag=a.quota_from_global?'（全局）':'（账号）';
-    const chips=[`今日 ${a.today_videos??0} / ${qt?qt+' 个':'不限'}${qtag}`,
-                 `今日 ${a.today_min??0} / ${qm?qm+' 分':'不限'}`,
-                 `作业=${wmName[wm]||'号主自理'}${a.work_from_global?'（跟随全局）':'（账号单独设置）'}`,
-                 a.window?`窗口 ${esc(a.window)}`:'',a.proxy?'代理':'',
-                 a.days_left===null?'':`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`,
-                 a.start_at?`定时 ${a.start_at}`:(AUTOPLAN.times[a.id]?`今日定时 ${AUTOPLAN.times[a.id]}`:'定时未设'),
+    const qsrc=a.quota_from_global?'上限跟随全局（账号级填 0 即跟随）':'上限按本账号单独设置';
+    // 把“（全局）/（账号）/0=不限”这类解释移进 title：卡头上少两截文字，chips 一行就能放下
+    const mkChip=(v,t)=>`<span class="chip"${t?` title="${esc(t)}"`:''}>${v}</span>`;
+    const chips=[mkChip(`今日 ${a.today_videos??0}/${qt?qt+'个':'不限'}`, qsrc+'｜任务数'),
+                 mkChip(`今日 ${a.today_min??0}/${qm?qm+'分':'不限'}`, qsrc+'｜时长'),
+                 mkChip(`作业 ${wmName[wm]||'号主自理'}`, a.work_from_global?'跟随全局默认策略':'本账号单独设置'),
+                 a.window?mkChip(`窗口 ${esc(a.window)}`):'',a.proxy?mkChip('代理'):'',
+                 a.days_left===null?'':mkChip(`有效期 ${a.days_left>=0?a.days_left+'天':'已过期'}`),
+                 a.start_at?mkChip('⏱ '+a.start_at,'计划时刻；到点由「⏱ 定时调度」守护开刷')
+                   :(AUTOPLAN.times[a.id]?mkChip('⏱ '+AUTOPLAN.times[a.id],'今日计划时刻'):mkChip('定时未设')),
                  // 定时只是“计划时刻”：真正去开刷的是「⏱ 定时调度」守护进程；
                  // 守护没在跑时显式标红，避免误以为到点会自动开刷（2026-10-26 用户疑问）
                  (a.start_at&&!AUTOSTATE.running)
-                   ? `<span style="color:#c0392b" title="这只是计划时刻：需点顶部「⏱ 定时调度」启动守护进程，到点才会自动开刷（不启动则今天不会自己跑）">⏱ 调度未启动</span>`
+                   ? `<span class="chip" style="color:#c0392b" title="这只是计划时刻：需点顶部「⏱ 定时调度」启动守护进程，到点才会自动开刷（不启动则今天不会自己跑）">⏱ 调度未启动</span>`
                    : '',
-                 a.renew_count?`续期${a.renew_count}次`:'',
-                 a.last_expired_at?'上次失效 '+esc(a.last_expired_at.slice(5,16)):'' ]
-                 .filter(Boolean).map(c=>`<span class="chip">${c}</span>`).join('');
+                 a.renew_count?mkChip('续期 '+a.renew_count+' 次'):'',
+                 a.last_expired_at?mkChip('上次失效 '+esc(a.last_expired_at.slice(5,16))):'' ]
+                 .filter(Boolean).join('');
     const mkCourse=(c)=>{
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
       const run=RUNNING[a.id];
       const runningThis=run&&run.course===c.name;
       const ctl=runningThis
-        ?`<button class="stopc" title="正在刷这门课，点击停止（进度保留）"
-            onclick="stopGrind(${a.id})">▶ 刷课中 ${run.since} · 点击停止</button>`
+        ?`<button class="stopc" title="正在刷这门课（${run.since} 开始），点击停止；已看的进度全部保留"
+            onclick="stopGrind(${a.id})">■ 停止刷课</button>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
             onclick="startGrind(${a.id},this.dataset.c,this.dataset.p)">▶ 刷这门课</button>`;
@@ -738,15 +746,15 @@ function renderAccounts(){
         ${(a.student_no||(a.profile&&(a.profile.grade||a.profile.major||a.profile.term)))?`<div class="sub">
           🎓 ${a.student_no?`学号 ${hl(a.student_no,q)}`:''}${a.student_no&&a.profile&&(a.profile.grade||a.profile.major||a.profile.term)?' · ':''}${a.profile?[a.profile.grade,a.profile.major,a.profile.term].filter(Boolean).map(x=>esc(x)).join(' / '):''}
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
-      <div class="ops">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
-        ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}
-        ${a.has_session
+      <div class="state">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
+        ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}</div>
+    </div>
+    <div class="ops">${a.has_session
               ? `<button class="minibtn ghost" title="本账号已登录（无需重新登录）。仅当会话失效时才点此刷新：先无头自动，失败可转手动扫码" onclick="doLogin(${a.id})">🔑 会话</button>`
               : `<button class="minibtn primary" title="为该账号登录：先试无头自动（用已存密码），失败可转手动扫码/过验证码" onclick="doLogin(${a.id})">🔑 登录</button>`}
         <button class="minibtn" title="批量作业：遍历该账号全部未完成作业按策略执行（单门作业在下方课程列表的作业行里单独处理）"
           onclick="doWorkAll(${a.id})">📝 批量作业</button>
         <button class="minibtn" title="账号管理：备注/优先级/专属窗口与额度/有效期/续期/删除" onclick="editAccount(${a.id})">✎ 管理</button>${stopBtn}</div>
-    </div>
     ${a.note?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📝 ${esc(a.note)}</div>`:''}
     ${(()=>{const bp=(PLANS||[]).find(p=>p.enabled&&p.account_ids.includes(a.id));
       return bp?`<div class="muted" style="font-size:.75rem;margin-bottom:.3rem">📚 学习安排《${esc(bp.name)}》→ 课程《${esc(bp.course_name)}》（开跑时间仍按本账号定时/窗口）</div>`:'';})()}
