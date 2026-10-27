@@ -644,6 +644,34 @@ def _session_end_reason(conn, account_id: int, since_iso: str) -> str:
     return "｜".join(parts[-2:]) if len(parts) >= 3 else "｜".join(parts)
 
 
+def _revive_plan(now_epoch: float, end_ts: str, videos_today: int, tries_today: int,
+                 auto_tries_today: int, max_tries: int,
+                 retry_minutes: int) -> tuple[bool, int]:
+    """已 `fired` 的账号会话早退后 → (是否允许当日补跑, 还需等几分钟)。
+
+    2026-10-27 补漏：回读只在 `confirm_seconds` 那一刻看一次，只能抓“秒退”。
+    #1 今早 09:10:43 确认在跑、09:13:59 才退出（视频 0 个），仍被算作今日已学。
+    收回“今日已学”的三个前提：今日 0 个视频、这轮确由守护发起（有 `auto-try`）、
+    尝试次数未用尽。已退出超过 `retry_minutes` 就立刻补跑（#1 那种隔了一小时的
+    不必再空等），否则按剩余分钟向上取整。
+    """
+    if videos_today > 0:
+        return (False, 0)   # 今天真学过，会话退出属正常停机（额度/超窗/做完）
+    if auto_tries_today <= 0:
+        return (False, 0)   # 不是守护发起的（面板 ▶ / 手动），不代用户补跑
+    if max_tries and tries_today >= max_tries:
+        return (False, 0)   # 次数用尽，今日不再自动重试
+    end = _epoch(end_ts) if end_ts else 0.0
+    if not end:
+        return (True, 0)    # 没留 session-end（崩溃），当已隔够久
+    import math
+
+    gap = (now_epoch - end) / 60.0
+    if gap >= retry_minutes:
+        return (True, 0)
+    return (True, max(1, int(math.ceil(retry_minutes - gap))))
+
+
 def cmd_auto(args: argparse.Namespace) -> int:
     """常驻调度：各账号在计划时刻（start_at 或窗口内随机）自动开始当日学习会话。
 
@@ -710,6 +738,57 @@ def cmd_auto(args: argparse.Namespace) -> int:
             return row is not None
         except Exception:
             return False
+
+    def _revive_if_dead(aid: int, day: str) -> bool:
+        """已 `fired` 但会话已退出 → 判是否收回“今日已学”（返回是否收回）。
+
+        2026-10-27 补漏：回读只抓“秒退”；#1 今早确认开跑后跑了 3 分 46 秒才退（视频 0 个），
+        旧逻辑就把它算作今日已学，一整天不再试。这里在进程真的消失后再判一次。
+        纯本地（读标记 + 查库），零平台访问。
+        """
+        from .core.runmark import marker_process_alive
+
+        try:
+            if marker_process_alive(s.data_dir, aid):
+                return False  # 还在跑（或刚结束还没来得及清理，下一轮再说）
+        except Exception:
+            return False
+        try:
+            conn_r = connect(s.db_path)
+            try:
+                def _cnt(event: str) -> int:
+                    return conn_r.execute(
+                        "SELECT COUNT(*) n FROM run_logs WHERE account_id=?"
+                        " AND event=? AND ts LIKE ?",
+                        (aid, event, day + "%")).fetchone()["n"]
+
+                videos_today = _cnt("video-done")
+                auto_tries_today = _cnt("auto-try")
+                row_end = conn_r.execute(
+                    "SELECT ts FROM run_logs WHERE account_id=? AND event='session-end'"
+                    " AND ts LIKE ? ORDER BY id DESC LIMIT 1",
+                    (aid, day + "%")).fetchone()
+            finally:
+                conn_r.close()
+        except Exception:
+            return False
+        n_aid = tries.get(aid, 0)
+        revive, wait_m = _revive_plan(
+            _time.time(), row_end["ts"] if row_end else "", videos_today,
+            n_aid, auto_tries_today, max_tries, retry_minutes)
+        if not revive:
+            return False
+        fired.discard(aid)
+        planned.pop(aid, None)
+        if wait_m:
+            retry_after[aid] = _hhmm_in(wait_m)
+        cap = max_tries or "不限"
+        _ev(aid, "auto-error",
+            f"已确认开跑但会话已退出、今日 0 个视频（今日已试 {n_aid}/{cap} 次）"
+            f"→ 收回“今日已学”，"
+            + (f"{wait_m} 分钟后补跑（约 {retry_after[aid]}）" if wait_m else "下一轮即补跑"),
+            "WARNING")
+        return True
 
     # 重启续跑：今日计划与「已确认开跑」从库里恢复——否则守护一重启就重新随机时刻，
     # 已刷完的号还会被再刷一次（“每账号每天只自动启动一次”会被打破）。
@@ -833,6 +912,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                         planned[aid] = row["start_at"]
                     else:
                         planned.pop(aid, None)
+                    if aid in fired:
+                        # 2026-10-27 补漏：回读抓不到“确认开跑后中途退出”，这里补判一次；
+                        # 收回了今日已学就下一轮按计划（或退避后）重试。
+                        _revive_if_dead(aid, today)
                     continue
                 if aid in planned and not row["start_at"]:
                     # 定时被清空时不能沿用缓存计划（否则“改成随机”等于没改）——2026-10-27

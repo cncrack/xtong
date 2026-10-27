@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from xxt.cli import _auto_limits, _session_end_reason
+from xxt.cli import _auto_limits, _epoch, _revive_plan, _session_end_reason
 from xxt.store.db import connect
 
 
@@ -86,6 +86,48 @@ class TestSessionEndReason(unittest.TestCase):
     def test_null_detail_is_empty(self):
         self._seed("2026-10-27T09:13:59", "session-end", None)
         self.assertEqual(_session_end_reason(self.conn, 1, "2026-10-27T09:10:00"), "")
+
+
+class TestRevivePlan(unittest.TestCase):
+    """已 fired 但会话早退 → 要不要收回“今日已学”并补跑（2026-10-27 补漏）。"""
+
+    END = "2026-10-27T09:13:59"
+
+    def test_had_videos_keeps_fired(self):
+        # 今天真刷过（额度/超窗/做完而退）→ 不能收回
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 3600, self.END, 5, 1, 1, 2, 15), (False, 0))
+
+    def test_not_started_by_guard_is_ignored(self):
+        # 面板 ▶ / 手动启的会话失败，不代用户补跑（无 auto-try）
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 3600, self.END, 0, 0, 0, 2, 15), (False, 0))
+
+    def test_tries_exhausted_keeps_fired(self):
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 3600, self.END, 0, 2, 2, 2, 15), (False, 0))
+
+    def test_unlimited_tries_allows_revive(self):
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 3600, self.END, 0, 0, 1, 0, 15), (True, 0))
+
+    def test_long_gap_revives_immediately(self):
+        # #1 今早 09:13 退出、10:50 才巡检到 → 不必再空等 15 分钟
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 97 * 60, self.END, 0, 1, 1, 2, 15), (True, 0))
+
+    def test_exact_retry_window_revives_immediately(self):
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 15 * 60, self.END, 0, 1, 1, 2, 15), (True, 0))
+
+    def test_recent_exit_waits_remaining_minutes(self):
+        # 刚退出 3 分钟 → 还要等 12 分钟，避免连续访问
+        self.assertEqual(
+            _revive_plan(_epoch(self.END) + 3 * 60, self.END, 0, 1, 1, 2, 15), (True, 12))
+
+    def test_missing_session_end_revives_immediately(self):
+        # 进程崩了、没写 session-end：当作已隔够久
+        self.assertEqual(_revive_plan(_epoch(self.END), "", 0, 1, 1, 2, 15), (True, 0))
 
 
 if __name__ == "__main__":
