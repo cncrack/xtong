@@ -62,8 +62,36 @@ async def _wait_task_page(page, timeout_s: float = 15.0) -> bool:
 _NON_VIDEO_MARKS = ("作业", "测验", "讨论", "阅读", "考试", "练习", "公告")
 
 
-def is_non_video_name(name: str | None) -> bool:
-    return bool(name) and any(m in name for m in _NON_VIDEO_MARKS)
+def non_video_marks(settings: Any = None) -> tuple[str, ...]:
+    """非视频节点关键词：可用 `[learn] non_video_marks` 覆盖（逗号分隔）。
+
+    2026-10-27 用户要求"这类规则必为配置项"：平台改叫法时改配置即可，
+    不必改代码发版。留空/写错一律回落默认值。
+    """
+    raw = (getattr(settings, "learn", None) or {}).get("non_video_marks")
+    if isinstance(raw, str) and raw.strip():
+        items = tuple(x.strip() for x in raw.split(",") if x.strip())
+        return items or _NON_VIDEO_MARKS
+    if isinstance(raw, (list, tuple)):
+        items = tuple(str(x).strip() for x in raw if str(x).strip())
+        return items or _NON_VIDEO_MARKS
+    return _NON_VIDEO_MARKS
+
+
+def is_non_video_name(name: str | None, marks: tuple[str, ...] | None = None) -> bool:
+    use = marks or _NON_VIDEO_MARKS
+    return bool(name) and any(m in name for m in use)
+
+
+def quota_reached(session_seconds: float, budget_minutes: float | None) -> bool:
+    """时长额度是否达标：只看本会话真播完记账的视频秒数（2026-10-27 口径）。
+
+    以前用墙钟（`monotonic - study_start`），把拟人间隔、iframe 重载、
+    起播缓存都算进额度——当日 #2 实测墙钟 186 分钟、视频只 105 分钟，
+    相当于 40% 额度耗在等待上。用户拍板：只累加看过的视频。
+    `budget_minutes=0/None` 表示不限。
+    """
+    return bool(budget_minutes) and session_seconds / 60 >= budget_minutes
 
 
 def mark_entry_visited(conn, course_id: int, chapter_pid: str,
@@ -381,6 +409,7 @@ class AsyncStudyRunner:
         enter_retries = _learn_int(self.settings, "enter_retries", 2, 1, 5)
         max_skip = _learn_int(self.settings, "max_skip_chapters", 3, 1, 10)
         non_video_streak_cap = _learn_int(self.settings, "non_video_streak", 4, 1, 20)
+        nv_marks = non_video_marks(self.settings)
         # B3（2026-10-27 用户批准）：视频中途中断（ended=False）时，先重载任务页
         # 续播一次，而不是直接把这一节扔掉换下一节。0 = 关闭。
         partial_retries = _learn_int(self.settings, "partial_retries", 1, 0, 3)
@@ -485,6 +514,10 @@ class AsyncStudyRunner:
                     return stats
 
                 study_start: float | None = None
+                # 额度口径（2026-10-27 用户拍板）：只累加"真播完记账"的视频秒数，
+                # 拟人间隔、页面加载、中断没记账的一律不计——墙钟含 40% 空转，
+                # 拿它判达标等于让用户为等待买单（当日 186 墙钟 vs 105 视频）。
+                session_seconds = 0.0
                 no_video_streak = 0
                 partial_tried: set[str] = set()  # B3：本会话已为它续播过的节
                 while limit is None or stats["videos"] < limit:
@@ -494,9 +527,13 @@ class AsyncStudyRunner:
                     if budget_tasks and stats["videos"] >= budget_tasks:
                         stats["stop_reason"] = "任务数额度达标"
                         break
-                    if budget_minutes and study_start and \
-                            (time.monotonic() - study_start) / 60 >= budget_minutes:
-                        stats["stop_reason"] = "时长额度达标"
+                    if quota_reached(session_seconds, budget_minutes):
+                        wall = ((time.monotonic() - study_start) / 60) if study_start else 0
+                        stats["stop_reason"] = (
+                            f"时长额度达标（本会话视频 {session_seconds // 60} 分钟）")
+                        log.info("[#%s] 本会话视频 %.0f 分钟 / 额度 %.0f 分钟（墙钟 %.0f 分钟，"
+                                 "差额=拟人间隔+加载），收工",
+                                 self.account_id, session_seconds / 60, budget_minutes, wall)
                         break
                     try:
                         video_frame = await _find_frame_with(page, "video", timeout_s=25)
@@ -539,12 +576,14 @@ class AsyncStudyRunner:
                                                  self._partial_ratio() * 100)
                             if played is True:
                                 stats["videos"] += 1
+                                dur_s = int(getattr(self, "_last_video_dur", 0) or 0)
+                                session_seconds += dur_s  # 只有记账的时长才进额度
                                 self.conn.execute(
                                     "INSERT INTO run_logs(ts, level, event, detail, account_id)"
                                     " VALUES(?,?,?,?,?)",
                                     (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
                                      "video-done",
-                                     f"{course_row['name']}｜{title}｜{getattr(self, '_last_video_dur', 0)}s",
+                                     f"{course_row['name']}｜{title}｜{dur_s}s",
                                      self.account_id))
                                 if cid is not None:
                                     self.conn.execute(
@@ -626,7 +665,7 @@ class AsyncStudyRunner:
                 # 不再是“这节进过但没学成”。旧代码在这里无条件写入，会把最后一次
                 # 播放失败/没播完的视频也标成 visited → 明天不再选它，等于永久漏学。
                 # 用户口径：没学过/没完成 → 保持 pending。
-                if is_non_video_name(leaf_name):
+                if is_non_video_name(leaf_name, nv_marks):
                     mark_entry_visited(self.conn, course_row["id"], kid)
             except RuntimeError as exc:
                 stats["stop_reason"] = f"异常中止：{exc}"

@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
         "enter_retries": 2,
         "max_skip_chapters": 3,
         "non_video_streak": 4,
+        "non_video_marks": "作业,测验,讨论,阅读,考试,练习,公告",
         "partial_retries": 1,
         "partial_retry_ratio_pct": 60,
         "login_budget_per_day": 2,

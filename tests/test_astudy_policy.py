@@ -14,7 +14,9 @@ import unittest
 from xxt.adapters.chaoxing.astudy import (
     _learn_int,
     is_non_video_name,
+    non_video_marks,
     pick_pending_after,
+    quota_reached,
 )
 
 
@@ -117,6 +119,50 @@ class TestLearnInt(unittest.TestCase):
         self.assertEqual(_learn_int(self.S({"max_skip_chapters": "abc"}),
                                     "max_skip_chapters", 3, 1, 10), 3)
         self.assertEqual(_learn_int(self.S({}), "max_skip_chapters", 3, 1, 10), 3)
+
+
+class TestQuotaReached(unittest.TestCase):
+    """额度口径（2026-10-27 用户拍板）：只算看过的视频，不算拟人间隔。"""
+
+    def test_counts_video_seconds_only(self):
+        # 174 分钟额度：墙钟再长也不算，视频秒数够了才算
+        self.assertFalse(quota_reached(0, 174))
+        self.assertFalse(quota_reached(173 * 60, 174))
+        self.assertTrue(quota_reached(174 * 60, 174))
+
+    def test_zero_or_none_budget_means_unlimited(self):
+        self.assertFalse(quota_reached(10 ** 6, 0))
+        self.assertFalse(quota_reached(10 ** 6, None))
+
+    def test_wallclock_does_not_leak_in(self):
+        # 回归点：旧口径用墙钟，186 分钟墙钟 + 105 分钟视频会被判“达标”
+        self.assertFalse(quota_reached(105 * 60, 174))
+
+
+class TestNonVideoMarks(unittest.TestCase):
+    def test_default_when_unset(self):
+        class S:
+            learn = {}
+
+        marks = non_video_marks(S())
+        self.assertIn("作业", marks)
+        self.assertTrue(is_non_video_name("第一章｜2.12 作业", marks))
+        self.assertFalse(is_non_video_name("5.1 改变学习方法（上）", marks))
+
+    def test_override_by_config(self):
+        class S:
+            learn = {"non_video_marks": "小组任务,直播"}
+
+        marks = non_video_marks(S())
+        self.assertEqual(marks, ("小组任务", "直播"))
+        self.assertTrue(is_non_video_name("第三章｜小组任务", marks))
+        self.assertFalse(is_non_video_name("第三章｜作业", marks))  # 覆盖后旧词不再生效
+
+    def test_bad_value_falls_back_to_default(self):
+        class S:
+            learn = {"non_video_marks": "   "}
+
+        self.assertEqual(non_video_marks(S()), non_video_marks(None))
 
 
 if __name__ == "__main__":
