@@ -29,12 +29,12 @@ class TestProfileFields(unittest.TestCase):
 
     def test_name_does_not_fall_back_to_nickname(self):
         """name 只存手填值；昵称走 platform_name/display_name，绝不写进 name。"""
-        self.conn.execute("UPDATE accounts SET platform_username='林鑫阳' WHERE id=1")
+        self.conn.execute("UPDATE accounts SET platform_username='甲同学' WHERE id=1")
         self.conn.commit()
         p = stats.get_profile(self.conn, 1)
         self.assertEqual(p["name"], "")
-        self.assertEqual(p["platform_name"], "林鑫阳")
-        self.assertEqual(p["display_name"], "林鑫阳")  # 仅供显示
+        self.assertEqual(p["platform_name"], "甲同学")
+        self.assertEqual(p["display_name"], "甲同学")  # 仅供显示
 
     def test_source_none_keeps_platform(self):
         """无改动保存（source=None）不能把「平台」抹成「手动」。"""
@@ -64,10 +64,10 @@ class TestProfileFields(unittest.TestCase):
 
     def test_platform_name_equal_to_nickname_is_ignored(self):
         """C 方案：平台“姓名”与昵称完全相同时视为昵称，不写 name 且记入 nickname_only。"""
-        self.conn.execute("UPDATE accounts SET platform_username='林鑫阳' WHERE id=1")
+        self.conn.execute("UPDATE accounts SET platform_username='甲同学' WHERE id=1")
         self.conn.commit()
         res = stats.merge_platform_profile(self.conn, 1,
-                                           {"name": "林鑫阳", "school": "某大学"})
+                                           {"name": "甲同学", "school": "某大学"})
         p = stats.get_profile(self.conn, 1)
         self.assertEqual(p["name"], "")
         self.assertEqual(p["school"], "某大学")

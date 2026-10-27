@@ -1,6 +1,6 @@
 """P2.5 作业页作答器：解析 doHomeWorkNew 题目 → ai.quiz 管线作答 → 填入。
 
-2026-10-24 实况核对（王泽轩 2.12 样本）：
+2026-10-24 实况核对（乙同学 2.12 样本）：
   题目容器 div.singleQquesId[id^=question] > div.TiMu
   题型 span.newZy_TItle 文本【单选题/多选题/判断题/填空题/简答题】
   题干 .Zy_TItle（内联样式结构，取文本时剥题型标记）

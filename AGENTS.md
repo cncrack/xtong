@@ -24,6 +24,7 @@
 
 - 交流与文档一律使用**中文**；代码标识符用英文
 - 敏感信息（账号、密码、cookie、API Key）**绝不写入代码和文档**，统一放 `data/`（已忽略 git）或环境变量；`config/` 中只放引用名
+- **真实姓名、学校名一律用代号**（2026-10-28 Q37）：文档/devlog/测试夹具里的样本账号统一写 `甲同学`（#1）、`乙同学`（#2），校名写 `示范学院`；原名↔代号映射只存在于本机 `data/redact_map.local.md`（不入库）。新发现的其他真名追加到 `data/redact_terms.local.txt`（每行一条），门禁会据此拦截
 - `data/`、`*.db`、`storage_state*.json`、`.env` 不入库（配好 .gitignore）
 - 所有与目标网站平台强相关的逻辑（URL、选择器、接口）只写在 `src/xxt/adapters/` 内，核心层不得引用平台细节
 - 默认策略遵守 `docs/PLAN.md` §8：低频拟人化、半自动优先、不硬闯风控
@@ -41,7 +42,7 @@
 ## 代码审查三级门禁（2026-10-24 用户确认）
 
 - **每 commit（AI 自审，不加人力）**：提交前重读本次 diff 确认与 devlog 描述一致、跑 `pytest` 与 lint、对照"硬性约定"自查（平台细节不出 adapters/、无固定延时、文档中文）
-- **每 push（脚本门禁，强制）**：`scripts/push_check.py` 必须全绿（exit 0）——① 待推送 diff 敏感扫描（敏感赋值/邮箱/手机号/本机 `data/git-remote.md` 中的账号值，命中即拦）② tracked 文件防护（`data/`、`*.db`、`.env`、`storage_state*.json` 不得被跟踪）③ `pytest` 通过。用法：`.venv/Scripts/python.exe scripts/push_check.py`
+- **每 push（脚本门禁，强制）**：`scripts/push_check.py` 必须全绿（exit 0）——① tracked 文件防护（`data/`、`*.db`、`.env`、`storage_state*.json` 不得被跟踪）② 待推送 diff 敏感扫描（敏感赋值/邮箱/手机号/本机 `data/git-remote.md` 的账号值/脱敏词，命中即拦）③ **tracked 全文脱敏扫描**（`data/redact_terms.local.txt` 里的真实姓名/校名在当前全部 tracked 文件里必须 0 命中；本机无词表则跳过）④ 语法检查（AST）⑤ `pytest` 通过。用法：`.venv/Scripts/python.exe scripts/push_check.py`
 - **每里程碑（AI 深审 + 用户拍板）**：M1 登录 / M2 watcher / P2 弹题 / P3 加密等节点，派**只读审查会话/子代理**审完整 diff（凭据处理、日志是否打印敏感值、拟人化合规、适配层隔离、异常路径），产出审查报告；用户只看报告结论与风险点并决策，不逐行读代码
 
 ## 跨会话协调（主对话 / 侧聊 / 新会话）

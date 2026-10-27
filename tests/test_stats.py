@@ -181,15 +181,15 @@ class TestStats(unittest.TestCase):
         self.assertEqual(get_profile(self.conn, 1)["display_name"], "")
 
     def test_display_name_falls_back_to_platform(self):
-        self.conn.execute("UPDATE accounts SET platform_username='林鑫阳' WHERE id=1")
+        self.conn.execute("UPDATE accounts SET platform_username='甲同学' WHERE id=1")
         self.conn.commit()
-        self.assertEqual(get_profile(self.conn, 1)["display_name"], "林鑫阳")
-        self.assertEqual(get_profile(self.conn, 1)["platform_name"], "林鑫阳")
+        self.assertEqual(get_profile(self.conn, 1)["display_name"], "甲同学")
+        self.assertEqual(get_profile(self.conn, 1)["platform_name"], "甲同学")
         # 手填姓名优先于平台昵称
         set_profile(self.conn, 1, name="林锦阳")
         p = get_profile(self.conn, 1)
         self.assertEqual(p["display_name"], "林锦阳")
-        self.assertEqual(p["platform_name"], "林鑫阳")
+        self.assertEqual(p["platform_name"], "甲同学")
 
     def test_merge_platform_only_fills_empty(self):
         set_profile(self.conn, 1, name="手填名", grade="2024级")  # 手填值不许被覆盖

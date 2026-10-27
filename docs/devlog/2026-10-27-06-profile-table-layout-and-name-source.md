@@ -26,7 +26,7 @@
 前端 `inp(id,'n', p.display_name, …)` 的 value 取 `display_name`（= 手填姓名 **or** 平台昵称）→
 姓名框预填昵称，点一次「保存」就把昵称写进 `account_profiles.name`、来源变「手动」，
 此后「平台读取」按“只补空”永远跳过姓名。现改为 value 取 `p.name`，昵称只做 placeholder：
-`留空用昵称：林鑫阳`。
+`留空用昵称：甲同学`。
 
 ### 3. 修 P2：文案与实现对齐
 
@@ -60,7 +60,7 @@ pageerror = 0
 
 ## 四、实测暴露的新问题（用户选 **C**，已实施见 §七）
 
-库里两号 `account_profiles.name` **都等于平台昵称**（`#1 林鑫阳 / #2 王泽轩`，`source='platform'`）——
+库里两号 `account_profiles.name` **都等于平台昵称**（`#1 甲同学 / #2 乙同学`，`source='platform'`）——
 根源不是前端，而是「⬇ 平台读取」把平台返回的 `name` 当真实姓名回填，而超星该字段给的就是**昵称**
 （`accounts.platform_username` 已有同名值）。后果：姓名列永远显示昵称、用户以为已填真名。
 
@@ -109,16 +109,16 @@ pageerror = 0
 
 ```
 画像行 2 条，其中“姓名==平台昵称” 2 条：
-  #1 name='林鑫阳' source='platform'
-  #2 name='王泽轩' source='platform'
-→ 已置空；#1/#2 昵称分别为 林鑫阳/王泽轩，学校泉州信息工程学院，source 仍 platform
+  #1 name='甲同学' source='platform'
+  #2 name='乙同学' source='platform'
+→ 已置空；#1/#2 昵称分别为 甲同学/乙同学，学校示范学院，source 仍 platform
 ```
 
 ### 复测（面板重启后）
 
 ```
 pf_n_1: 宽 95px value='' ph='留空用昵称'      ← 姓名回归“未填”，昵称并列不复写
-pf_g_1 value='2026' / pf_sc_1 value='泉州信息工程学院'（手填与平台值均未动）
+pf_g_1 value='2026' / pf_sc_1 value='示范学院'（手填与平台值均未动）
 无改动保存 → 来源 'platform'→'platform'；pageerror=0；pytest 142 passed（+2）
 ```
 
@@ -126,7 +126,7 @@ pf_g_1 value='2026' / pf_sc_1 value='泉州信息工程学院'（手填与平台
 
 ### 当前状态
 
-- 姓名列为空、placeholder「留空用昵称」，邻近「昵称」列已显示林鑫阳/王泽轩 → 需用户**手填真名**。
+- 姓名列为空、placeholder「留空用昵称」，邻近「昵称」列已显示甲同学/乙同学 → 需用户**手填真名**。
 - 下次点「⬇ 平台读取」：昵称会被 `nickname_only` 拦下（不再污染），学校仍会回填。
 - 部署文件仍无变动。
 
@@ -147,8 +147,8 @@ CSS：`.who .nicktag{font-size:.6rem;border:1px solid var(--line);border-radius:
 实测（`data/debug/shot_card.py`，截图 `card_nicktag.png`）：
 
 ```
-卡片1: 标题='林鑫阳昵称' 有昵称标签=True 副行='#1 default · 优先级 1'
-卡片2: 标题='王泽轩昵称' 有昵称标签=True 副行='#2 小号1 · 优先级 2'
+卡片1: 标题='甲同学昵称' 有昵称标签=True 副行='#1 default · 优先级 1'
+卡片2: 标题='乙同学昵称' 有昵称标签=True 副行='#2 小号1 · 优先级 2'
 pageerror = 0
 ```
 
@@ -159,8 +159,8 @@ pageerror = 0
   `pytest 142 passed`、`push_check` PASS。提交 `9ecae7d` 已推送（`main` 与 `origin/main` 齐平）。
 - **进行中**：无。
 - **下一步第一个动作（明天 10-28）**：`Ctrl+F5` →「📈 统计 → 画像设置」给 #1/#2 手填真名并保存，
-  确认卡片标题的「昵称」灰标签消失、副行改显「· 平台昵称 林鑫阳/王泽轩」。
+  确认卡片标题的「昵称」灰标签消失、副行改显「· 平台昵称 甲同学/乙同学」。
 - **之后可选**：① 重建 `dist\xxt.exe`（仍 10-25 18:58 旧构建） ② 作业全链路实测（参考答案→回填→平台核对→提交→读判分） ③ 弹题选择器实况。
 - **阻塞点**：无。面板保持运行（挂机不影响）。
 - **现场备查（`data/` 不入库）**：新增 `diag_prof_table.py`、`shot_prof.py`、`shot_card.py`、`q_prof_check.py`、`q_clean_nickname.py`；
-  画像原值备份 `profiles_backup_20261027-025421.json`（两号 name 分别为 林鑫阳/王泽轩，可据此还原）。
+  画像原值备份 `profiles_backup_20261027-025421.json`（两号 name 分别为 甲同学/乙同学，可据此还原）。

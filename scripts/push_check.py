@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""push 前门禁：敏感信息扫描 + tracked 文件防护检查 + 测试。
+"""push 前门禁：敏感信息扫描 + tracked 文件防护检查 + 脱敏扫描 + 测试。
 
 全部通过输出 PUSH CHECK: PASS（退出码 0）；任何硬失败则 FAIL（退出码 1）。
+
+真值一律来自 data/（不入库）：账号邮箱在 `data/git-remote.md`，真实姓名/校名在
+`data/redact_terms.local.txt`。脚本本身不含任何敏感值，别人 clone 时缺文件即自动跳过。
 用法（仓库根目录）：
     .venv/Scripts/python.exe scripts/push_check.py   # Windows
     .venv/bin/python scripts/push_check.py           # Linux / macOS / Docker
@@ -47,12 +50,53 @@ def sh(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def extra_needles() -> list[str]:
+def redact_terms() -> list[str]:
+    """本机脱敏词表：真实姓名/校名（`data/redact_terms.local.txt`，每行一条，`#` 注释）。
+
+    2026-10-28 Q37：文档里曾散落真实姓名/校名。词表只在本机，脚本本身不含真值；
+    文件不存在时返回空表（别人 clone 不受影响）。
+    """
+    f = ROOT / "data" / "redact_terms.local.txt"
+    if not f.exists():
+        return []
+    out = []
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            out.append(s)
+    return sorted(set(out))
+
+
+def local_needles() -> list[str]:
     """从 data/git-remote.md（本机备忘，不入库）提取真实账号值作为精确拦截词。"""
     memo = ROOT / "data" / "git-remote.md"
     if not memo.exists():
         return []
     return sorted(set(RE_EMAIL.findall(memo.read_text(encoding="utf-8", errors="replace"))))
+
+
+def scan_tracked_text(terms: list[str]) -> list[str]:
+    """全部 tracked 文本文件全文扫脱敏词（不只是本次 diff）。
+
+    历史文档里的姓名不会出现在 diff 里——只扫 diff 等于永远抓不到；这里扫的是
+    **当前仓库内容**。二进制（图片/字体）解码失败即跳过。
+    """
+    if not terms:
+        return []
+    bad: list[str] = []
+    for rel in sh("git", "ls-files").stdout.splitlines():
+        p = ROOT / rel
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for term in terms:
+            n = text.count(term)
+            if n:
+                bad.append(f"{rel}: 含真实姓名/校名 ×{n}")
+    return bad
 
 
 def staged_diff() -> str:
@@ -98,7 +142,8 @@ def scan_diff(diff: str, needles: list[str]) -> tuple[list[str], list[str]]:
             problems.append(f"疑似手机号: {RE_PHONE.search(text).group()}")
         for needle in needles:
             if needle and needle in text:
-                problems.append(f"命中本机备忘中的账号值: {needle}")
+                # 不打印原值：终端输出常被粘进对话/日志，打出来等于又泄露一次
+                problems.append(f"命中本机敏感词（{len(needle)} 字，原值不显示）")
         if RE_WARN.search(text):
             warnings.append(f"含敏感词(需复核): {text.strip()[:80]}")
     return problems, warnings
@@ -146,20 +191,28 @@ def main() -> int:
 
     # 2) 待推送 diff 敏感扫描
     diff = outgoing_diff()
-    p2, warnings = scan_diff(diff, extra_needles())
+    terms = redact_terms()
+    p2, warnings = scan_diff(diff, local_needles() + terms)
     problems += p2
-    print(f"[1/4] 敏感扫描: 待审 diff {len(diff)} 字符, 拦截 {len(p2)}, 告警 {len(warnings)}")
-    for w in warnings[:5]:
-        print(f"      ⚠️ {w}")
 
-    # 3) 语法检查（AST，覆盖延迟导入模块）
+    # 3) tracked 全文脱敏扫描（历史文档里的姓名不会进 diff，必须单独扫）
+    p3 = scan_tracked_text(terms)
+    problems += p3
+
+    # 4) 语法检查（AST，覆盖延迟导入模块）
     syn_ok, syn_tail = run_syntax_check()
 
-    # 4) 测试
+    # 5) 测试
     ok, tail = run_pytest()
-    print(f"[2/4] 防护检查: tracked 禁止路径 {'✅ 无' if not bad else '❌ ' + str(bad)}")
-    print(f"[3/4] 语法检查: {'✅ 通过' if syn_ok else '❌ 失败'}")
-    print(f"[4/4] pytest: {'✅ 通过' if ok else '❌ 失败'}")
+    print(f"[1/5] 防护检查: tracked 禁止路径 {'✅ 无' if not bad else '❌ ' + str(bad)}")
+    print(f"[2/5] 敏感扫描: 待审 diff {len(diff)} 字符, 拦截 {len(p2)}, 告警 {len(warnings)}")
+    for w in warnings[:5]:
+        print(f"      ⚠️ {w}")
+    print(f"[3/5] 脱敏扫描: tracked 文件 "
+          + ("✅ 无真实姓名/校名" if not p3 else f"❌ {len(p3)} 处")
+          + (f"（词表 {len(terms)} 条）" if terms else "（无本机词表，已跳过）"))
+    print(f"[4/5] 语法检查: {'✅ 通过' if syn_ok else '❌ 失败'}")
+    print(f"[5/5] pytest: {'✅ 通过' if ok else '❌ 失败'}")
     if not syn_ok:
         problems.append("语法检查未通过（延迟导入模块也在此暴露）")
         print("      " + syn_tail.replace("\n", "\n      "))

@@ -7,7 +7,7 @@ from xxt.adapters.chaoxing.profile_read import _looks_like_school, _parse_space_
 
 class LooksLikeSchoolTest(unittest.TestCase):
     def test_accepts_college_and_university(self):
-        self.assertTrue(_looks_like_school("泉州信息工程学院"))
+        self.assertTrue(_looks_like_school("示范学院"))
         self.assertTrue(_looks_like_school("某某大学"))
         self.assertTrue(_looks_like_school("某某职业技术学院"))
 
