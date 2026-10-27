@@ -318,14 +318,20 @@ border-radius:7px;padding:.12rem .5rem}
 .course .nm{display:block;font-size:.84rem;line-height:1.35;word-break:break-all;
 display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .course .t2{display:flex;justify-content:space-between;align-items:center;margin-top:3px;gap:.5rem}
-.nums{font-size:.78rem;color:var(--muted);font-weight:700;flex:none}
+.nums{font-size:.78rem;color:var(--muted);font-weight:700;flex:1 1 auto;min-width:0;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nums b{color:var(--ink);font-size:.82rem}
+/* “已学/总约”单独一行：2026-10-27 它与百分比挤在同一行时，文字长的卡片会把
+   右侧按钮挤到换行 → 两张卡高度不一样（用户截图指出） */
+.spent{font-size:.7rem;color:var(--muted);margin-top:.15rem}
 .play{border:1px solid #bfe5d2;background:#eef9f3;color:var(--ok);border-radius:9px;
-padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap}
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap;
+min-width:88px;text-align:center}
 .play:hover{background:var(--ok);color:#fff;border-color:var(--ok);
 box-shadow:0 3px 10px rgba(24,160,93,.35);transform:translateY(-1px)}
 .stopc{border:1px solid #bfe5d2;background:#e3f6ec;color:var(--ok);border-radius:9px;
-padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap}
+padding:.2rem .65rem;font-size:.72rem;font-weight:700;cursor:pointer;transition:.15s;white-space:nowrap;
+min-width:88px;text-align:center}
 .stopc:hover{background:var(--bad);border-color:var(--bad);color:#fff;
 box-shadow:0 3px 10px rgba(214,69,69,.35);transform:translateY(-1px)}
 .morebtn{width:100%;margin-top:.5rem;background:none;border:1px dashed var(--line);
@@ -690,7 +696,8 @@ function renderAccounts(){
       const nowTag=runningThis?` <span class="badge b-ok pulse" style="margin-left:.3rem">当前正在学</span>`:'';
       const bold=runningThis?'font-weight:800;':'';
     return `<div class="course${hit}"${now}><span class="nm" style="${bold}">${hl(c.name,q)}${nowTag}</span>
-      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b> · 已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</span>${ctl}</div>
+      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b></span>${ctl}</div>
+      <div class="spent">已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
     // 主显课程：正在刷的 > 最有进度的 > 第一门；其余默认折叠（点击展开；搜索时自动展开）
