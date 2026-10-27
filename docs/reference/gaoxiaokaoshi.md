@@ -1,0 +1,165 @@
+# 第二平台资料存档：高校考试网（gaoxiaokaoshi.com）
+
+> **状态：后期备用，尚未立项、未开工、未实测。**
+> 本文件是**资料索引 + 情报摘要**，不是实施计划。对应登记见 `STATUS.md` §4 **Q35**。
+> ⚠️ 本文所有平台细节**全部来自第三方公开代码与公开搜索结果，我们一次都没有实测**（未登录、未提交表单、未跑过任何会话）。逐条见下方「待验证假设」。
+
+---
+
+## 一、资料来源与许可
+
+| 项 | 内容 |
+|---|---|
+| 目标站入口（用户 2026-10-27 提供） | `http://www.gaoxiaokaoshi.com/Homew/MainPage.aspx?menu=3&subMenu=4`（主界面）<br>`http://www.gaoxiaokaoshi.com/Loginb.aspx`（**真实登录页**） |
+| 公开实现（本存档源码） | GitHub `EchoPing07/gaoxiaokaoshi-helper`，文件 `script.user.js`（51140 字节 / v2.0），**MIT License**（Copyright (c) 2023 Yiero、2020 Aisen、2025 修改者） |
+| 上游原始脚本 | Greasy Fork #463301（Yiero，自动刷课）、#404599（Aisen，自动答题+题库） |
+| 用户给的发布页 | `https://greasyfork.org/zh-CN/scripts/558034-高校考试网小助手/code`（判定与本存档为同一份：元数据 `@name 高校考试网小助手` + `@version 2.0` + `@original-script-1/2` 指向上述两个上游） |
+| 合规注意 | 上游 README 的免责声明：仅供学习研究、不得商用、风险自担（含账号封禁/学习记录异常）。本存档仅为**技术参考**保留署名与 MIT 许可；实际实现**不复制其代码**，只参考平台结构 |
+
+**本存档位置**
+
+- 入库副本（有远端备份）：`docs/reference/gaoxiaokaoshi-helper-v2.user.js`
+- 本机原始下载件：`data/reference/gaoxiaokaoshi-helper-v2.user.js`（`data/` 不入库）
+
+**重新获取的方式（下次直接用，别再浪费时间试被污染的域名）**
+
+```
+# ✅ 可达：jsDelivr 镜像（一次拿到全文）
+https://cdn.jsdelivr.net/gh/EchoPing07/gaoxiaokaoshi-helper@main/script.user.js
+
+# ✅ 可达：用 GitHub API 枚举文件（拿 download_url 与字节数）
+https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
+
+# ❌ 不可达（2026-10-27 实测）：
+#   greasyfork.org  —— 直连超时，且每次解析到不同陌生 IP（DNS 污染）
+#   raw.githubusercontent.com —— 超时
+#   www.gaoxiaokaoshi.com:443 —— 连不上（该站只服务明文 http）
+```
+
+---
+
+## 二、平台结构情报（摘自上游实现，全部待实测核对）
+
+### 2.1 页面类型与路由
+
+脚本靠 URL 片段分派（我们写 adapter 时**别照抄它的硬拼法**，见 §四·红线 3）：
+
+| 页面类型 | URL 片段 | 用途 |
+|---|---|---|
+| login | `loginb.aspx`（真实入口）；脚本判的是 `login.aspx` | 登录 |
+| courseList | `librarystudylist` | 课程列表 |
+| main | `mainpage` | 主框架（含 `#mainIframe`） |
+| exam | `examtmstepdo`、`examdo.aspx` | 答题页 |
+| examHeader | `examtmstepheader` | 交卷（顶部框架） |
+| examMessage | `exammessage` | 交卷成功 |
+| examView | `viewexam` | 查看答卷（收录正确答案） |
+
+### 2.2 关键 DOM / 控件
+
+| 用途 | 选择器 |
+|---|---|
+| 主框架 iframe | `#mainIframe` |
+| 视频所在 iframe | **`#ExamView`**（内部 `document.querySelector('video')`）→ 与我们超星的 `pagesync.find_frame_with` **同构** |
+| 播放器容器 | **`#J_prismPlayer`**（需 `player.click()` 才真播，防浏览器自动播放策略） |
+| 课程行 | 纯 `tr` 六列：课程名 / 类型 / 总时长 / 已学时长 / 状态（文本 `已完成`）/ 学习按钮 |
+| 分页按钮 | `#PageSplit1_BtnNext`（WebForms postback） |
+| 页码文本 | `.page .fright ul li`，形如 `2/5` |
+| **服务器同步时间** | **`#spTitle`** |
+| 题目 | `.exam_list dt`（兜底 `.tb_content dt`） |
+| 选项 | `input[id^="tm_{题号}_{字母序号}"]`，选项文字在对应 `label`（取其内容去掉前 2 字符） |
+| 答卷页每题容器 | `div[id^="ddTm_"]`，**正确答案用 `.green` 类标色** |
+| 交卷 | 调 `window.SubmitExam()`，兜底点 `a[href*="SubmitExam"]` |
+| 看卷按钮 | `#btnView` |
+
+### 2.3 计时与续播机制（最重要的一条）
+
+- `#spTitle` 显示**服务器同步时间**；上游脚本每 60 秒读它，**两次内容相同就判定"数据同步异常"→ 刷新页面**。
+- 含义：**服务端按自己的时钟累计学习时长**，与客户端 `video.currentTime` 推进多少无关 →
+  **倍速播放无效**（上游 README 也明写"观看进度按实际时间计算，无法倍速"）。
+- 续播：从课程表的「已学 X 分钟」解析出分钟数，直接 `video.currentTime = X * 60` 跳到未看部分。
+- 视频事件：`onended` → 刷新继续下一个；`onpause` → 1 秒后重试 `play()`；`onerror` → 刷新；加载检查计数器到 8 次仍无视频 → 刷新。
+
+### 2.4 题库机制（与我们的 AI 作答对照）
+
+- 题库存浏览器 `localStorage`，key 为 `题库`，结构 `{ 题干文本: [答案文字...] }`。
+- 题干由正则 `/\d+\.(.*)\(/` 从题目 `dt` 文本截取（**只取到左括号前**）。
+- 答题页：命中题库则按选项文字匹配并 `click()`；未命中跳过。
+- 交卷后自动进 `viewexam`，读 `.green` 标色内容回收正确答案入库（判断题会把 `对/正确`、`错/错误` 都写进答案数组，选择题按 A~H 字母反查选项文字）→ **多考几轮题库自然变全**。
+- 跨 iframe 协作：答题页写 `localStorage.examAction = done:<时间戳>`，交卷框架 5 秒内看到该标记才交卷。
+
+---
+
+## 三、与超星的关键差异（决定哪些参数不能照抄）
+
+| 维度 | 超星（现状） | 高校考试网（待实测） | 影响 |
+|---|---|---|---|
+| 倍速 | `speed_range=[1.0,1.25]` | **无效**（服务端按自己时钟计） | 新站 `pace.speed` 失效；耗时/额度估算不能按倍速折算 |
+| 并发 | **严禁多端并发**（防封地基，单账号单进程） | 上游称"没有观看检测，可多开"，但 README 建议 **≤5 页** | 有提速空间，但属风控未验证区，**首版不建议多开** |
+| 登录 | https + 人工辅助登录存会话 | **明文 http**（443 不通）+ 真实入口 `Loginb.aspx` | 凭据与 cookie 明文过网络 → 见 §四安全约束 |
+| 题目反爬 | 动态字体混淆（`font_cipher.py` 109 行） | 上游实现未见任何字体处理 | **`font_cipher` 大概率不用带过去** |
+| 自愈 | B3「重载任务页续播一次」+ 四档状态机 | 全靠 `location.reload()` | 新站照搬我们的状态机，不照搬它 |
+| 考试 | 弹题 + 作业，AI 生成答案 | 可反复进 + 答卷回收正确答案 | 我们的 `answers(question_hash, account_id)` 天然契合：**历史题库优先 + AI 兜底** |
+
+---
+
+## 四、开工时必守的约束与红线
+
+**安全（因该站是明文 http）**
+
+1. 凭据只走 `core/crypto.py`（AES-256-GCM）落盘，绝不进 `settings.toml` / 代码 / 文档。
+2. 日志与事件**不打印任何凭据与 cookie**（`scripts/push_check.py` 敏感扫描覆盖此项）。
+3. **不在公共网络 / 不明 WiFi 登录该站账号**（超星至少是 https，这条要求更严）。
+
+**实现红线（上游能跑 ≠ 我们对）**
+
+1. **绝不全局劫持 `window.confirm/alert`**。上游用 `Object.defineProperty(..., {writable:false, configurable:false})` 让 `confirm` 恒返回 true 来"不被弹窗卡住"——若平台用 confirm 确认"确实交卷？"就是**误交卷**。我们处理弹窗必须显式 accept/dismiss **并写事件记账**。
+2. **自愈不得退化成 `location.reload()` 循环**（会丢定时器状态）。用我们已有的 `runmark` + 事件记账 + 四档状态机（Q19）。
+3. **登录页匹配用正则包含式** `login\w*\.aspx`，不要硬拼文件名 —— 上游用 `pathname.indexOf('login.aspx')`，**匹配不上真实入口 `loginb.aspx`**（照抄别人的匹配值就是坑）。
+4. **题库 key 用 `question_hash`（sha256(题干+选项)），不用题干原文** —— 上游 `bank[题干]` + 截断正则，题干标点/空格一变就 miss。
+5. **必带低频拟人化**：`pace` 三档间隔 + `daily_max_minutes` 额度 + 每日窗口。上游是零间隔、零额度、零并发控制（`onpause` 后 1 秒立即 `play()`、`volume=0`、全天可跑），这恰好是风控最典型的机器人形态。
+6. 平台细节只写在 `src/xxt/adapters/gaoxiaokaoshi/` 内（AGENTS 硬性约定）；开工前先把 **Q27**（超星用词漏进 `core/diagnose.py`）还清，否则新站会照着错误示范写。
+
+---
+
+## 五、待验证假设清单（开工时一次合并侦察逐条核对，最小访问原则）
+
+| # | 假设（来源均为第三方，未实测） | 核对方式 |
+|---|---|---|
+| A1 | 未登录时 `MainPage.aspx` / `Loginb.aspx` 对非浏览器请求返回空 body → **`httpx` 直取路线不成立，必须真 Playwright** | 用真浏览器首访即可判定（已完成：两次空 body + 443 超时） |
+| A2 | 登录凭据形态未知：**账号+密码 还是 手机号+短信验证码？有无图形验证码？** | 需用户目视告知或一次实访（**成本差异最大的假设**：短信码=每次登录要人工介入，`login_budget_per_day` 需重设计） |
+| A3 | `Loginb` 的 "b" 是否意味着还有另一套入口（教师端/管理端） | 用户确认 |
+| A4 | 计时按服务器时钟、倍速无效 | 实跑一节，比对平台侧"已学时长"增量与墙钟/倍速关系 |
+| A5 | 课程表列序与状态文案（`已完成`） | 一次真实页面 DOM 转储核对 |
+| A6 | 播放器 `#J_prismPlayer` 与 `#ExamView` iframe 层级稳定 | 实跑核对；注意播放器可能随版本更换 |
+| A7 | 答卷页 `.green` 标色即"正确答案"（而非"我的作答"） | 需一次真实答卷页核对 —— **判错会污染题库** |
+| A8 | 无动态字体/题目混淆 | 首次抓题即知 |
+| A9 | 并发 ≤5 页是社区经验而非平台硬性限制 | **不做压测**；首版按单进程单页运行 |
+| A10 | 「可多开、无观看检测」的上游说法 | 视为未证实；按 §四红线 5 执行 |
+
+---
+
+## 六、复用度速查（2026-10-27 只读源码盘点结论，详见 devlog `2026-10-27-15` §十）
+
+| 项 | 数字 / 结论 |
+|---|---|
+| `src/xxt` 总行数 | 8946 |
+| 平台专有（`adapters/chaoxing/`） | 2046 行（23%）；拿到上游实现后，新站专有层估算下调为 **1200~1400 行** |
+| 可直接搬（平台无关） | `core/` 约 1180 行（runmark/stats/plans/accounts/stealth/licensing/rotation/pace/diagnose/quota/playback/crypto）+ `store/db.py` + `ai/` + `session/relogin.py` + `config.py` + `log.py` + 交付链 `scripts/*` |
+| 结构性经验（思想照搬） | 四档状态机、发起≠成功的回读确认、终态 vs 过程态、事件带机器码、手动操作最高优先级、只读取证优先、台账/devlog/三级门禁治理协议 |
+| **必重标定数值** | `speed_range`（无效）、`daily_max_minutes`、`partial_retry_ratio_pct`、`login_budget_per_day`、`gap_weights`、`non_video_marks` 词表 |
+| 路线 | **B：同仓库新模块 `adapters/gaoxiaokaoshi/`** + `git worktree`（`E:\xxt-gxks` / 分支 `feat/gxks`）+ `XXT_ROOT` 独立数据 + 面板端口 **8301** 实现与超星主线互不影响 |
+| 前置 | 最小解耦 4 项（学习循环进抽象 / 9 处直接 import 改按平台取 adapter / `accounts` 加 `platform` 列 / 词表与额度口径下移）；**第 10 处硬绑最隐蔽**：`pyproject.toml` 的 `[tool.setuptools.package-data] "xxt.adapters.chaoxing"` |
+| 人天估算 | 6~10（解耦 3~5 + 专有层 1200~1400 行，大头在实况调试） |
+
+**启动门槛（四条全满足才开 `feat/gxks`，避免两条线同时改守护/面板）**
+
+1. Q28 / Q29 / Q30（含 Q27）修完并实测通过
+2. Q19 四档状态机在 ≥3 个账号上跑通一轮（含挂起→自动恢复刷满，顺带完成 Q17）
+3. 作业全链路拿到真实判分样本并完成 AI 正确率校准
+4. 交付形态定案：`dist\xxt.exe` 重建 + Docker 做/不做拍板（Q16，连带 Q31/Q32/Q33）
+
+---
+
+## 七、变更记录
+
+- 2026-10-27（会话 58）：建档。收录用户提供的主页与登录入口、上游 v2.0 源码全文存档、平台结构情报、与超星差异、安全约束与六条红线、10 条待验证假设、复用度速查与启动门槛。**未开工、未立项、未排期。**
