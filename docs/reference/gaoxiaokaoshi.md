@@ -1,7 +1,8 @@
 # 第二平台项目：高校考试网（gaoxiaokaoshi.com）
 
-> 🔵 **本文件 = 该主题的唯一事实来源（SSOT）。**
-> 任何会话/工具要了解、推进、补充高校考试网的事，**只读写这一份文件**（及其同目的附件）。
+> 🔵 **本文件 = 高校考试网「平台是什么」的唯一事实来源（SSOT）：技术栈、页面结构与选择器、登录与风控实测事实、资料可信度分级、防封对策。**
+> **治理侧不在本文件**（启动门槛、开工前二次核实、隔离方案、数据模型决策、阶段拆解）→ 见 **`docs/PLAN-GXKS.md`**。两份**按职责切分、互不复制内容**，只互相指针。
+> 任何会话/工具要了解、推进、补充高校考试网的事，先分清“是情报还是治理”，各写各的（及其同目的附件）。
 > 超星侧文件（`STATUS.md` 台账、`docs/PLAN.md`、`docs/devlog/*`）对本主题**只允许出现一行指针**，不得复制细节——避免两个主题互相污染，也避免“三处并存、不知哪份新”的混淆。
 > 交叉规则维护人：用户 2026-10-27 定（“单独排期，不与现有进度交叉，避免混淆”）。
 > **阶段：后期备用——尚未立项、未开工、未实测（仅公开情报）。**
@@ -29,7 +30,7 @@
 
 | 等级 | 含义 | 本档案里有什么 |
 |---|---|---|
-| **A 已实测** | 我们自己验证过 | **5 条**（§七 补充）：① 公开页可 `httpx` 取到（带重试；间歇 503 为服务不稳非拦截）② 技术栈 IIS 10 + ASP.NET 4.0 ③ 登录 = 账号+密码+**可选**图形验证码（无短信）④ 验证码仅在 `?needVerify=1` 时出现（= 可升级闸门）⑤ 页面与 JS **零客户端检测代码** |
+| **A 已实测** | 我们自己验证过 | **8 条**（§七）：① 公开页可 `httpx` 取到（带重试；间歇 503 为服务不稳非拦截）② 技术栈 IIS 10 + ASP.NET 4.0 ③ 登录 = 账号+密码+**可选**图形验证码（无短信）④ 验证码仅在 `?needVerify=1` 时出现（= 可升级闸门）⑤ 页面与 JS **零客户端指纹/机器人检测代码** ⑥ 任意登录页 URL 直接 GET 一律 `302 → /Default.aspx`（**不带 ReturnUrl**），业务页则是 `302 → Default.aspx?ReturnUrl=…` ⑦ `Default.aspx` 是**纯 JS 分流器**：按 UA 与 `screen.width` 分发到 `Login.aspx`(宽<1400)/`Loginb.aspx`(宽≥1400)/`Loginm.aspx`(手机)/`Loginp.aspx`(平板)——**`b` = big screen，不是教师端** ⑧ **Edge 被 `alert` 明确拒进**（`_pass = !isEdge`）|
 | **B 多源一致** | ≥ 2 个独立来源互相印证，但仍未实测 | 仅“**倍速无效**”（#404599 同类做法 + v2.0 的 `#spTitle` 机制 + README 表述一致） |
 | **C 单源（可能过期）** | 来自单一第三方代码 | **下表§二、§三的所有选择器与流程，全部是 C 级** |
 | **D 推断/设计偏好** | 我们自己拍的 | §四红线、§六复用度与人天估算 |
@@ -177,9 +178,9 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 
 | # | 假设（来源均为第三方，未实测） | 核对方式 |
 |---|---|---|
-| A1 | 未登录时 `MainPage.aspx` / `Loginb.aspx` 对非浏览器请求返回空 body → **`httpx` 直取路线不成立，必须真 Playwright** | ❌ **已推翻**（§7.3）：空 body 是间歇 503，`httpx` 带正常 UA 可取到页面；仅播放器/iframe 需真浏览器 |
+| A1 | 未登录时 `MainPage.aspx` / `Loginb.aspx` 对非浏览器请求返回空 body → **`httpx` 直取路线不成立，必须真 Playwright** | ❌ **已推翻并两次修正**（§7.3）：空 body 是间歇 503，内容页可 `httpx` 取；但**登录页确实不能直取**——它 `302` 到 JS 分流器（§7.4）。最终分层：内容走 httpx，**登录与业务走真浏览器** |
 | A2 | 登录凭据形态未知：**账号+密码 还是 手机号+短信验证码？有无图形验证码？** | ✅ **已答（A 级，§7.4）**：账号+密码+可选图形验证码（`VerifyCode.ashx`，4 位），**无短信验证码**；`Login.js` 含 `isEmail`/注册相关函数→账号可能是邮箱 |
-| A3 | `Loginb` 的 "b" 是否意味着还有另一套入口（教师端/管理端） | 🟡 **部分答**：登录页本身无教师/管理痕迹；表单 POST 到 `HidLogin.aspx`（处理页），“b” 的含义待后期有账号再看，不影响策略 |
+| A3 | `Loginb` 的 "b" 是否意味着还有另一套入口（教师端/管理端） | ✅ **已答（A 级，§7.4）**：`b` = **big screen**。`Default.aspx` 按 `screen.width` 分 `Login.aspx`(<1400) / `Loginb.aspx`(≥1400)，另有 `Loginm`(手机)/`Loginp`(平板)。同一张表单的不同宽度版，**无教师端/管理端** |
 | A4 | 计时按服务器时钟、倍速无效 | 实跑一节，比对平台侧"已学时长"增量与墙钟/倍速关系 |
 | A5 | 课程表列序与状态文案（`已完成`） | 一次真实页面 DOM 转储核对 |
 | A6 | 播放器 `#J_prismPlayer` 与 `#ExamView` iframe 层级稳定 | 实跑核对；注意播放器可能随版本更换 |
@@ -199,16 +200,11 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | 可直接搬（平台无关） | `core/` 约 1180 行（runmark/stats/plans/accounts/stealth/licensing/rotation/pace/diagnose/quota/playback/crypto）+ `store/db.py` + `ai/` + `session/relogin.py` + `config.py` + `log.py` + 交付链 `scripts/*` |
 | 结构性经验（思想照搬） | 四档状态机、发起≠成功的回读确认、终态 vs 过程态、事件带机器码、手动操作最高优先级、只读取证优先、台账/devlog/三级门禁治理协议 |
 | **必重标定数值** | `speed_range`（无效）、`daily_max_minutes`、`partial_retry_ratio_pct`、`login_budget_per_day`、`gap_weights`、`non_video_marks` 词表 |
-| 路线 | **B：同仓库新模块 `adapters/gaoxiaokaoshi/`** + `git worktree`（`E:\xxt-gxks` / 分支 `feat/gxks`）+ `XXT_ROOT` 独立数据 + 面板端口 **8301** 实现与超星主线互不影响 |
-| 前置 | 最小解耦 4 项（学习循环进抽象 / 9 处直接 import 改按平台取 adapter / `accounts` 加 `platform` 列 / 词表与额度口径下移）；**第 10 处硬绑最隐蔽**：`pyproject.toml` 的 `[tool.setuptools.package-data] "xxt.adapters.chaoxing"` |
+| 路线 | **B：同仓库新模块 `adapters/gaoxiaokaoshi/`** + `git worktree`（`E:\xxt-gxks` / 分支 `feat/gxks`）+ `XXT_ROOT` 独立数据 + 面板端口 **8301** 实现与超星主线互不影响（**均系暂定值**，用户 2026-10-27：“可以暂定，后期开工再确定”→ 已转 `PLAN-GXKS.md` 的 D1/R5）|
+| 前置 | 最小解耦 4 项（学习循环进抽象 / 9 处直接 import 改按平台取 adapter / 账号数据模型重设 / 词表与额度口径下移）。⚠️ 其中“`accounts` 加 `platform` 列”**已证实不够**：用户 2026-10-27 确认账号关系是**多对多**→ 治理侧已升为三层建模任务，见 `PLAN-GXKS.md` §五与阶段 S1；**第 10 处硬绑最隐蔽**：`pyproject.toml` 的 `[tool.setuptools.package-data] "xxt.adapters.chaoxing"` |
 | 人天估算 | 6~10（解耦 3~5 + 专有层 1200~1400 行，大头在实况调试） |
 
-**启动门槛（四条全满足才开 `feat/gxks`，避免两条线同时改守护/面板）**
-
-1. Q28 / Q29 / Q30（含 Q27）修完并实测通过
-2. Q19 四档状态机在 ≥3 个账号上跑通一轮（含挂起→自动恢复刷满，顺带完成 Q17）
-3. 作业全链路拿到真实判分样本并完成 AI 正确率校准
-4. 交付形态定案：`dist\xxt.exe` 重建 + Docker 做/不做拍板（Q16，连带 Q31/Q32/Q33）
+**启动门槛（四条全满足才开 `feat/gxks`）** —— 已**上移到治理侧唯一来源**：`docs/PLAN-GXKS.md` §二（G1~G4）与 §三（开工前二次核实门禁 R1~R5，用户 2026-10-27 新规矩：“**真正开始之前必须还要再核实一次**”）。本文件不再复制一遍，避免两处并存争“谁更新”。
 
 ---
 
@@ -224,7 +220,7 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 ## 七、特征检测与封号风险（2026-10-27 21:05，**A 级实测**）
 
 ### 7.0 本次做了什么（合规声明）
-只 GET **公开页**（`/`、`Loginb.aspx`、`MainPage.aspx`）与它引用的 3 个 JS；**无凭据、不填表、不提交、不登录**；每 URL ≤4 次尝试带随机间隔，共约 10 个请求。探针：`data/debug/probe_gxks_{loginb,headers,pages,js}.py`（不入库），产物 `data/debug/gxks_html/`。
+只 GET **公开页**（`/`、`Loginb.aspx`、`MainPage.aspx`、`Default.aspx`、`Login/Loginm/Loginp.aspx`）与它引用的 3 个 JS；**无凭据、不填表、不提交、不登录**；每 URL ≤4 次尝试带随机间隔。第一轮（21:05）约 10 个请求，第二轮（21:40，回答“login.aspx 能否用”）约 20 个请求。探针：`data/debug/probe_gxks_{loginb,headers,pages,js,login_aspx,redirect}.py`（不入库），产物 `data/debug/gxks_html/`。
 
 ### 7.1 结论：**客户端零检测，风控全在服务端**
 
@@ -233,7 +229,7 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | 自动化检测（`webdriver`/`phantom`/`selenium`/`headless`/`$cdc_`）| **无**（三页 HTML + `Login.js` 6555 字符 + `index.js` 1852 + `Dialog.js` 27830 全扫零命中）| 站方不做浏览器端机器人探测 |
 | 指纹采集（canvas/webgl/plugins/toDataURL）| **无** | 同上 |
 | 埋点上报（beacon/cnzz/umeng/gtag）| **无** | 无第三方分析代码，也就没有“上报环境”的通道 |
-| `navigator.userAgent` | 仅 `Dialog.js` 判 `isIE/isIE6/isGecko` | **2010 年代的浏览器兼容分支，不是风控**；用正常 Chrome UA 就走“非 IE”分支，与人一致 |
+| `navigator.userAgent` | ① `Dialog.js` 判 `isIE/isIE6/isGecko`（老式兼容）② ⚠️ **`Default.aspx` 内联脚本用 UA + `screen.width` 做入口分流**（2026-10-27 21:40 第二轮补测发现，修正我先前“仅 Dialog.js”的说法）| 两处都**不是反爬/指纹**，是 2010 年代的浏览器兼容分支；但**后果是硬的**：Edge 被 `alert` 拒进、移动端 UA 被踢到结构不同的 `Loginm.aspx`。详见 §7.4 |
 | `window.onerror = function(){return true;}` | loginb 内联 | 吞 JS 错误（老站常见），不是检测 |
 
 **由此的风险定性**：被封不会因为“被识别为脚本”，只会因为“行为异常”与服务端判定。
@@ -252,15 +248,33 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 
 实测：root 第 1 次 503；loginb 第 1 次 **`RemoteProtocolError`（收到 1139/2785 字节被对端截断）**、第 2 次 503、第 3 次 200；mainpage 直接 200。**同一 URL 换 UA 结果相反**（`/` 空 UA 时 503、`Loginb` 空 UA 反而 200）→ 是随机而非按 UA 判定；响应为**空 body、无拦截页、无 `Retry-After`、无 WAF 头**（`Server: Microsoft-IIS/10.0` + `X-ASPNET-Version: 4.0.30319`）。
 
-🔴 **自纠**：20:10 我根据“两次抓取为空 body”断言“服务器对非浏览器不给内容 → `httpx` 直取不成立，必须真 Playwright”——**错了**，那是撞上间歇 503。真相：`httpx` 带正常 UA **能稳定取到公开页 HTML**（配合重试）。
-→ 影响：新站的**课程列表/登录**可走轻量 HTTP（更稳、足迹更小），**只有播放器计时与 iframe 交互需要真浏览器**；开工时按这个分层重估一遍工作量（但 §0.2 定的人天不立刻下调，因为登录后的页面仍未实测）。
+🔴 **自纠（第二次）**：20:10 我根据“两次抓取为空 body”断言“服务器对非浏览器不给内容 → `httpx` 直取不成立，必须真 Playwright”——**错了**，那是撞上间歇 503。
+但 21:40 第二轮又发现：**我把“httpx 能取到页”这件事对登录页说得太满了一半**——登录页对 HTTP 直取**根本不给表单，只给 `302 → /Default.aspx`**（见 §7.4），前几轮之所以“一会儿 200 拿到表单、一会儿 302/503”，不是服务器抽风而是**撞在跳转门上**。
+→ 修正后的分层（这是最终版）：**静态/内容页可走 `httpx`（带重试）；登录与登录后的业务页统一走真浏览器**——因为在浏览器里 `Default.aspx` 的分流 JS 会自动完成，而纯 HTTP 要自己复刻“解析 JS 分流规则 + 按屏幕宽度选页 + 处理 302”，不划算且易出自洽破绽。工作量按这个分层重估（§0.2 定的人天仍不立刻下调，因为登录后的页面还未实测）。
 → 另一头提醒：**503 不是拦截，不要把它当风控信号去“绕过”**；重试要上限 + 退避（疯狂重试反而可能把自己送进 `needVerify`）。
 
-### 7.4 登录形态（原 A2/A3 假设已答）
+### 7.4 登录形态与跳转链（原 A2/A3 已全部答完，A 级）
 
-- **账号 + 密码 + 可选图形验证码**；**无手机号/短信验证码**（页面文本只有「账 号 / 密 码 / 验证码 / 忘记密码？」，无“手机”“学籍”“身份证”字样）
-- `Login.js` 函数表里有 `isEmail` / `chkExitsEmail` / `check_username` / `chkRegInfo` / `frmReg` → **账号可能是邮箱且平台支持自助注册**（待有账号后确认，与风控无关）
-- `Loginb` 的 `b` 与处理页 `HidLogin.aspx` 的关系待后期看，不影响策略
+**凭据形态**（用户 2026-10-27 确认：“**学号加密码，没有看到图形验证码**”）：
+
+- **学号 + 密码 + 可选图形验证码**；**无手机号/短信验证码**（页面文本只有「账 号 / 密 码 / 验证码 / 忘记密码？」，无“手机”“学籍”“身份证”字样）
+- 用户“没看到验证码”与实测完全吻合：`trVerify` 默认 `display:none`。**但“没看到”≠“没有”**——它是服务端判定可疑才发的（§7.2）
+- `Login.js` 函数表里有 `isEmail` / `chkExitsEmail` / `check_username` / `chkRegInfo` / `frmReg` → 平台支持自助注册（但用户说实际用**学号**，以用户为准）
+
+**入口分流链（谜底：`b` = big screen）**——直接 GET 任何一个登录页，得到的都是 `302 → /Default.aspx`（**不带 ReturnUrl**；业务页如 `Main.aspx`/`LoginA.aspx` 则是 `?ReturnUrl=…`），而 `Default.aspx` 本身是个**纯 JavaScript 分流器**：
+
+```js
+_pass = !isEdge;                       // Edge 直接弹 alert 拒进
+if (isipad)                 location.href = "Loginp.aspx";
+if (bIsIphoneOs||bIsAndroid) location.href = "Loginm.aspx";
+if (screen.width < 1400)     location.href = "Login.aspx";    // 小屏版
+else                         location.href = "Loginb.aspx";   // 大屏版
+```
+
+- 因此 `Login.aspx` 与 `Loginb.aspx` **是同一张表单的两个宽度版本**（字段同为 `name`/`pw`/`verifyCode`/`screenType`），不是教师端/管理端——**A3 作废**
+- 我们的 1440×900 正好落在 `Loginb` 那一支，**与用户平时看到的入口一致**（一致本身就是拟人）
+- ⚠️ **`screenType` 自洽要求**：表单里的 hidden `screenType` 是屏幕宽度档位，必须**与真实视口一致，绝不硬编码 1440**；不自洽（例如报 1440 却走 `Login.aspx`）是我们自己造的破绽
+- 用户原问“不知道暗地里有没有其它指纹特征”→ 已试：客户端**无**设备指纹采集，但有 UA/分辨率分流；服务端的“暗地里”那部分属 §7.6 边界，只能开工后小规模实测校准
 
 ### 7.5 防封对策（新站首版默认执行，宁保守）
 
@@ -273,6 +287,9 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | 5 | 503/截断按“服务不稳”处理：上限 3 次 + 指数退避 + 随机抖动（复用 `retry_jitter_pct`/`retry_max_minutes`）| 避免重试本身成为异常行为 |
 | 6 | 只在**自有网络**登录；凭据走 `core/crypto`；日志零凭据零 cookie | 平台侧不加密，我们侧必须补 |
 | 7 | **不逆向 `HidLogin.aspx` 直接 POST 登录**（即使技术上可行）| 绕开正常流程是最强机器人特征，且明 http 下凭据更暴露 |
+| 8 | **UA 固定普通 Chrome 桌面版**：绝不 Edge、绝不带移动端/平板标记 | Edge 被 `alert` 拒进（在 Playwright 里还会弹一个阻塞对话框）；移动端 UA 会被分到 `Loginm.aspx`，结构完全不同→选择器全失 |
+| 9 | **视口宽度固定 ≥1400**（沿用 1440×900），`screenType` 取真实视口值而非硬编码 | 低于 1400 会换一张表单；`screenType` 与视口不自洽 = 自己造破绽 |
+| 10 | 登录路径**只走浏览器**（`Default.aspx` 分流器自动完成），不用 httpx 手拼 302 链 | 见 §7.3 修正：手拼要复刻分流规则，易错且留不一致痕迹 |
 
 ### 7.6 本次探不到的（诚实边界）
 
@@ -286,3 +303,4 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 - 2026-10-27（同日 20:35）：用户发来 **#404599** 并提醒“**代码不是最新、不一定能用，后期需辨别，或只利用思路与架构**”。新增 **§〇 资料可信度与使用规则**（时效证据 / A~D 四级 / 四步辨别流程 / 可拿的五条思路），并在 §一 补充 #404599 状态与不可达记录。硬证据：#404599 **发布 2020-06-03 且作者原话“暂不更新了”**。本次**未取到 #404599 源码**（greasyfork 被 DNS 污染、scriptcat 镜像超时）。
 - 2026-10-27（同日 20:50）：**用户问“前期这些内容是否要单独写一份文件以免与超星交叉混淆”**——查数发现同一主题散在 3 个文件（STATUS 10 次 / devlog 18 次 / 本文件 19 次），且 **STATUS Q35 单行 4791 字符 = 台账平均行长的 6.8 倍（全表最长）**，而 STATUS 开头要写“任何会话先读本文件”→ 这就是混淆的量化形态。处理：① 本文件**升为该主题唯一事实来源（SSOT）**，文首加声明与交叉规则 ② `STATUS.md` Q35 从 4791 字**瘦身为一行指针**（详情全部回到本文件，不丢信息：已补 §6.1 “需新写/可不带/已有基础/必重标定”四档盘点） ③ §3 交接加“主题隔离规则”一行 ④ devlog 不再复制新站细节。**未新建第二份文档**——因为“再写一份”恰恰会把 3 处变 4 处。本轮零代码改动。
 - 2026-10-27（同日 21:05）：**用户要求“把特征检测探清楚，后期不要被封号”** → 做了一次合规探针（只 GET 公开页 + 3 个 JS，无凭据不提交，共约 10 请求）。新增 **§七 特征检测与封号风险（A 级实测）**：客户端零检测（§7.1）、**服务端可升级验证码闸门 `needVerify=1` + `VerifyCode.ashx`（§7.2，本次最重要发现）**、间歇 503 为服务不稳非 WAF（§7.3，**推翻我 20:10 的“必须真 Playwright”判断**）、登录形态已答（§7.4：账号+密码+可选图形码，无短信）、七条防封对策（§7.5）、探不到的边界（§7.6）。同步更新 §〇 分级（A 级 1→5 条）与 §五（A1 推翻 / A2 已答 / A3 部分答）；文首警告改准。
+- 2026-10-27（同日 21:40）：**用户一次性回答了八个问题**（要模拟真人操作吗 / `login.aspx` 能用吗 / 学号+密码无图形码但担心暗地里指纹 / `b` 的含义不清楚“你可以试试看” / 做好规则再动手 / 可以落规划但开工前必须再核实 / 目录与端口暂定 / **账号是同一批人但多对多**）。做了第二轮合规探针（约 20 个公开页请求，无凭据不提交）→ **谜底：`b` = big screen**，`Default.aspx` 是按 UA + `screen.width` 分流的纯 JS 分流器（`Login`/`Loginb`/`Loginm`/`Loginp` 四支）且 **Edge 被 `alert` 拒进**；登录页直接 GET 一律 302。产出：§7.1 修正“仅 `Dialog.js` 看 UA”的不准确说法、§7.4 重写为“登录形态与跳转链”、§7.5 新增对策 8/9/10（UA/视口/登录只走浏览器）、§五 A3 改为✅已答、§0.2 A 级 5→8 条。**同时第二次自纠**：§7.3 把“登录可走轻量 HTTP”收回——登录页有跳转门，最终分层是“内容走 httpx、登录与业务走真浏览器”。同日另立 **`docs/PLAN-GXKS.md`** 为**排期与规则 SSOT**（本文件保留为**平台情报与实测事实 SSOT**）。本轮零代码改动。
