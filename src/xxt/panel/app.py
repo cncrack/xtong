@@ -630,7 +630,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 
 <script>
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const badge=(t,c)=>`<span class="badge ${c}">${esc(t)}</span>`;
+const badge=(t,c,ti)=>`<span class="badge ${c}"${ti?` title="${esc(ti)}"`:''}>${esc(t)}</span>`;
 const fmtDur=m=>{m=m||0;return m>=60?`${Math.floor(m/60)}小时${m%60?m%60+'分':''}`:`${m}分钟`;};
 const hl=(text,q)=>{ // 转义后对命中关键词加黄底高亮
   const safe=esc(text);
@@ -658,7 +658,12 @@ function renderAccounts(){
   document.getElementById('accInfo').textContent=`匹配 ${list.length} 个账号 · 第 ${PAGE}/${pages} 页`;
   document.getElementById('accounts').innerHTML=slice.map(({a,hits})=>{
     const status=a.status==='active'?'b-ok':'b-warn';
-    const sess=a.has_session?badge('已登录','b-info'):badge('未登录','b-warn');
+    // 徽标三选一（2026-10-27 用户确认保留现状 + hover 提示）：
+    // 刷课中时不再重复显示“已登录”（同一行里两个绿灯看着像重复），
+    // 会话是否有效靠悬停提示与右侧「🔑 会话/登录」按钮区分。
+    const sess=a.has_session
+      ?badge('已登录','b-info','会话文件有效：点右侧「🔑 会话」可查看/刷新')
+      :badge('未登录','b-warn','本机没存到会话，点右侧「🔑 登录」扫码');
     const wm=a.work_effective||'owner';
     const wmName={ai:'AI代答',reference:'参考答案',owner:'号主自理'};
     // 额度：今日已完成 / 上限（0 即不限）；上限来源（全局 or 账号单独）标在任务数后
@@ -754,7 +759,8 @@ function renderAccounts(){
           🎓 ${a.student_no?`学号 ${hl(a.student_no,q)}`:''}${a.student_no&&a.profile&&(a.profile.grade||a.profile.major||a.profile.term)?' · ':''}${a.profile?[a.profile.grade,a.profile.major,a.profile.term].filter(Boolean).map(x=>esc(x)).join(' / '):''}
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
       <div class="state">${bad?badge('已过期','b-warn'):badge(a.status,a.status==='active'?'b-ok':'b-warn')}
-        ${run?badge('刷课中 '+run.since,'b-ok pulse'):sess}</div>
+        ${run?badge('刷课中 '+run.since,'b-ok pulse',
+          '正在刷课（'+run.course+'）——会话有效；下课后恢复显示“已登录”'):sess}</div>
     </div>
     <div class="ops">${a.has_session
               ? `<button class="minibtn ghost" title="本账号已登录（无需重新登录）。仅当会话失效时才点此刷新：先无头自动，失败可转手动扫码" onclick="doLogin(${a.id})">🔑 会话</button>`

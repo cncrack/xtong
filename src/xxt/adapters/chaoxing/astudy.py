@@ -57,6 +57,15 @@ async def _wait_task_page(page, timeout_s: float = 15.0) -> bool:
     return False
 
 
+# 非视频节点名关键词：这些节本来就没有 video，不能拿“有没有 video-done”判完成。
+# 2026-10-27：既用于回补历史误标数据，也用于会话收尾时决定该不该记 visited。
+_NON_VIDEO_MARKS = ("作业", "测验", "讨论", "阅读", "考试", "练习", "公告")
+
+
+def is_non_video_name(name: str | None) -> bool:
+    return bool(name) and any(m in name for m in _NON_VIDEO_MARKS)
+
+
 def mark_entry_visited(conn, course_id: int, chapter_pid: str,
                        only_pending: bool = False) -> None:
     """标记章节“路过”（visited）。**已 `done` 的一律不降级**（2026-10-27 修）。
@@ -71,6 +80,61 @@ def mark_entry_visited(conn, course_id: int, chapter_pid: str,
         sql += " AND status='pending'"
     conn.execute(sql, (course_id, chapter_pid))
     conn.commit()
+
+
+def _learn_int(settings, key: str, default: int, lo: int, hi: int) -> int:
+    """读 `[learn]` 里的整数并钳到安全区间。
+
+    2026-10-27 用户要求：把“尝试几次就放弃”从代码里的魔法数字改成配置项
+    （否则调参要改代码、重打包）。写错类型/越界一律回落到默认值。
+    """
+    try:
+        val = int((getattr(settings, "learn", None) or {}).get(key, default))
+    except (TypeError, ValueError):
+        val = default
+    return max(lo, min(hi, val))
+
+
+def pick_pending_after(conn, course_id: int, after_pid: str | None,
+                       tried: list[str] | set[str]) -> tuple[str, str] | None:
+    """按 idx 顺序挑下一个待学节：先取 after_pid 之后的，到尾部再从头绕回。
+
+    B2（2026-10-27）：原来直接 `ORDER BY idx LIMIT 1` 取全表第一个 pending ——
+    当前节还没播完（仍是 pending）时，取回的永远是它自己，于是 #1 在 5.1 上反复撞；
+    失败后又被标 visited，就永久跳过。现在按“当前节之后”取，本会话试过的跳过。
+    """
+    rows_p = conn.execute(
+        "SELECT platform_chapter_id, name, idx FROM chapters"
+        " WHERE course_id=? AND status='pending' ORDER BY idx",
+        (course_id,)).fetchall()
+    cur_idx = None
+    if after_pid:
+        r0 = conn.execute(
+            "SELECT idx FROM chapters WHERE course_id=? AND platform_chapter_id=?",
+            (course_id, after_pid)).fetchone()
+        cur_idx = r0["idx"] if r0 else None
+    after = [r for r in rows_p if cur_idx is not None and r["idx"] > cur_idx]
+    before = [r for r in rows_p if cur_idx is None or r["idx"] <= cur_idx]
+    for r in after + before:
+        if r["platform_chapter_id"] in tried:
+            continue
+        return r["platform_chapter_id"], r["name"]
+    return None
+
+
+async def _frame_alive(frame) -> bool:
+    """帧句柄是否还能用。
+
+    2026-10-27：任务点/章节切换后 iframe 会被页面重建，旧句柄随即 detached
+    （#1 实测 5.1/5.2/5.3 连续 3 次 "Frame was detached"）。缓存 frame 前先探活。
+    """
+    if frame is None:
+        return False
+    try:
+        await frame.evaluate("1")
+        return True
+    except Exception:
+        return False
 
 
 async def _open_chapter_frame(page, course_url: str):
@@ -300,6 +364,16 @@ class AsyncStudyRunner:
                  f"{budget_minutes:.0f}" if budget_minutes else "不限",
                  budget_tasks or "不限", done_seconds // 60, done_today)
 
+        # 节级重试策略全部来自 [learn]（2026-10-27 配置化）：
+        #   enter_retries     单节点开最多点几次（每次等任务页 15 秒）
+        #   max_skip_chapters 连续几节打不开就收工
+        #   non_video_streak  连续几个非视频任务点算本段结束
+        enter_retries = _learn_int(self.settings, "enter_retries", 2, 1, 5)
+        max_skip = _learn_int(self.settings, "max_skip_chapters", 3, 1, 10)
+        non_video_streak_cap = _learn_int(self.settings, "non_video_streak", 4, 1, 20)
+        log.info("[#%s] 节级策略：单节最多点 %d 次｜连续 %d 节打不开收工｜连续 %d 个非视频点结束",
+                 self.account_id, enter_retries, max_skip, non_video_streak_cap)
+
         async with async_playwright() as p:
             from ...core.stealth import LAUNCH_ARGS, async_hardened_context
 
@@ -324,12 +398,24 @@ class AsyncStudyRunner:
 
                 async def _enter_chapter(target_kid: str) -> bool:
                     """点开知识点并确认真进了任务页；不成就再点一次（章节组可能会被折叠）。"""
-                    for attempt in range(2):
+                    nonlocal tree_frame
+                    for attempt in range(enter_retries):
+                        # B1（2026-10-27）：同一会话里章节树 frame 只取一次是不够的——
+                        # 播完一节后页面会重建 iframe，旧句柄必然 detached，于是后面每一节
+                        # 都点不动（#1 的 5.1/5.2/5.3 就这么被白丢）。点之前先探活，失效重取。
+                        if not await _frame_alive(tree_frame):
+                            log.warning("[#%s] 章节树 frame 已失效（iframe 被重建），重新获取",
+                                        self.account_id)
+                            again = await _open_chapter_frame(page, course_row["url"])
+                            if not await _frame_alive(again):
+                                continue
+                            tree_frame = again
                         try:
                             await tree_frame.locator(f"#cur{target_kid}").first.click(timeout=15_000)
                         except Exception as exc:
                             log.warning("[#%s] 点击知识点 %s 失败：%r",
                                         self.account_id, target_kid, exc)
+                            tree_frame = None  # 下一轮强制重取，不再拿死句柄重试
                             continue
                         if await _wait_task_page(page, 15):
                             return True
@@ -337,51 +423,45 @@ class AsyncStudyRunner:
                                     self.account_id, target_kid, attempt + 1)
                     return False
 
-                async def _jump_next_pending(tag: str) -> tuple[str, str] | None:
-                    """回章节列表按本地 pending 顺序进下一节（最多试 3 节）。"""
-                    for _ in range(3):
-                        row_p = self.conn.execute(
-                            "SELECT platform_chapter_id, name FROM chapters"
-                            " WHERE course_id=? AND status='pending' ORDER BY idx LIMIT 1",
-                            (course_row["id"],)).fetchone()
-                        if row_p is None:
+                async def _jump_next_pending(tag: str,
+                                             after_pid: str | None = None) -> tuple[str, str] | None:
+                    """回章节列表按本地 pending 顺序进下一节（最多试 max_skip 节）。"""
+                    for _ in range(max_skip):
+                        pick = pick_pending_after(self.conn, course_row["id"], after_pid,
+                                                  tried_entry)
+                        if pick is None:
                             stats["stop_reason"] = f"{tag}；本地已无待学章节"
                             return None
-                        k2, n2 = row_p["platform_chapter_id"], row_p["name"]
-                        if n2 in tried_entry:
-                            stats["stop_reason"] = f"{tag}；{n2} 已试过仍打不开"
-                            return None
+                        k2, n2 = pick
                         log.info("[#%s] %s → 改从章节列表进下一节：%s",
                                  self.account_id, tag, n2)
                         if await _enter_chapter(k2):
                             return k2, n2
-                        # 这节进不去：标 visited 让下次不再选它（否则每次都撞同一节）
-                        tried_entry.append(n2)
-                        mark_entry_visited(self.conn, course_row["id"], k2, only_pending=True)
-                        log.warning("[#%s] %s 打不开，已标记跳过：%s",
+                        # 进不去就是没学成：保持 pending 待下次再试，只在本会话内跳过。
+                        # （旧代码在这里写 visited，等于"没看过的节永久放弃"，
+                        #   2026-10-27 用户明确要求：没学过/没完成一律算待学。）
+                        tried_entry.append(k2)
+                        log.warning("[#%s] %s 打不开，保持待学（本会话内不再试）：%s",
                                     self.account_id, tag, n2)
-                    stats["stop_reason"] = (f"{tag}；连续 3 节都打不开任务页"
+                    stats["stop_reason"] = (f"{tag}；连续 {max_skip} 节都打不开任务页"
                                             f"（{'、'.join(tried_entry[-3:])}）")
                     return None
 
                 # 进入首个待学章节（同上：失败就换下一节，最多 3 节）
                 entered = False
-                while not entered and len(tried_entry) < 3:
+                while not entered and len(tried_entry) < max_skip:
                     log.info("[#%s] 进入知识点：%s（%s）", self.account_id, leaf_name, kid)
                     if await _enter_chapter(kid):
                         entered = True
                         break
-                    tried_entry.append(leaf_name)
-                    mark_entry_visited(self.conn, course_row["id"], kid, only_pending=True)
-                    log.warning("[#%s] 首节打不开任务页，已标记跳过：%s",
+                    # 同上：进不去不算学过，保持 pending，下次会话还会再试
+                    tried_entry.append(kid)
+                    log.warning("[#%s] 首节打不开任务页，保持待学：%s",
                                 self.account_id, leaf_name)
-                    row_n = self.conn.execute(
-                        "SELECT platform_chapter_id, name FROM chapters"
-                        " WHERE course_id=? AND status='pending' ORDER BY idx LIMIT 1",
-                        (course_row["id"],)).fetchone()
-                    if row_n is None:
+                    pick = pick_pending_after(self.conn, course_row["id"], kid, tried_entry)
+                    if pick is None:
                         break
-                    kid, leaf_name = row_n["platform_chapter_id"], row_n["name"]
+                    kid, leaf_name = pick
                 if not entered:
                     stats["stop_reason"] = (f"连续 {len(tried_entry)} 节都打不开任务页"
                                             f"（{'、'.join(tried_entry)}）")
@@ -410,6 +490,16 @@ class AsyncStudyRunner:
                             title = await _current_task_title(page) or leaf_name
                             played = await self._play_video(page, video_frame, title)
                             cid = match_chapter_id(self.conn, course_row["id"], title)
+                            if cid is not None:
+                                # B2 配套：把“当前节”指向刚播完的那节。
+                                # 以前 kid/leaf_name 一直停在节目录时的值，“下一节”按钮
+                                # 已经跳到新节了它也不知道 → 回节列表兑底时按旧的 idx
+                                # 往后取，顺序会错。
+                                r_cur = self.conn.execute(
+                                    "SELECT platform_chapter_id, name FROM chapters WHERE id=?",
+                                    (cid,)).fetchone()
+                                if r_cur and r_cur["platform_chapter_id"]:
+                                    kid, leaf_name = r_cur["platform_chapter_id"], r_cur["name"]
                             if played is True:
                                 stats["videos"] += 1
                                 self.conn.execute(
@@ -433,7 +523,7 @@ class AsyncStudyRunner:
                         else:
                             no_video_streak += 1
                             log.info("[#%s] 跳过非视频任务点（第 %d 次，如作业/阅读）", self.account_id, no_video_streak)
-                            if no_video_streak >= 4:  # 连续4个无视频才认头（章节间的作业点应穿过）
+                            if no_video_streak >= non_video_streak_cap:  # 连续无视频才认头（作业点应穿过）
                                 stats["stop_reason"] = "连续无视频任务点，本段结束"
                                 break
                     except RuntimeError:
@@ -459,13 +549,13 @@ class AsyncStudyRunner:
                     if next_frame is None:
                         # P0-3c（2026-10-27）：找不到“下一节”不再直接收工——回章节列表
                         # 按本地 pending 继续（#1 就是这么在 4.8 上白掉一整次机会的）。
-                        nxt = await _jump_next_pending("找不到下一节按钮")
+                        nxt = await _jump_next_pending("找不到下一节按钮", kid)
                         if nxt is None:
                             break
                         kid, leaf_name = nxt
                         continue
                     clicked = False
-                    for attempt in range(2):
+                    for attempt in range(enter_retries):
                         try:
                             await next_frame.locator("#prevNextFocusNext").first.click(timeout=8_000)
                             clicked = True
@@ -481,7 +571,7 @@ class AsyncStudyRunner:
                         # "没下一节"不等于"课程到头了"：2026-10-25 账号#2 在还有 47 节
                         # 待学时被误报"确已到末尾"。先按本地 pending 兜底进下一节，
                         # 确实没得进才收工（2026-10-27 P0-3c）。
-                        nxt = await _jump_next_pending("下一节按钮不可点")
+                        nxt = await _jump_next_pending("下一节按钮不可点", kid)
                         if nxt is not None:
                             kid, leaf_name = nxt
                             continue
@@ -495,9 +585,12 @@ class AsyncStudyRunner:
                         await page.wait_for_timeout(int(step * 1000))
                         waited += step
 
-                # 入口叶子只标 visited（路过）——done 仅留给真实完成的视频/作业；
-                # 且**已 done 的不允许被降级**（2026-10-27 修：4.5 播放完成仍被改写）
-                mark_entry_visited(self.conn, course_row["id"], kid)
+                # 会话收尾（2026-10-27 语义修正）：现在 visited = “非视频节点穿过了”，
+                # 不再是“这节进过但没学成”。旧代码在这里无条件写入，会把最后一次
+                # 播放失败/没播完的视频也标成 visited → 明天不再选它，等于永久漏学。
+                # 用户口径：没学过/没完成 → 保持 pending。
+                if is_non_video_name(leaf_name):
+                    mark_entry_visited(self.conn, course_row["id"], kid)
             except RuntimeError as exc:
                 stats["stop_reason"] = f"异常中止：{exc}"
                 log.error("%s", exc)

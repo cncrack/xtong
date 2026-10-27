@@ -28,6 +28,10 @@ DEFAULTS: dict[str, Any] = {
     "learn": {
         "speed": 1.0,
         "daily_max_minutes": 240,
+        # 节级重试（2026-10-27 配置化，见 docs/devlog/2026-10-27-11）
+        "enter_retries": 2,
+        "max_skip_chapters": 3,
+        "non_video_streak": 4,
     },
     "pace": {
         "gap_browse": [3, 15],
