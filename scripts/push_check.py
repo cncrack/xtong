@@ -55,19 +55,33 @@ def extra_needles() -> list[str]:
     return sorted(set(RE_EMAIL.findall(memo.read_text(encoding="utf-8", errors="replace"))))
 
 
+def staged_diff() -> str:
+    """已 `git add` 但尚未提交的改动。
+
+    2026-10-27 修：原先只扫 `origin/main..HEAD`，于是“add 之后、commit 之前”
+    跑门禁会显示“待审 diff 与上次完全相同”——看似通过，实际本次改动一行没审。
+    而 push 前若工作区还有 staged 改动，它们同样会被推上去，必须一并扫。
+    """
+    return sh("git", "diff", "--cached").stdout
+
+
 def outgoing_diff() -> str:
-    """待推送内容：origin/main..HEAD；无远端/无新提交时退化为 HEAD 或空。"""
+    """待推送内容：origin/main..HEAD（+ 已 staged 未提交的改动）。"""
     base = sh("git", "rev-parse", "--verify", "-q", "origin/main")
     head = sh("git", "rev-parse", "HEAD")
-    if head.returncode != 0:
-        return ""
-    h = head.stdout.strip()
-    if base.returncode == 0:
-        b = base.stdout.strip()
-        if b == h:
-            return ""  # 无待推送提交
-        return sh("git", "diff", f"{b}..{h}").stdout
-    return sh("git", "show", h).stdout  # 首次推送场景：至少审最后一个提交
+    parts: list[str] = []
+    if head.returncode == 0:
+        h = head.stdout.strip()
+        if base.returncode == 0:
+            b = base.stdout.strip()
+            if b != h:  # 有待推送提交
+                parts.append(sh("git", "diff", f"{b}..{h}").stdout)
+        else:
+            parts.append(sh("git", "show", h).stdout)  # 首次推送：至少审最后一个提交
+    staged = staged_diff()
+    if staged.strip():
+        parts.append(staged)
+    return "\n".join(p for p in parts if p)
 
 
 def scan_diff(diff: str, needles: list[str]) -> tuple[list[str], list[str]]:

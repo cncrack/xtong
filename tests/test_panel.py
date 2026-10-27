@@ -131,6 +131,28 @@ class TestPanel(unittest.TestCase):
         r2 = self.client.put("/api/settings", json={"window_start": "9:30", "window_end": "22:00"})
         self.assertFalse(r2.json()["ok"])
 
+    def test_strategy_settings_roundtrip(self):
+        """2026-10-27 用户：守护/节级策略“必为配置项，面板可改”。"""
+        body = {
+            "auto_max_tries": 3, "auto_retry_minutes": 20, "auto_confirm_seconds": 30,
+            "learn_enter_retries": 3, "learn_max_skip_chapters": 4,
+            "learn_non_video_streak": 5, "learn_partial_retries": 2,
+            "learn_partial_retry_ratio_pct": 70, "learn_login_budget_per_day": 3,
+            "learn_non_video_marks": "作业,小组任务",
+        }
+        self.assertEqual(self.client.put("/api/settings", json=body).json(), {"ok": True})
+        s = self.client.get("/api/settings").json()
+        for k, v in body.items():
+            self.assertEqual(s[k], v, k)
+
+    def test_strategy_settings_reject_out_of_range(self):
+        for bad in ({"auto_max_tries": 11}, {"auto_max_tries": -1},
+                    {"learn_partial_retries": 9}, {"learn_partial_retry_ratio_pct": 10},
+                    {"learn_login_budget_per_day": 0}, {"auto_confirm_seconds": 5},
+                    {"auto_max_tries": "3"}):
+            r = self.client.put("/api/settings", json=bad)
+            self.assertFalse(r.json()["ok"], bad)
+
     def test_progress_shape(self):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)

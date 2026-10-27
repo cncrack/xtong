@@ -527,6 +527,20 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
+  <h3 style="margin:.2rem 0 .5rem;font-size:.9rem">⏱ 守护与节级策略 <span class="muted" style="font-size:.72rem;font-weight:400">全部为配置项；保存后对「之后新启动的守护/会话」生效（守护需重启一次）</span></h3>
+  <div class="llmgrid">
+    <label>每日最多自动发起<small>0=不限，1~10（安全默认 2）</small><input type="number" id="s_mt" min="0" max="10"></label>
+    <label>失败退避（分钟）<small>1~240；避免连续敲平台</small><input type="number" id="s_rm" min="1" max="240"></label>
+    <label>开跑回读（秒）<small>15~300；确认会话真在跑</small><input type="number" id="s_cs" min="15" max="300"></label>
+    <label>单节点最多点几次<small>1~5；点不开算这节失败</small><input type="number" id="s_er" min="1" max="5"></label>
+    <label>连续几节打不开收工<small>1~10；失败的节保持待学</small><input type="number" id="s_ms" min="1" max="10"></label>
+    <label>连续非视频收工<small>1~20；作业/阅读穿过去</small><input type="number" id="s_ns" min="1" max="20"></label>
+    <label>中断续播次数<small>0=关闭，最大 3</small><input type="number" id="s_pr" min="0" max="3"></label>
+    <label>续播门槛（%）<small>30~95；已播够这个比例才值得续</small><input type="number" id="s_prr" min="30" max="95"></label>
+    <label>每日登录预算<small>1~5 次；失败尝试也算</small><input type="number" id="s_lb" min="1" max="5"></label>
+    <label class="span2">非视频节点关键词<small>逗号分隔；名字含这些词的节不会被当成“播放失败”</small><input type="text" id="s_nvm" placeholder="作业,测验,讨论,阅读,考试,练习,公告"></label>
+  </div>
+  <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
 </div>
 <div id="tab1" style="display:none">
   <h3 style="margin:.2rem 0 .5rem;font-size:.92rem">🤖 AI 模型 <span class="muted" style="font-size:.75rem;font-weight:400">全局，所有账号共用</span></h3>
@@ -829,6 +843,12 @@ function loadSettings(){
     s_ws.value=d.window_start||'08:00'; s_we.value=d.window_end||'23:00';
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
     s_wm.value=d.work_mode_default||'owner';
+    s_mt.value=d.auto_max_tries??2; s_rm.value=d.auto_retry_minutes??15;
+    s_cs.value=d.auto_confirm_seconds??25;
+    s_er.value=d.learn_enter_retries??2; s_ms.value=d.learn_max_skip_chapters??3;
+    s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
+    s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
+    s_nvm.value=d.learn_non_video_marks||'';
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
     s_lkeyv.value='';s_lkeyv.dataset.hasKey=d.llm_key_stored?'1':'0';
     window.LLM_NAME=d.llm_provider_name||'Agnès';
@@ -901,10 +921,19 @@ function testLLM(){
     ?`✓ 连通成功，模型回复：${d.reply}`:'✗ 失败：'+d.error;})
   .catch(e=>{clearTimeout(t);el.textContent='✗ 测试失败：'+(e.name==='AbortError'?'超时（15秒）':e);});}
 function saveSettings(){
+  const body={quiz_enabled:s_quiz.checked,window_start:s_ws.value,
+    window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
+    work_mode_default:s_wm.value};
+  for(const [k,el] of [['auto_max_tries',s_mt],['auto_retry_minutes',s_rm],
+      ['auto_confirm_seconds',s_cs],['learn_enter_retries',s_er],
+      ['learn_max_skip_chapters',s_ms],['learn_non_video_streak',s_ns],
+      ['learn_partial_retries',s_pr],['learn_partial_retry_ratio_pct',s_prr],
+      ['learn_login_budget_per_day',s_lb]]){
+    if(el&&el.value!=='')body[k]=Math.round(+el.value);
+  }
+  if(s_nvm)body.learn_non_video_marks=s_nvm.value.trim();
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({quiz_enabled:s_quiz.checked,window_start:s_ws.value,
-      window_end:s_we.value,daily_minutes:+s_min.value||0,daily_tasks:+s_task.value||0,
-      work_mode_default:s_wm.value})}
+    body:JSON.stringify(body)}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
     if(d.ok){window.QUIZ.work_mode_default=s_wm.value;document.getElementById('dlg').close();syncRun();}});
 }
@@ -1960,6 +1989,15 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/settings")
     def get_settings():
         fresh = Settings(root=settings.root)  # 重新加载（含 app_config 覆盖层）
+
+        def _i(cfg: dict | None, key: str, default: int) -> int:
+            try:
+                return int((cfg or {}).get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        auto_cfg = fresh.raw.get("auto") or {}
+        learn_cfg = fresh.learn or {}
         return {
             "quiz_enabled": bool(fresh.quiz["enabled"]),
             "window_start": fresh.pace["daily_window"][0],
@@ -1967,6 +2005,17 @@ def create_app(settings: Settings) -> FastAPI:
             "daily_minutes": int(fresh.quota["daily_minutes"]),
             "daily_tasks": int(fresh.quota["daily_tasks"]),
             "work_mode_default": fresh.quiz.get("work_mode_default", "owner"),
+            # 守护与节级策略（2026-10-27 用户：“必为配置项，面板可改”）
+            "auto_max_tries": _i(auto_cfg, "max_tries", 2),
+            "auto_retry_minutes": _i(auto_cfg, "retry_minutes", 15),
+            "auto_confirm_seconds": _i(auto_cfg, "confirm_seconds", 25),
+            "learn_enter_retries": _i(learn_cfg, "enter_retries", 2),
+            "learn_max_skip_chapters": _i(learn_cfg, "max_skip_chapters", 3),
+            "learn_non_video_streak": _i(learn_cfg, "non_video_streak", 4),
+            "learn_partial_retries": _i(learn_cfg, "partial_retries", 1),
+            "learn_partial_retry_ratio_pct": _i(learn_cfg, "partial_retry_ratio_pct", 60),
+            "learn_login_budget_per_day": _i(learn_cfg, "login_budget_per_day", 2),
+            "learn_non_video_marks": str(learn_cfg.get("non_video_marks", "") or ""),
             "llm_base_url": fresh.llm["base_url"],
             "llm_model": fresh.llm["model"],
             "llm_provider_name": fresh.llm.get("provider_name", ""),
@@ -2008,6 +2057,31 @@ def create_app(settings: Settings) -> FastAPI:
                 if body["work_mode_default"] not in ("owner", "reference", "ai"):
                     return {"ok": False, "error": "作业策略仅 owner/reference/ai"}
                 upsert(conn, "quiz.work_mode_default", body["work_mode_default"])
+            # 守护与节级策略（2026-10-27）：全部配置项 + 范围钳制，与代码里的默认行为一致。
+            # 钳制而非拒绝越界以外的值：这里直接拒绝，让用户当场看到写错，而不是默默被改。
+            int_rules = {
+                "auto_max_tries": ("auto.max_tries", 0, 10),
+                "auto_retry_minutes": ("auto.retry_minutes", 1, 240),
+                "auto_confirm_seconds": ("auto.confirm_seconds", 15, 300),
+                "learn_enter_retries": ("learn.enter_retries", 1, 5),
+                "learn_max_skip_chapters": ("learn.max_skip_chapters", 1, 10),
+                "learn_non_video_streak": ("learn.non_video_streak", 1, 20),
+                "learn_partial_retries": ("learn.partial_retries", 0, 3),
+                "learn_partial_retry_ratio_pct": ("learn.partial_retry_ratio_pct", 30, 95),
+                "learn_login_budget_per_day": ("learn.login_budget_per_day", 1, 5),
+            }
+            for field, (key, lo, hi) in int_rules.items():
+                if field not in body:
+                    continue
+                val = body[field]
+                if isinstance(val, bool) or not isinstance(val, int):
+                    return {"ok": False, "error": f"{field} 需为整数"}
+                if not (lo <= val <= hi):
+                    return {"ok": False, "error": f"{field} 需在 {lo}~{hi} 之间"}
+                upsert(conn, key, val)
+            if "learn_non_video_marks" in body:
+                marks = str(body["learn_non_video_marks"]).strip()
+                upsert(conn, "learn.non_video_marks", marks)  # 空串=回落内置默认
             for field, key in (("llm_base_url", "llm.base_url"),
                                ("llm_model", "llm.model")):
                 if field in body and str(body[field]).strip():
