@@ -1073,6 +1073,22 @@ def cmd_auto(args: argparse.Namespace) -> int:
             _ev(0, "auto-stop",
                 f"运行 {mins} 分钟｜今日触发 {len(fired)} 个｜跳过 {len(skipped)} 个")
             return 0
+        except Exception as exc:  # P0-13（2026-10-27 用户批准）
+            # 正文异常（DB 锁/网络/子进程读取）以前直接崩：run_logs 里只有 auto-start、
+            # 没有收尾事件，面板/rlogs 看起来“还在跑”，真因只能去 sub-auto-*.log 翻栈。
+            # 现在补一条 auto-exit，把异常类型、摘要与运行量一次写清。
+            mins = int((_time.monotonic() - started_at) // 60)
+            n_fired = len(locals().get("fired") or ())
+            n_skip = len(locals().get("skipped") or ())
+            print(f"\n[auto] 守护异常退出：{type(exc).__name__}: {exc}")
+            log.error("守护异常退出", exc_info=True)
+            try:
+                _ev(0, "auto-exit",
+                    f"异常退出：{type(exc).__name__}: {exc}｜运行 {mins} 分钟"
+                    f"｜今日触发 {n_fired} 个｜跳过 {n_skip} 个", "ERROR")
+            except Exception:
+                pass
+            return 1
 
 
 def cmd_work(args: argparse.Namespace) -> int:

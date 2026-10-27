@@ -262,8 +262,9 @@ class AsyncStudyRunner:
         if await video_frame.evaluate(js) != "ok":
             log.warning("[#%s][%s] watcher 注入失败（跳过）", self.account_id, label)
             return False
-        self._drain()  # 注入瞬间到达的 watcher-ready 等也属"旧状态"，一并丢弃
+        self._drain()  # 注入瞬间到达的 watcher-ready 等也属“旧状态”，一并丢弃
         injected = time.monotonic()
+        self._last_progress = 0.0  # B3：本节最高播放进度，用于判断“中断时已播多少”
         log.info("[#%s][%s] 开始播放：倍速 %.2f", self.account_id, label, rate)
         max_wait, ended, last_report, start = 600, False, 0.0, time.monotonic()
         last_dur = 0
@@ -282,6 +283,8 @@ class AsyncStudyRunner:
                 elif t == "tick" and ev.get("dur"):
                     dur, cur = int(ev["dur"]), float(ev["cur"])
                     last_dur = dur
+                    if cur > self._last_progress:
+                        self._last_progress = cur
                     if cur < dur - 5:
                         saw_progress = True
                         at_end_streak = 0
@@ -314,8 +317,15 @@ class AsyncStudyRunner:
                 break
         self._drain()
         self._last_video_dur = last_dur
-        log.info("[#%s][%s] 播放结束（ended=%s）", self.account_id, label, ended)
+        log.info("[#%s][%s] 播放结束（ended=%s）%.0f/%.0fs", self.account_id, label, ended,
+                 getattr(self, "_last_progress", 0.0), last_dur)
         return ended
+
+    def _partial_ratio(self) -> float:
+        """本节已播比例（B3 用于决定“中断后要不要续播一次”）。"""
+        dur = getattr(self, "_last_video_dur", 0) or 0
+        cur = getattr(self, "_last_progress", 0.0) or 0.0
+        return (cur / dur) if dur else 0.0
 
     async def run(self, course_row: dict[str, Any], limit: int | None = None,
                   ignore_window: bool = False) -> dict[str, Any]:
@@ -371,8 +381,14 @@ class AsyncStudyRunner:
         enter_retries = _learn_int(self.settings, "enter_retries", 2, 1, 5)
         max_skip = _learn_int(self.settings, "max_skip_chapters", 3, 1, 10)
         non_video_streak_cap = _learn_int(self.settings, "non_video_streak", 4, 1, 20)
-        log.info("[#%s] 节级策略：单节最多点 %d 次｜连续 %d 节打不开收工｜连续 %d 个非视频点结束",
-                 self.account_id, enter_retries, max_skip, non_video_streak_cap)
+        # B3（2026-10-27 用户批准）：视频中途中断（ended=False）时，先重载任务页
+        # 续播一次，而不是直接把这一节扔掉换下一节。0 = 关闭。
+        partial_retries = _learn_int(self.settings, "partial_retries", 1, 0, 3)
+        partial_streak = _learn_int(self.settings, "partial_retry_ratio_pct", 60, 30, 95)
+        log.info("[#%s] 节级策略：单节最多点 %d 次｜连续 %d 节打不开收工｜连续 %d 个非视频点结束"
+                 "｜中断续播 %d 次（≥%d%% 才续）",
+                 self.account_id, enter_retries, max_skip, non_video_streak_cap,
+                 partial_retries, partial_streak)
 
         async with async_playwright() as p:
             from ...core.stealth import LAUNCH_ARGS, async_hardened_context
@@ -470,6 +486,7 @@ class AsyncStudyRunner:
 
                 study_start: float | None = None
                 no_video_streak = 0
+                partial_tried: set[str] = set()  # B3：本会话已为它续播过的节
                 while limit is None or stats["videos"] < limit:
                     if not ignore_window and not within_daily_window(self.pace):
                         stats["stop_reason"] = "超出每日学习时段"
@@ -500,6 +517,26 @@ class AsyncStudyRunner:
                                     (cid,)).fetchone()
                                 if r_cur and r_cur["platform_chapter_id"]:
                                     kid, leaf_name = r_cur["platform_chapter_id"], r_cur["name"]
+                            # B3（2026-10-27）：中断（ended=False）且已播 ≥阈值时，
+                            # 重载任务页续播一次。 #1 就是 441/551s（80%）被当“结束”
+                            # 直接换节，白丢一节进度。
+                            if (played is False and partial_retries > 0
+                                    and kid not in partial_tried
+                                    and self._partial_ratio() * 100 >= partial_streak):
+                                partial_tried.add(kid)
+                                ratio = self._partial_ratio() * 100
+                                log.warning("[#%s][%s] 播放中断于 %.0f%%（%.0f/%.0fs），"
+                                            "重载任务页续播一次",
+                                            self.account_id, title, ratio,
+                                            getattr(self, "_last_progress", 0.0),
+                                            getattr(self, "_last_video_dur", 0))
+                                if await _enter_chapter(kid):
+                                    vf2 = await _find_frame_with(page, "video", timeout_s=25)
+                                    if vf2 is not None:
+                                        played = await self._play_video(page, vf2, title)
+                                        log.info("[#%s][%s] 续播结果：%s（%.0f%%）",
+                                                 self.account_id, title, played,
+                                                 self._partial_ratio() * 100)
                             if played is True:
                                 stats["videos"] += 1
                                 self.conn.execute(

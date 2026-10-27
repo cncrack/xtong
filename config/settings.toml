@@ -28,6 +28,12 @@ enter_retries = 2
 max_skip_chapters = 3
 # 连续几个非视频任务点（作业/阅读）算本段结束，1~20
 non_video_streak = 4
+# 视频中途中断（ended=False）时，重载任务页续播几次（0=关闭，最大 3）
+partial_retries = 1
+# 已播达到百分之几才值得续播（30~95，默认 60）
+partial_retry_ratio_pct = 60
+# 每账号每日登录尝试上限（1~5，默认 2）。失败尝试也算次数，因为失败同样是风控信号。
+login_budget_per_day = 2
 
 [pace]
 # 拟人化节奏（PLAN §5.5）：全部为区间，运行时按分布抽样，代码禁止固定 sleep。

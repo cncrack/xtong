@@ -18,7 +18,21 @@ from ..log import get_logger
 
 log = get_logger("session.relogin")
 
-LOGIN_BUDGET_PER_DAY = 2  # 安全底线，硬编码不上配置
+LOGIN_BUDGET_PER_DAY = 2  # 默认值；2026-10-27 用户同意改为可配置（[learn] login_budget_per_day）
+
+
+def login_budget_per_day(settings: Any) -> int:
+    """每日登录尝试上限（钳 1~5）。
+
+    2026-10-27：原本硬编码不上配置，用户提出“也可以配上” → 改成读 `[learn]`。
+    仍保留钳制：失败尝试也算次数（失败同样是风控信号），绝不开放为 0 或无限。
+    """
+    try:
+        val = int((getattr(settings, "learn", None) or {}).get(
+            "login_budget_per_day", LOGIN_BUDGET_PER_DAY))
+    except (TypeError, ValueError):
+        val = LOGIN_BUDGET_PER_DAY
+    return max(1, min(5, val))
 
 # 2026-10-24 两次实况核对（匿名公开页）：#phone/#pwd/#loginBtn 已验证；
 # 验证码容器为常驻空 div#captcha（有子元素=验证码出现）；错误提示是无样式 <p> 文本"…密码错误"
@@ -40,8 +54,10 @@ def login_attempts_today(conn: sqlite3.Connection, account_id: int) -> int:
     ).fetchone()["c"]
 
 
-def budget_left(conn: sqlite3.Connection, account_id: int) -> int:
-    return max(0, LOGIN_BUDGET_PER_DAY - login_attempts_today(conn, account_id))
+def budget_left(conn: sqlite3.Connection, account_id: int,
+                per_day: int | None = None) -> int:
+    return max(0, (per_day or LOGIN_BUDGET_PER_DAY)
+               - login_attempts_today(conn, account_id))
 
 
 def _log_login(conn: sqlite3.Connection, account_id: int, event: str, detail: str) -> None:
@@ -55,12 +71,13 @@ def _log_login(conn: sqlite3.Connection, account_id: int, event: str, detail: st
 
 
 def auto_relogin(conn: sqlite3.Connection, key: bytes, login_url: str, state_path: Path,
-                 account_id: int, username_enc: bytes, password_enc: bytes) -> str:
+                 account_id: int, username_enc: bytes, password_enc: bytes,
+                 per_day: int | None = None) -> str:
     """尝试自动重登。返回 ok | budget | captcha | wrong-password | no-cred | unknown。
 
     ok：登录成功且已回写 storage_state；其余均为转人工场景（绝不重试，由调用方告警）。
     """
-    if budget_left(conn, account_id) <= 0:
+    if budget_left(conn, account_id, per_day) <= 0:
         _log_login(conn, account_id, "login-blocked", "当日登录预算耗尽，冷却转人工")
         return "budget"
     _log_login(conn, account_id, "login-attempt", "自动重登开始")
@@ -116,4 +133,5 @@ def maybe_auto_relogin(settings, conn: sqlite3.Connection, account_row) -> str |
         conn, key, settings.platform["login_url"],
         settings.data_dir / "accounts" / str(account_row["id"]) / "state.json",
         account_row["id"], account_row["username_enc"], account_row["password_enc"],
+        per_day=login_budget_per_day(settings),
     )

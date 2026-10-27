@@ -79,6 +79,28 @@ class TestNonVideoName(unittest.TestCase):
         self.assertFalse(is_non_video_name(None))
 
 
+class TestPartialRatio(unittest.TestCase):
+    """B3：只有“真的播了大半”才值得重载续播，否则白白多跑一次真实访问。"""
+
+    def _mk(self, dur, cur):
+        from xxt.adapters.chaoxing.astudy import AsyncStudyRunner
+
+        obj = object.__new__(AsyncStudyRunner)  # 不跑 __init__，只测纯计算
+        obj._last_video_dur = dur
+        obj._last_progress = cur
+        return obj._partial_ratio()
+
+    def test_typical_interruption_80_percent(self):
+        # 实况：#1 在 441/551s 被当“结束”，已播 80% → 应该续播
+        self.assertAlmostEqual(self._mk(551, 441), 0.80, places=2)
+
+    def test_zero_duration_is_zero(self):
+        self.assertEqual(self._mk(0, 0), 0.0)
+
+    def test_just_started_is_small(self):
+        self.assertLess(self._mk(551, 30), 0.1)
+
+
 class TestLearnInt(unittest.TestCase):
     class S:
         def __init__(self, learn):

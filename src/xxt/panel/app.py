@@ -2334,14 +2334,15 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "outcome": "no-cred", "error": reason, "hint": hint}
         from ..core.accounts import account_state_path
         from ..core.crypto import master_key
-        from ..session.relogin import auto_relogin
+        from ..session.relogin import auto_relogin, login_budget_per_day
 
         conn = db()
         try:
             outcome = auto_relogin(
                 conn, master_key(settings.data_dir), settings.platform["login_url"],
                 account_state_path(settings, account_id), account_id,
-                creds["username_enc"], creds["password_enc"])
+                creds["username_enc"], creds["password_enc"],
+                per_day=login_budget_per_day(settings))
         finally:
             conn.close()
         if outcome == "ok":

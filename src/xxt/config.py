@@ -32,6 +32,9 @@ DEFAULTS: dict[str, Any] = {
         "enter_retries": 2,
         "max_skip_chapters": 3,
         "non_video_streak": 4,
+        "partial_retries": 1,
+        "partial_retry_ratio_pct": 60,
+        "login_budget_per_day": 2,
     },
     "pace": {
         "gap_browse": [3, 15],
