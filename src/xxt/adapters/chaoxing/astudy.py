@@ -437,9 +437,11 @@ class AsyncStudyRunner:
                  partial_retries, partial_streak)
 
         async with async_playwright() as p:
-            from ...core.stealth import LAUNCH_ARGS, async_hardened_context
+            from ...core.browser import async_launch
+            from ...core.stealth import async_hardened_context
 
-            browser = await p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+            # Q36：无头与否统一由 core.browser 决定（配置 [stealth].headless 真生效）
+            browser = await async_launch(p, self.settings)
             ctx_kw: dict[str, Any] = {"storage_state": str(self.state_path)}
             if self.proxy:
                 ctx_kw["proxy"] = {"server": self.proxy}

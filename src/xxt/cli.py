@@ -1766,12 +1766,12 @@ def cmd_work(args: argparse.Namespace) -> int:
             return context, page, work_frame
 
         with sync_playwright() as p:
-            from .core.stealth import LAUNCH_ARGS
+            from .core.browser import launch
 
             if args.review:  # 判题回读：已提交的作业页读每题得分 → 题库转正/清空
                 from .adapters.chaoxing.work import review_work
 
-                browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+                browser = launch(p, s)  # 判题回读：跟随 [stealth].headless（Q36）
                 try:
                     context, page, work_frame = _open_work_page(browser)
                     if work_frame is None:
@@ -1787,7 +1787,7 @@ def cmd_work(args: argparse.Namespace) -> int:
 
             # 作答：半自动=有头留窗核对；自动提交=无头
             headed = not args.submit
-            browser = p.chromium.launch(headless=headed, args=LAUNCH_ARGS)
+            browser = launch(p, s, headless=headed)
             try:
                 context, page, work_frame = _open_work_page(browser)
                 if work_frame is None:

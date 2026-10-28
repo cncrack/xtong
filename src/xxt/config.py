@@ -70,6 +70,8 @@ DEFAULTS: dict[str, Any] = {
         # 关（默认）= 仍按定时/学习窗口排队（防封优先）；开 = 下一轮巡检即发起。
         "reopen_run_now": False,
     },
+    # 浏览器形态（Q36，2026-10-28 接线）：headless 由 core/browser.py 统一读取，不再是死配置。
+    # 关掉后所有刷课/抓取/作业都会弹窗（调试用）；人工登录始终有头，不受此项影响。
     "stealth": {"headless": True},
 }
 

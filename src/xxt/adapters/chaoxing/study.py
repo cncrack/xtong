@@ -223,9 +223,11 @@ class StudyRunner:
                  budget_tasks or "不限", done_seconds // 60, done_today)
 
         with sync_playwright() as p:
-            from ...core.stealth import LAUNCH_ARGS, hardened_context
+            from ...core.browser import launch
+            from ...core.stealth import hardened_context
 
-            browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+            # Q36：无头与否统一由 core.browser 决定（配置 [stealth].headless 真生效）
+            browser = launch(p, self.settings)
             context = hardened_context(browser, storage_state=str(self.state_path))
             context.expose_binding("__xxtEvent", self._on_event)
             page = context.new_page()

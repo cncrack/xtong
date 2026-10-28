@@ -75,11 +75,12 @@ def read_profile(state_path: Path, space_url: str, timeout_ms: int = 30_000) -> 
         return {"ok": False, "error": "该账号还没有登录会话（先跑一次 login）"}
     from playwright.sync_api import sync_playwright
 
-    from ...core.stealth import LAUNCH_ARGS, hardened_context
+    from ...core.browser import launch
+    from ...core.stealth import hardened_context
 
     holder: dict[str, Any] = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+        browser = launch(p)  # Q36：本函数没有 settings，由工厂自行读取 [stealth].headless
         try:
             context = hardened_context(browser, storage_state=str(state_path))
             page = context.new_page()

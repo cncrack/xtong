@@ -25,9 +25,11 @@ def manual_login(login_url: str, state_path: Path, timeout_s: int = 600) -> bool
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        from ..core.stealth import LAUNCH_ARGS, hardened_context
+        from ..core.browser import launch
+        from ..core.stealth import hardened_context
 
-        browser = p.chromium.launch(headless=False, args=LAUNCH_ARGS)
+        # 人工登录必须让人看见窗口 → 显式覆盖配置（Q36）
+        browser = launch(p, headless=False)
         context = hardened_context(browser)
         page = context.new_page()
         log.info("浏览器已启动，正在打开登录页：%s", login_url)
@@ -86,9 +88,10 @@ def probe_session(space_url: str, state_path: Path) -> tuple[str, str | None]:
                 pass
 
     with sync_playwright() as p:
-        from ..core.stealth import LAUNCH_ARGS, hardened_context
+        from ..core.browser import launch
+        from ..core.stealth import hardened_context
 
-        browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+        browser = launch(p)  # 会话探测：跟随 [stealth].headless
         context = hardened_context(browser, storage_state=str(state_path))
         page = context.new_page()
         page.on("response", on_response)

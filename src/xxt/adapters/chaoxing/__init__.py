@@ -62,9 +62,10 @@ class ChaoxingAdapter(PlatformAdapter):
                     pass
 
         with sync_playwright() as p:
-            from ...core.stealth import LAUNCH_ARGS, hardened_context
+            from ...core.browser import launch
+            from ...core.stealth import hardened_context
 
-            browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+            browser = launch(p, self.settings)
             context = hardened_context(browser, storage_state=str(state_path))
             page = context.new_page()
             page.on("response", on_response)
@@ -96,9 +97,10 @@ class ChaoxingAdapter(PlatformAdapter):
         from .study import find_frame_with, open_chapter_frame
 
         with sync_playwright() as p:
-            from ...core.stealth import LAUNCH_ARGS, hardened_context
+            from ...core.browser import launch
+            from ...core.stealth import hardened_context
 
-            browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+            browser = launch(p, self.settings)
             context = hardened_context(browser, storage_state=str(state_path))
             page = context.new_page()
             try:

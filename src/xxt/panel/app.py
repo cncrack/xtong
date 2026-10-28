@@ -567,6 +567,9 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>解除“今日收工”后立刻开跑<small style="display:block;color:var(--muted);font-size:.72rem">默认关：解除了也仍按定时/学习窗口排队（防封优先）；开：下一轮巡检（30 秒内）就直接发起</small></label>
     <span class="switch"><input type="checkbox" id="s_rn"><i></i></span></div>
   <div class="hint" style="margin-top:.55rem">改完保存即生效：守护每 30 秒重读一次配置，额度/上限/退避改了几十秒内就按新值判断（<b>不用停调度</b>）。<b>例外</b>：数据目录/数据库路径改了必须重启程序（不会把今天的记录拆到两个库）；节级四项对下一次学习会话生效。</div>
+  <h3 style="margin:.7rem 0 .4rem;font-size:.86rem">⑥ 浏览器形态 <span class="muted" style="font-size:.72rem;font-weight:400">2026-10-28 新增</span></h3>
+  <div class="frow"><label>无头模式<small style="display:block;color:var(--muted);font-size:.72rem">开（默认）：不弹窗口，挂机时桌面干净；关：刷课/抓课程/作业都会弹出浏览器窗口，仅调试或人工核对时用。<b>人工登录始终有头</b>，不受此开关影响。保存后<b>下一次启动浏览器</b>生效</small></label>
+<span class="switch"><input type="checkbox" id="s_hl"><i></i></span></div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
   <h3 style="margin:.2rem 0 .4rem;font-size:.86rem">🕘 最近配置变更 <span class="muted" style="font-size:.72rem;font-weight:400">每次保存都留痕旧值→新值（溯源用）</span></h3>
   <div id="auditList" style="font-size:.76rem;line-height:1.55"></div>
@@ -932,6 +935,7 @@ function loadSettings(){
     s_rj.value=d.auto_retry_jitter_pct??40; s_rx.value=d.auto_retry_max_minutes??90;
     s_hc.value=d.auto_hard_tries_cap??4;
     s_rn.checked=!!d.auto_reopen_run_now;
+    s_hl.checked=d.stealth_headless!==false;
     s_er.value=d.learn_enter_retries??2; s_ms.value=d.learn_max_skip_chapters??3;
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
@@ -1049,6 +1053,7 @@ function saveSettings(){
   }
   if(s_nvm)body.learn_non_video_marks=s_nvm.value.trim();
   body.auto_reopen_run_now=s_rn.checked;   // Q44：解除今日收工后立刻开跑（默认关）
+  body.stealth_headless=s_hl.checked;      // Q36：无头模式（默认开）
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)}
   ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（守护 30 秒内自动重载，不必重启）':'保存失败：'+d.error);
@@ -2360,6 +2365,8 @@ def create_app(settings: Settings) -> FastAPI:
             "auto_confirm_seconds": _i(auto_cfg, "confirm_seconds", 25),
             # Q44：解除“今日收工”后是否立刻开跑（默认关 = 仍按定时排队）
             "auto_reopen_run_now": bool(auto_cfg.get("reopen_run_now", False)),
+            # Q36：无头模式（默认开）；人工登录不受它影响
+            "stealth_headless": bool((fresh.raw.get("stealth") or {}).get("headless", True)),
             "learn_enter_retries": _i(learn_cfg, "enter_retries", 2),
             "learn_max_skip_chapters": _i(learn_cfg, "max_skip_chapters", 3),
             "learn_non_video_streak": _i(learn_cfg, "non_video_streak", 4),
@@ -2462,6 +2469,11 @@ def create_app(settings: Settings) -> FastAPI:
                 if not isinstance(body["auto_reopen_run_now"], bool):
                     return {"ok": False, "error": "auto_reopen_run_now 需为布尔"}
                 upsert(conn, "auto.reopen_run_now", body["auto_reopen_run_now"])
+            # Q36：无头模式（布尔，默认开）。关掉后所有刷课/抓取都会弹窗，只给调试用
+            if "stealth_headless" in body:
+                if not isinstance(body["stealth_headless"], bool):
+                    return {"ok": False, "error": "stealth_headless 需为布尔"}
+                upsert(conn, "stealth.headless", body["stealth_headless"])
             for field, key in (("llm_base_url", "llm.base_url"),
                                ("llm_model", "llm.model")):
                 if field in body and str(body[field]).strip():
@@ -3104,8 +3116,9 @@ def create_app(settings: Settings) -> FastAPI:
                                           for i, q in enumerate(qs)]}
             else:  # 未缓存：浏览器解析一次 → 存库（后续永不再开浏览器取题）
                 with sync_playwright() as p:
-                    from ..core.stealth import LAUNCH_ARGS, hardened_context
-                    browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+                    from ..core.browser import launch
+                    from ..core.stealth import hardened_context
+                    browser = launch(p, settings)
 
                     context = hardened_context(browser, storage_state=str(state))
                     page = context.new_page()
@@ -3261,8 +3274,9 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "error": "未找到课程/章节"}
         try:
             with sync_playwright() as p:
-                from ..core.stealth import LAUNCH_ARGS, hardened_context
-                browser = p.chromium.launch(headless=True, args=LAUNCH_ARGS)
+                from ..core.browser import launch
+                from ..core.stealth import hardened_context
+                browser = launch(p, settings)
                 context = hardened_context(browser, storage_state=str(state))
                 page = context.new_page()
                 try:
