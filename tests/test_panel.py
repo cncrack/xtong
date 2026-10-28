@@ -173,6 +173,41 @@ class TestPanel(unittest.TestCase):
                  if r["key"] == "auto.max_tries"]
         self.assertEqual(len(rows2), n)
 
+    def test_account_quota_change_writes_audit(self):
+        """账号级额度改动也要进「最近配置变更」（2026-10-28 Q41 用户实测反馈）。"""
+        conn = connect(self.settings.db_path)
+        # db 初始化自带 id=1 的 default 账号；这里只把它拉回“未设覆盖”的初始态
+        conn.execute("INSERT OR IGNORE INTO accounts(id, label, created_at)"
+                     " VALUES(1, '测试号', '2026-01-01T00:00:00')")
+        conn.execute("UPDATE accounts SET daily_max_minutes=NULL, daily_max_tasks=NULL"
+                     " WHERE id=1")
+        conn.commit()
+        conn.close()
+        label = "账号#1 · 每日时长(分钟)"
+
+        def _rows():
+            return [r for r in self.client.get("/api/settings").json()["recent_changes"]
+                    if r["key"] == label]
+
+        r = self.client.put("/api/accounts/1", json={
+            "daily_max_minutes": 120, "daily_max_tasks": 3})
+        self.assertEqual(r.json(), {"ok": True})
+        self.assertEqual(len(_rows()), 1)
+        self.assertEqual((_rows()[0]["old_value"], _rows()[0]["new_value"]), ("", "120"))
+
+        # 同值再存不刷记录（与全局项一致）
+        self.client.put("/api/accounts/1", json={"daily_max_minutes": 120})
+        self.assertEqual(len(_rows()), 1)
+
+        # 改成 100 → 记下旧值 120，方便事后查“谁把它从多少改成多少”
+        self.client.put("/api/accounts/1", json={"daily_max_minutes": 100})
+        self.assertEqual(len(_rows()), 2)
+        self.assertEqual(_rows()[0]["old_value"], "120")
+        self.assertEqual(_rows()[0]["new_value"], "100")
+        # 任务数同样留痕
+        keys = [r["key"] for r in self.client.get("/api/settings").json()["recent_changes"]]
+        self.assertIn("账号#1 · 每日任务数", keys)
+
     def test_progress_shape(self):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)

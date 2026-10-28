@@ -2178,12 +2178,36 @@ def create_app(settings: Settings) -> FastAPI:
         """最近配置变更（config_audit）→ 「守护与节级策略」页底部展示。
 
         2026-10-27 用户要求：“每次调整都要记录清楚，方便查阅和调整”。
+        2026-10-28 Q41：账号级改动（额度/任务数/定时…）也进来，key 翻成人话。
         读失败绝不能阻塞设置页本身。
         """
+        # 账号级审计的 key 是 `account.<id>.<列名>`：直接显示列名用户看不懂，
+        # 且库里存原始 key，展示层翻译不会影响审计本身的机器可读性。
+        acc_cols = {
+            "daily_max_minutes": "每日时长(分钟)",
+            "daily_max_tasks": "每日任务数",
+            "start_at": "定时开始",
+            "window_start": "学习窗口起",
+            "window_end": "学习窗口止",
+            "work_mode": "作业策略",
+            "priority": "优先级",
+            "status": "状态",
+            "label": "别名",
+            "note": "备注",
+            "proxy": "代理",
+            "valid_until": "有效期至",
+        }
+
+        def _key_label(key: str) -> str:
+            parts = (key or "").split(".", 2)
+            if len(parts) == 3 and parts[0] == "account":
+                return f"账号#{parts[1]} · {acc_cols.get(parts[2], parts[2])}"
+            return key
+
         try:
             c = db()
             try:
-                return [{"ts": r["ts"], "key": r["key"],
+                return [{"ts": r["ts"], "key": _key_label(r["key"]),
                          "old_value": r["old_value"], "new_value": r["new_value"]}
                         for r in c.execute(
                             "SELECT ts, key, old_value, new_value FROM config_audit"
@@ -2374,9 +2398,26 @@ def create_app(settings: Settings) -> FastAPI:
                     fields[k] = v
             if "priority" in body:
                 fields["priority"] = float(body["priority"] or 1.0)
+            # 账号级变更也要留痕（2026-10-28 Q41）：此前只写 accounts 表，
+            # 「最近配置变更」里看不到额度/定时被谁改成什么（用户实测反馈“日志里没体现”）。
+            # 与全局项同一口径：值没变就不记，免得每点一次保存刷一条无意义记录。
+            def _audit_acc(col: str, old, new) -> None:
+                if old == new:
+                    return
+                conn.execute(
+                    "INSERT INTO config_audit(ts, source, key, old_value, new_value)"
+                    " VALUES(?,?,?,?,?)",
+                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "panel",
+                     f"account.{account_id}.{col}",
+                     "" if old is None else str(old), "" if new is None else str(new)),
+                )
+
+            for col, val in fields.items():
+                _audit_acc(col, cur[col], val)
             if "status" in body:
                 if body["status"] not in ("active", "paused"):
                     return {"ok": False, "error": "status 仅 active/paused"}
+                _audit_acc("status", cur["status"], body["status"])
                 conn.execute("UPDATE accounts SET status=? WHERE id=?", (body["status"], account_id))
             if fields:
                 acc.set_overrides(conn, str(account_id), **fields)
