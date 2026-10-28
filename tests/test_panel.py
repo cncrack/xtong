@@ -161,16 +161,17 @@ class TestPanel(unittest.TestCase):
         """每次保存都留痕旧值→新值（用户 2026-10-27：方便查阅和调整）。"""
         self.client.put("/api/settings", json={"auto_max_tries": 5})
         self.client.put("/api/settings", json={"auto_max_tries": 6})
-        rows = [r for r in self.client.get("/api/settings").json()["recent_changes"]
-                if r["key"] == "auto.max_tries"]
+        # key 已经是中文（2026-10-28 Q42：以前前端拿下划线名字去匹配点分 key，永远对不上）
+        rows = [r for r in self.client.get("/api/settings").json()["recent_changes"]["rows"]
+                if r["key"] == "每日自动发起次数"]
         self.assertGreaterEqual(len(rows), 2)
         self.assertEqual(rows[0]["new_value"], "6")
         self.assertEqual(rows[0]["old_value"], "5")
         # 写同值不再刷记录（否则每点一次保存都刷一条，反而没法查）
         n = len(rows)
         self.client.put("/api/settings", json={"auto_max_tries": 6})
-        rows2 = [r for r in self.client.get("/api/settings").json()["recent_changes"]
-                 if r["key"] == "auto.max_tries"]
+        rows2 = [r for r in self.client.get("/api/settings").json()["recent_changes"]["rows"]
+                 if r["key"] == "每日自动发起次数"]
         self.assertEqual(len(rows2), n)
 
     def test_account_quota_change_writes_audit(self):
@@ -186,8 +187,8 @@ class TestPanel(unittest.TestCase):
         label = "账号#1 · 每日时长(分钟)"
 
         def _rows():
-            return [r for r in self.client.get("/api/settings").json()["recent_changes"]
-                    if r["key"] == label]
+            data = self.client.get("/api/settings").json()["recent_changes"]
+            return [r for r in data["rows"] if r["key"] == label]
 
         r = self.client.put("/api/accounts/1", json={
             "daily_max_minutes": 120, "daily_max_tasks": 3})
@@ -205,8 +206,34 @@ class TestPanel(unittest.TestCase):
         self.assertEqual(_rows()[0]["old_value"], "120")
         self.assertEqual(_rows()[0]["new_value"], "100")
         # 任务数同样留痕
-        keys = [r["key"] for r in self.client.get("/api/settings").json()["recent_changes"]]
+        data = self.client.get("/api/settings").json()["recent_changes"]
+        keys = [r["key"] for r in data["rows"]]
         self.assertIn("账号#1 · 每日任务数", keys)
+        # 卡片有总数字段（前端据它显示“共 N 条 / 只显示最近 8 条”）
+        self.assertGreaterEqual(data["total"], len(data["rows"]))
+
+    def test_panel_actions_go_to_run_logs(self):
+        """面板上的操作也要进日志页（2026-10-28 Q42：“日志里看不到谁把额度改了”）。"""
+        conn = connect(self.settings.db_path)
+        conn.execute("INSERT OR IGNORE INTO accounts(id, label, created_at)"
+                     " VALUES(2, '面板操作号', '2026-01-01T00:00:00')")
+        conn.commit()
+        conn.close()
+        r = self.client.put("/api/accounts/2", json={"daily_max_minutes": 60,
+                                                    "daily_max_tasks": 30})
+        self.assertEqual(r.json(), {"ok": True})
+        # ① 业务日志里有 account-edit，且写清了 旧→新
+        logs = self.client.get("/api/logs?n=50&cat=panel").json()["logs"]
+        edits = [x for x in logs if x["event"] == "account-edit" and x["account_id"] == 2]
+        self.assertTrue(edits, "面板改额度没写进 run_logs")
+        self.assertIn("每日时长(分钟)", edits[0]["detail"])
+        self.assertIn("60", edits[0]["detail"])
+        # ② 类别筛选：panel 类里不该混进 auto-* 调度事件
+        self.assertFalse([x for x in logs if x["event"].startswith("auto-")])
+        # ③ 学习类筛选只看会话/节/视频
+        learned = self.client.get("/api/logs?n=50&cat=learn").json()["logs"]
+        self.assertTrue(all(x["event"].startswith(("session-", "chapter-", "video-"))
+                            for x in learned))
 
     def test_progress_shape(self):
         r = self.client.get("/api/progress")

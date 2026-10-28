@@ -499,6 +499,14 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
         <option value="sys-info">系统日志（全部）</option>
         <option value="sys-sub">含子进程输出</option>
       </select>
+      <select id="logCat" onchange="renderLogs()" title="按类别筛：面板操作与守护决策分开看（2026-10-28 用户要求）">
+        <option value="" selected>全部类别</option>
+        <option value="auto">⏱ 调度</option>
+        <option value="learn">💻 学习</option>
+        <option value="panel">🖱 面板操作</option>
+        <option value="work">📝 作业</option>
+        <option value="warn">⚠ 仅异常</option>
+      </select>
       <input id="logAcc" list="logAccList" style="width:190px"
         placeholder="全部账号（输 #1 或姓名）" title="可输入账号编号（如 #2）或姓名/备注/平台昵称模糊匹配；清空=全部"
         oninput="LOGACC=this.value;renderLogs()">
@@ -848,7 +856,9 @@ function logSourceQs(){
   if(v==='sys-sub')return 'source=sys&min_level=INFO&sub=1';
   if(v==='sys-info')return 'source=sys&min_level=INFO';
   if(v==='sys-warn')return 'source=sys&min_level=WARNING';
-  return 'source=event';
+  // 业务类别只在“业务事件”下有意义（系统日志是另一条流）
+  const c=document.getElementById('logCat')?.value||'';
+  return 'source=event'+(c?'&cat='+encodeURIComponent(c):'');
 }
 // 事件名 → 中文短标签（2026-10-27 用户反馈：日志全是英文事件名，看不懂在跑什么）
 const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-interrupt':'播放中断',
@@ -858,7 +868,18 @@ const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-
   'auto-error':'硬停/失败','auto-hardstop':'已硬停','auto-skip':'今日跳过','auto-plan':'今日计划',
   'auto-start':'守护启动','auto-stop':'守护停止',
   'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
-  'auto-exit':'守护异常退出','diag-visited-fix':'数据修复'};
+  'auto-exit':'守护异常退出','diag-visited-fix':'数据修复',
+  // 2026-10-28 Q42：面板操作现在也写日志（以前只有守护/会话的事件）
+  'account-add':'新增账号','account-edit':'改账号设置','account-del':'删除账号',
+  'account-renew':'账号续期','settings-save':'改全局设置','llm-save':'换 AI 厂商',
+  'plan-create':'新建安排','plan-toggle':'启停安排','plan-update':'改安排',
+  'plan-delete':'删安排','profile-read':'读平台资料',
+  'login-manual':'人工登录','login-auto':'自动登录','login-success':'登录成功',
+  'login-blocked':'登录预算用尽',
+  'work-answer':'作业作答','work-review':'作业判分回读'};
+// 日志页“类别”筛选（与后端 /api/logs?cat= 的取值一一对应）
+const LOGCAT={'auto':'⏱ 调度','learn':'💻 学习','panel':'🖱 面板操作',
+  'work':'📝 作业','warn':'⚠ 仅异常'};
 function renderLogs(n){if(n)LOGN=n;
   const box=document.getElementById('logs'); if(!box)return;
   const ids=logAccIds();
@@ -867,7 +888,8 @@ function renderLogs(n){if(n)LOGN=n;
   fetch('/api/logs?n='+LOGN+'&'+logSourceQs()+(ids?`&accounts=${ids}`:'')).then(r=>r.json()).then(d=>{
     if(!d.logs.length){box.innerHTML='<div class="muted">暂无记录</div>';}
     else box.innerHTML='<table>'+d.logs.map(l=>{
-      const cls=l.event==='video-done'||l.event==='auto-fire'||l.event==='auto-done'?'ev-good':
+      const cls=/(account-|settings-|llm-|plan-|profile-|login-)/.test(l.event)?'ev-info':
+        l.event==='video-done'||l.event==='auto-fire'||l.event==='auto-done'?'ev-good':
         (l.event==='chapter-start'||l.event==='session-start'||l.event==='auto-start'||
          l.event==='auto-plan'||l.event==='auto-request'||l.event==='auto-replan'||
          l.event==='auto-try')?'ev-info':
@@ -902,7 +924,7 @@ function loadSettings(){
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
     s_nvm.value=d.learn_non_video_marks||'';
-    renderAudit(d.recent_changes||[]);
+    renderAudit(d.recent_changes||{rows:[],total:0});
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
     s_lkeyv.value='';s_lkeyv.dataset.hasKey=d.llm_key_stored?'1':'0';
     window.LLM_NAME=d.llm_provider_name||'Agnès';
@@ -917,26 +939,32 @@ function switchTab(i,btn){
   btn.classList.add('active');
   [0,1,2].forEach(k=>{const el=document.getElementById('tab'+k);
     if(el)el.style.display=(k===i?'':'none');});}
-function renderAudit(rows){
+// 配置变更列表（2026-10-28 Q42）：中文名全部由服务端翻好（前端再无第二份词表）。
+// 旧版这里维护的是下划线版本 key（auto_max_tries），而 config_audit 存的是点分
+// （auto.max_tries）→ 永远匹配不上，用户看到的就是一屏英文。
+function renderAudit(obj){
   const el=document.getElementById('auditList'); if(!el)return;
-  const NAME={auto_max_tries:'每日最多自动发起',auto_retry_minutes:'退避基数(分)',
-    auto_retry_jitter_pct:'退避随机浮动(%)',auto_retry_max_minutes:'退避封顶(分)',
-    auto_hard_tries_cap:'单日硬上限(次)',
-    auto_confirm_seconds:'开跑回读(秒)',learn_enter_retries:'单节点点几次',
-    learn_max_skip_chapters:'连续打不开收工',learn_non_video_streak:'连续非视频收工',
-    learn_partial_retries:'中断续播次数',learn_partial_retry_ratio_pct:'续播门槛(%)',
-    learn_login_budget_per_day:'每日登录预算',learn_non_video_marks:'非视频关键词',
-    daily_minutes:'时长额度',daily_tasks:'任务额度',window_start:'窗口开始',
-    window_end:'窗口结束',quiz_enabled:'弹题AI',work_mode_default:'作业策略'};
+  const rows=(obj&&obj.rows)||[]; const total=(obj&&obj.total)||0;
   if(!rows.length){el.innerHTML='<span class="muted">暂无变更记录</span>';return;}
   el.innerHTML=rows.map(r=>{
     const t=(r.ts||'').replace('T',' ').slice(5,16);
-    const nm=NAME[r.key]||r.key;
     return `<div style="padding:.12rem 0;border-bottom:1px dashed var(--line)">
-      <span class="muted">${esc(t)}</span>　<b>${esc(nm)}</b>
+      <span class="muted">${esc(t)}</span>　<b>${esc(r.key)}</b>
       <span style="color:var(--muted)">${esc(String(r.old_value??'—'))}</span>
       <span style="color:var(--accent)">→ ${esc(String(r.new_value??'—'))}</span></div>`;
-  }).join('');
+  }).join('')+(total>rows.length
+    ? `<div style="margin-top:.35rem;font-size:.78rem" class="muted">
+         共 ${total} 条，此处只显示最近 ${rows.length} 条——
+         <a href="#" onclick="gotoLogs('panel');return false">全部记录见日志页 →</a></div>`
+    : `<div style="margin-top:.35rem;font-size:.78rem" class="muted">共 ${total} 条</div>`);
+}
+// 从设置弹窗跳到日志页（面板操作类），关闭弹窗再滚到位
+function gotoLogs(cat){
+  const d=document.getElementById('dlg'); if(d&&d.open)d.close();
+  const sel=document.getElementById('logCat'); if(sel)sel.value=cat||'';
+  LOGN=Math.max(LOGN,100);
+  if(typeof switchView==='function')switchView('logs');  // 内部会 renderLogs
+  const box=document.getElementById('viewLogs'); if(box)box.scrollIntoView({behavior:'smooth'});
 }
 function presetLLM(name,url,model){s_lname.value=name;s_lurl.value=url;s_lmodel.value=model;
   s_lhint.textContent=`已填入 ${name} 预设——点"保存到厂商列表"生效（可改模型名）`;}
@@ -1963,7 +1991,8 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/logs")
     def logs(n: int = 50, account: int | None = None, accounts: str | None = None,
-             source: str = "event", min_level: str = "WARNING", sub: int = 0):
+             source: str = "event", min_level: str = "WARNING", sub: int = 0,
+             cat: str = ""):
         """日志页数据。source=event：业务事件（run_logs）；source=sys：技术日志文件。
 
         业务事件与系统日志是两条道（2026-10-26 用户疑问“页面为何看不到守护动作”）：
@@ -1971,6 +2000,7 @@ def create_app(settings: Settings) -> FastAPI:
         过去只能翻文件。现在把两者都接到本页——
         - event：run_logs（account_id、accounts=1,2 可筛）
         - sys：   data/logs/xxt.log，min_level=WARNING|INFO，sub=1 时并入当天 sub-*.log
+        - cat：   业务类别（2026-10-28 Q42）：auto/learn/panel/work/warn，按事件名前缀分。
         """
         limit = max(1, min(n, 500))
         if source == "sys":
@@ -2024,6 +2054,20 @@ def create_app(settings: Settings) -> FastAPI:
                 "FROM run_logs l LEFT JOIN accounts a ON a.id = l.account_id"
             )
             where, params = [], []
+            if cat:  # 业务类别（2026-10-28 Q42）：面板操作与守护决策混在一屏难读
+                cat_sql = {
+                    "auto": "l.event LIKE 'auto-%'",
+                    "learn": "(l.event LIKE 'session-%' OR l.event LIKE 'chapter-%'"
+                             " OR l.event LIKE 'video-%')",
+                    "panel": "(l.event LIKE 'account-%' OR l.event LIKE 'settings-%'"
+                             " OR l.event LIKE 'llm-%' OR l.event LIKE 'plan-%'"
+                             " OR l.event LIKE 'profile-%' OR l.event LIKE 'login-%'"
+                             " OR l.event LIKE 'auto-request' OR l.event LIKE 'auto-stop')",
+                    "work": "(l.event LIKE 'work-%' OR l.event LIKE 'quiz-%')",
+                    "warn": "l.level IN ('WARNING','ERROR')",
+                }.get(cat)
+                if cat_sql:
+                    where.append(cat_sql)
             if account:
                 where.append("l.account_id = ?")
                 params.append(account)
@@ -2097,6 +2141,9 @@ def create_app(settings: Settings) -> FastAPI:
             conn.commit()
         finally:
             conn.close()
+        # 只记“哪家厂商/哪个模型”，**绝不记 Key 本身**（日志会进数据库和页面）
+        _log_event(0, "llm-save", f"切换 AI 厂商「{name}」→ {base_url}｜{model}"
+                                      + ("｜已更新 Key" if key else ""))
         return {"ok": True}
 
     @app.post("/api/llm/test")
@@ -2172,50 +2219,104 @@ def create_app(settings: Settings) -> FastAPI:
             conn.commit()
         finally:
             conn.close()
+        _log_event(0, "llm-save", f"删除 AI 厂商「{name}」")
         return {"ok": True}
 
-    def _recent_changes(limit: int = 12) -> list[dict]:
+    # 全局配置项的中文名（2026-10-28 Q42）：用户截图反馈「最近配置变更」全是英文。
+    # 根因：config_audit 存的是**点分原 key**（`auto.hard_tries_cap`），而前端旧映射
+    # 用的是**下划线**（`auto_hard_tries_cap`）→ 两边永远匹配不上，中文名形同虚设。
+    # 现在统一在服务端翻，前端不再维护第二份词表（一处改、两处错的问题从根上断掉）。
+    CFG_CN = {
+        "app.data_dir": "数据目录",
+        "platform.name": "平台标识",
+        "platform.login_url": "登录地址",
+        "platform.space_url": "空间地址",
+        "llm.provider": "AI 厂商",
+        "llm.provider_name": "AI 厂商名",
+        "llm.base_url": "AI 接口地址",
+        "llm.model": "AI 模型",
+        "learn.speed": "播放倍速",
+        "learn.daily_max_minutes": "每日时长(分钟)",
+        "learn.enter_retries": "单节点点几次",
+        "learn.max_skip_chapters": "连续打不开收工",
+        "learn.non_video_streak": "连续非视频收工",
+        "learn.non_video_marks": "非视频关键词",
+        "learn.partial_retries": "中断续播次数",
+        "learn.partial_retry_ratio_pct": "续播门槛(%)",
+        "learn.login_budget_per_day": "每日登录预算",
+        "pace.gap_browse": "切节·连看间隔",
+        "pace.gap_short": "切节·短歇",
+        "pace.gap_away": "切节·离开",
+        "pace.gap_weights": "切节三档概率",
+        "pace.focus_minutes": "专注时长",
+        "pace.rest_minutes": "休息时长",
+        "pace.daily_window": "学习时段",
+        "pace.speed_range": "倍速区间",
+        "quota.daily_minutes": "全局·时长额度(分钟)",
+        "quota.daily_tasks": "全局·任务额度(个)",
+        "quota.float_ratio": "额度浮动比例",
+        "rotation.courses_per_day": "每日课程数",
+        "rotation.priorities": "课程优先级",
+        "quiz.enabled": "弹题AI开关",
+        "quiz.mode": "弹题作答模式",
+        "quiz.work_enabled": "作业AI开关",
+        "quiz.work_mode_default": "作业默认策略",
+        "stealth.headless": "无头模式",
+        "auto.max_tries": "每日自动发起次数",
+        "auto.retry_minutes": "失败重试间隔(分)",
+        "auto.retry_jitter_pct": "重试随机浮动(%)",
+        "auto.retry_max_minutes": "重试封顶(分)",
+        "auto.hard_tries_cap": "单日硬上限(次)",
+        "auto.confirm_seconds": "开跑回读(秒)",
+    }
+    # 账号表的列名 → 中文（表头/审计/日志三处共用，避免三份词表各说各话）
+    ACC_COL_CN = {
+        "daily_max_minutes": "每日时长(分钟)",
+        "daily_max_tasks": "每日任务数",
+        "start_at": "定时开始",
+        "window_start": "学习窗口起",
+        "window_end": "学习窗口止",
+        "work_mode": "作业策略",
+        "priority": "优先级",
+        "status": "状态",
+        "label": "别名",
+        "note": "备注",
+        "proxy": "代理",
+        "valid_until": "有效期至",
+    }
+
+    def _recent_changes(limit: int = 8) -> dict:
         """最近配置变更（config_audit）→ 「守护与节级策略」页底部展示。
 
         2026-10-27 用户要求：“每次调整都要记录清楚，方便查阅和调整”。
         2026-10-28 Q41：账号级改动（额度/任务数/定时…）也进来，key 翻成人话。
+        2026-10-28 Q42：全局项也翻（此前显示 `auto.hard_tries_cap` 这种英文原 key）；
+        返回 `{rows,total}`，卡片只显示最近 8 条，其余走日志页（不再无限长）。
         读失败绝不能阻塞设置页本身。
         """
         # 账号级审计的 key 是 `account.<id>.<列名>`：直接显示列名用户看不懂，
         # 且库里存原始 key，展示层翻译不会影响审计本身的机器可读性。
-        acc_cols = {
-            "daily_max_minutes": "每日时长(分钟)",
-            "daily_max_tasks": "每日任务数",
-            "start_at": "定时开始",
-            "window_start": "学习窗口起",
-            "window_end": "学习窗口止",
-            "work_mode": "作业策略",
-            "priority": "优先级",
-            "status": "状态",
-            "label": "别名",
-            "note": "备注",
-            "proxy": "代理",
-            "valid_until": "有效期至",
-        }
-
         def _key_label(key: str) -> str:
             parts = (key or "").split(".", 2)
             if len(parts) == 3 and parts[0] == "account":
-                return f"账号#{parts[1]} · {acc_cols.get(parts[2], parts[2])}"
-            return key
+                return f"账号#{parts[1]} · {ACC_COL_CN.get(parts[2], parts[2])}"
+            return CFG_CN.get(key, key)
 
         try:
             c = db()
             try:
-                return [{"ts": r["ts"], "key": _key_label(r["key"]),
-                         "old_value": r["old_value"], "new_value": r["new_value"]}
-                        for r in c.execute(
-                            "SELECT ts, key, old_value, new_value FROM config_audit"
-                            " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+                rows = c.execute(
+                    "SELECT ts, key, old_value, new_value FROM config_audit"
+                    " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                total = c.execute("SELECT COUNT(*) FROM config_audit").fetchone()[0]
+                return {"rows": [{"ts": r["ts"], "key": _key_label(r["key"]),
+                                  "old_value": r["old_value"],
+                                  "new_value": r["new_value"]} for r in rows],
+                        "total": total}
             finally:
                 c.close()
         except Exception:
-            return []
+            return {"rows": [], "total": 0}
 
     @app.get("/api/settings")
     def get_settings():
@@ -2285,6 +2386,10 @@ def create_app(settings: Settings) -> FastAPI:
                 (time.strftime("%Y-%m-%dT%H:%M:%S"), "panel", key,
                  "" if old is None else str(old).strip('"'), str(value)),
             )
+            saved.append(f"{CFG_CN.get(key, key)} "
+                         f"{'' if old is None else str(old).strip(chr(34))}→{value}")
+
+        saved: list[str] = []
 
         conn = db()
         try:
@@ -2343,6 +2448,8 @@ def create_app(settings: Settings) -> FastAPI:
             conn.commit()
         finally:
             conn.close()
+        if saved:  # 全局设置也进日志页（此前只在「最近配置变更」里，日志页看不到）
+            _log_event(0, "settings-save", "、".join(saved))
         return {"ok": True}
 
     @app.post("/api/accounts")
@@ -2360,6 +2467,9 @@ def create_app(settings: Settings) -> FastAPI:
                 conn, master_key(settings.data_dir), label, user, pw,
                 priority=float(body.get("priority") or 1.0),
             )
+            # 面板动作也进业务日志（2026-10-28 Q42）：否则日志里只能看到守护干了什么，
+            # “这个号是谁什么时候建的/删的”无从追溯。
+            _log_event(aid, "account-add", f"新增账号「{label}」")
             return {"ok": True, "id": aid}
         finally:
             conn.close()
@@ -2401,9 +2511,14 @@ def create_app(settings: Settings) -> FastAPI:
             # 账号级变更也要留痕（2026-10-28 Q41）：此前只写 accounts 表，
             # 「最近配置变更」里看不到额度/定时被谁改成什么（用户实测反馈“日志里没体现”）。
             # 与全局项同一口径：值没变就不记，免得每点一次保存刷一条无意义记录。
+            changed: list[str] = []
+
             def _audit_acc(col: str, old, new) -> None:
                 if old == new:
                     return
+                changed.append(f"{ACC_COL_CN.get(col, col)} "
+                               f"{'—' if old in (None, '') else old}"
+                               f"→{'—' if new in (None, '') else new}")
                 conn.execute(
                     "INSERT INTO config_audit(ts, source, key, old_value, new_value)"
                     " VALUES(?,?,?,?,?)",
@@ -2422,6 +2537,10 @@ def create_app(settings: Settings) -> FastAPI:
             if fields:
                 acc.set_overrides(conn, str(account_id), **fields)
             conn.commit()
+            if changed:  # 两处都要能查到：config_audit 存精确值，日志页存一句人话
+                _log_event(account_id, "account-edit",
+                           f"{cur['label'] or '#' + str(account_id)}｜"
+                           + "、".join(changed))
             return {"ok": True}
         finally:
             conn.close()
@@ -2432,7 +2551,12 @@ def create_app(settings: Settings) -> FastAPI:
 
         conn = db()
         try:
+            who = acc.find_account(conn, str(account_id))
+            label = (who["label"] if who else f"#{account_id}") or f"#{account_id}"
             ok = acc.remove_account(conn, str(account_id))
+            if ok:
+                # 删前先取名字：删完再去查只能拿到一个冷冰冰的 id
+                _log_event(account_id, "account-del", f"删除账号「{label}」")
             return {"ok": ok} if ok else {"ok": False, "error": "账号不存在"}
         finally:
             conn.close()
@@ -2444,6 +2568,9 @@ def create_app(settings: Settings) -> FastAPI:
         conn = db()
         try:
             days = acc.renew_account(conn, str(account_id), days=int(body.get("days") or 30))
+            if days is not None:
+                _log_event(account_id, "account-renew",
+                           f"续期 {int(body.get('days') or 30)} 天，剩 {days} 天")
             return ({"ok": True, "days_left": days} if days is not None
                     else {"ok": False, "error": "账号不存在"})
         finally:
