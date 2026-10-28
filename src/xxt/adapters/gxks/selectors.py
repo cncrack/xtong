@@ -80,8 +80,8 @@ HIDDEN_FIELDS = {
     "video_id": "hidNewId",
     "section_id": "hidRefId",
     "student_id": "hidStudentId",
-    "study_minutes": "hidStudyTime",   # 服务端已学分钟，页面只拿来做"累计 X 分"显示
-    "pass_line": "hidPassLine",
+    "study_minutes": "hidStudyTime",   # ⚠ 实测**恒为 0**（Q11），**不是**服务端已学分钟，不可当进度读
+    "pass_line": "hidPassLine",        # ⚠ 实测 = 1（不是“学时要求 45”），上报参数即 `Mins=1`
     "session_id": "hidSessionID",
 }
 

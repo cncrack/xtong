@@ -153,6 +153,16 @@ def test_parse_state_unknown_stays_unknown():
     assert parse_state("") == "unknown"
 
 
+def test_parse_state_tolerates_inner_whitespace():
+    """`get_text(" ")` 会把子节点用空格拼起来（如 `<span>已完</span><span>成</span>`）。
+
+    不归一空白就会变成 unknown → 永远等不到达标；在解析层堵掉这类“改版就死”的坑。
+    """
+    assert parse_state("已完 成") == "done"
+    assert parse_state("学习中\n\t") == "learning"
+    assert parse_state("  未 学 习 ") == "not_started"
+
+
 def test_header_row_using_td_is_skipped():
     """真实页面表头用的是 `<td>`（Q9 踩到）：按 `th` 判会把表头当成一条节。"""
     header_td = (

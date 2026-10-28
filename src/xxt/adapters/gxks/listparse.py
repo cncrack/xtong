@@ -83,8 +83,12 @@ def parse_state(state_text: str | None) -> str:
 
     三个文案都已实测（2026-10-29）：未学习 / 学习中 / 已完成。
     命中不了就返回 `unknown`，让上层显式处理，而不是猜成“没学完”然后无限重试。
+
+    ⚠ 先**剔除所有空白**再匹配：`get_text(" ")` 会把子节点用空格拼起来，
+    站点哪天把状态包成 `<span>已完</span><span>成</span>`，不归一化就会变成 `unknown`
+    → 永远等不到达标（这类“改版就死”的坑要在解析层堵掉）。
     """
-    text = (state_text or "").strip()
+    text = re.sub(r"\s+", "", state_text or "")
     if not text:
         return "unknown"
     if any(h in text for h in selectors.STATE_DONE_HINTS):
