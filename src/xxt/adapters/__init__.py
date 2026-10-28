@@ -5,8 +5,9 @@ from __future__ import annotations
 from ..config import Settings
 from .base import PlatformAdapter
 from .chaoxing import ChaoxingAdapter
+from .gxks import GxksAdapter
 
-_ADAPTERS = {"chaoxing": ChaoxingAdapter}
+_ADAPTERS = {"chaoxing": ChaoxingAdapter, "gxks": GxksAdapter}
 
 
 def get_adapter(settings: Settings) -> PlatformAdapter:

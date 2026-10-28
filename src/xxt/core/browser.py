@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .stealth import LAUNCH_ARGS
@@ -88,4 +89,76 @@ async def async_launch(
     """异步启动浏览器（`playwright` 是 `async_playwright()` 返回的对象）。"""
     return await playwright.chromium.launch(
         **launch_kwargs(settings, headless=headless, extra_args=extra_args)
+    )
+
+
+def persistent_launch_kwargs(
+    profile_dir: str | Path,
+    settings: Any | None = None,
+    *,
+    headless: bool | None = None,
+    extra_args: list[str] | None = None,
+    match_screen: bool = False,
+) -> dict[str, Any]:
+    """组装 `chromium.launch_persistent_context()` 的参数（第二平台默认形态，PLAN §11.1）。
+
+    与 `launch_kwargs` 的三点差别：
+
+    1. **必须给 `user_data_dir`**：每账号独立 profile，登录态、cookie、续播 cookie
+       全部落在里面——目标站点的续播点就存在 cookie（见平台档案 §2.10 #7），
+       所以**profile 目录不能混用、不能随手清**；
+    2. **`match_screen=True` 用 `no_viewport`**：让视口跟随真实窗口。写死尺寸的风险
+       来自“按屏幕宽度分流登录页”的历史传闻（实测 1920 宽仍落 `Login.aspx`，分流规则
+       未证实），但写死视口本身就会让 `screen.width` 与窗口对不上，属于自造破绽；
+    3. **目录不存在就建**：Playwright 会自己建，但失败时报错含糊，容易被误判成
+       “站点拒绝访问”，先把目录建好能把问题定位在正确的地方。
+    """
+    kwargs = launch_kwargs(settings, headless=headless, extra_args=extra_args)
+    path = Path(profile_dir).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    kwargs["user_data_dir"] = str(path)
+    if match_screen:
+        kwargs["no_viewport"] = True
+    return kwargs
+
+
+def persistent_launch(
+    playwright: Any,
+    profile_dir: str | Path,
+    settings: Any | None = None,
+    *,
+    headless: bool | None = None,
+    extra_args: list[str] | None = None,
+    match_screen: bool = False,
+) -> Any:
+    """同步启动持久化上下文（返回 `BrowserContext`，不是 `Browser`）。"""
+    return playwright.chromium.launch_persistent_context(
+        **persistent_launch_kwargs(
+            profile_dir,
+            settings,
+            headless=headless,
+            extra_args=extra_args,
+            match_screen=match_screen,
+        )
+    )
+
+
+async def async_persistent_launch(
+    playwright: Any,
+    profile_dir: str | Path,
+    settings: Any | None = None,
+    *,
+    headless: bool | None = None,
+    extra_args: list[str] | None = None,
+    match_screen: bool = False,
+) -> Any:
+    """异步启动持久化上下文（返回值同样是 `BrowserContext`）。"""
+    return await playwright.chromium.launch_persistent_context(
+        **persistent_launch_kwargs(
+            profile_dir,
+            settings,
+            headless=headless,
+            extra_args=extra_args,
+            match_screen=match_screen,
+        )
     )
