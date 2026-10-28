@@ -672,6 +672,107 @@ def _replay_auto_events(events) -> tuple[bool, int]:
     return ok, tries
 
 
+def _terminal_kind(events) -> str:
+    """回放当天 auto-* 事件 → 终态类型（"done" / "hardstop" / ""）。
+
+    【Q44】只回答一个问题：这个号今天是不是被贴了“别再管了”的纸条、贴的是哪张。
+      - `auto-done`     → "done"（额度/任务数达成）
+      - `auto-hardstop` → "hardstop"（单日发起次数用尽）
+      - 之后又有 `auto-fire`（重新确认开跑）→ 清空：已经在跑了，不再是终态
+    """
+    kind = ""
+    for _ts, ev in events:
+        if ev == "auto-done":
+            kind = "done"
+        elif ev == "auto-hardstop":
+            kind = "hardstop"
+        elif ev == "auto-fire":
+            kind = ""
+    return kind
+
+
+# 【Q44】守护关心的配置项中文名（“配置已重载”日志用，避免日志里冒出英文 key）。
+# 只列影响调度的项；面板「🕘 最近配置变更」用的全量词表在 panel/app.py::CFG_CN。
+_SCHED_CN = {
+    "auto.max_tries": "每日最多自动发起次数",
+    "auto.retry_minutes": "退避基数(分钟)",
+    "auto.confirm_seconds": "开跑回读(秒)",
+    "auto.retry_jitter_pct": "退避随机浮动(%)",
+    "auto.retry_max_minutes": "退避封顶(分钟)",
+    "auto.hard_tries_cap": "单日硬上限(次)",
+    "auto.reopen_run_now": "解除收工后立刻开跑",
+    "quota.daily_minutes": "每日时长额度(分钟)",
+    "quota.daily_tasks": "每日任务额度(个)",
+    "quota.float_ratio": "额度随机系数",
+    "pace.daily_window": "学习时段",
+}
+
+
+def _reopen_verdict(*, kind: str, n_try: int, cap: int, in_skipped: bool,
+                    running: bool, reached: bool, facts: str) -> tuple[bool, str]:
+    """【Q44】今日终态该不该解除 → (是否解除, 原因文案)。
+
+    纯函数，顺序就是五道闸（2026-10-28 用户拍板）：
+      ① 正在跑 → 不解除（一号一进程；跑着的会话按启动时参数，绝不开第二个）
+      ② 今日已跳过（手动停/未登录）→ 不解除（手动停最高优先级，今日让位）
+      ③ 今日发起次数已达硬上限 → 不解除（额度再大也没次数；调大上限后自然放行）
+      ④ auto-done：按当前额度重判；仍达标 → 不解除
+      ⑤ 其余（含 auto-hardstop 过了③）→ 解除
+    """
+    if running:
+        return False, "会话正在跑（绝不开第二个）"
+    if in_skipped:
+        return False, "今日已跳过（手动停/未登录）"
+    if cap and n_try >= cap:
+        return False, f"今日已发起 {n_try} 次，已达「单日硬上限 {cap}」"
+    if kind == "done":
+        if reached:
+            return False, f"仍然达标（{facts}）"
+        return True, f"额度已调大但今天还没达到（{facts}）"
+    return True, f"今日已发起 {n_try} 次，未到「单日硬上限 {cap}」"
+
+
+def _prio(val) -> float:
+    """账号优先级转浮点（【Q43】数字大 = 先跑；空/非法按 1.0 历史默认值）。"""
+    try:
+        return float(val) if val not in (None, "") else 1.0
+    except Exception:
+        return 1.0
+
+
+def _sched_sig(raw: dict | None) -> dict[str, str]:
+    """取调度相关配置（[auto]/[quota]/[pace]）的指纹，变没变一比自己。"""
+    import json
+
+    sig: dict[str, str] = {}
+    for sec in ("auto", "quota", "pace"):
+        node = (raw or {}).get(sec)
+        if isinstance(node, dict):
+            for k, v in node.items():
+                sig[f"{sec}.{k}"] = json.dumps(v, sort_keys=True, ensure_ascii=False)
+    return sig
+
+
+def _db_readable(db_path) -> bool:
+    """轻量探活：库能不能读（只查一行）。
+
+    【Q44 保护①】`Settings.__init__` 会吞掉 DB 异常并回退到内置默认值——
+    那会让额度瞬间变回 240/60 从而误判“今日已达成”。所以热重载前先探活，
+    读不了就整轮跳过（继续用旧值）。
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=1.0)
+        try:
+            conn.execute("SELECT 1 FROM app_config LIMIT 1").fetchall()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def _auto_limits(raw: dict | None) -> tuple[int, int, int, int, int, int]:
     """读 `[auto]` 配置 → (次数上限, 退避基数, 回读秒, 抖动%, 退避封顶, 单日硬上限)。
 
@@ -906,14 +1007,21 @@ def cmd_auto(args: argparse.Namespace) -> int:
     s = _settings(args)
     planned: dict[int, str] = {}   # account_id → 今日计划 HH:MM（全天保留供面板显示）
     fired: set[int] = set()        # 今日已触发（含手动已开）
-    skipped: set[int] = set()      # 今日跳过（未登录/无课程）
+    skipped: set[int] = set()      # 今日跳过（未登录/无课程/手动停）
     pending: dict[int, tuple[float, str]] = {}  # 已触发待回读：aid → (monotonic, ISO)
     tries: dict[int, int] = {}      # 今日触发尝试次数（auto-try 计数，含老数据 auto-fire）
     suspend_n: dict[int, int] = {}   # 今日挂起次数（Q19：短退避用尽后的长退避轮次）
     retry_after: dict[int, str] = {}  # 失败退避：早于该时刻不再重试
+    # 【Q44】今日终态：aid → "done"（额度达成）/ "hardstop"（次数用尽）。
+    # 只回答“冰箱上贴的是哪张纸条”，重算入口靠它（不靠文案匹配）。
+    terminal_kind: dict[int, str] = {}
     # 次数/退避/回读等待做成配置（config/settings.toml 的 [auto]，2026-10-27 用户要求）
     (max_tries, retry_minutes, confirm_seconds,
      retry_jitter_pct, retry_max_minutes, hard_tries_cap) = _auto_limits(s.raw.get("auto"))
+    # 【Q44】解除“今日收工”后立刻开跑？默认关 = 仍按定时/学习窗口排队。
+    reopen_run_now = bool(s.raw.get("auto", {}).get("reopen_run_now", False))
+    # 【Q44】调度配置指纹：每轮重读后与它比对，真变了才写一条日志（不刷屏）。
+    last_sched_sig = _sched_sig(s.raw)
     wait_noted: set[int] = set()   # 已提示过“等学习窗口开启”的账号（不重复写日志）
     noted: set[int] = set()        # 已写过“达成/硬停”结论的账号（巡检每 30 秒，不刷屏）
     plan_date = _time.strftime("%Y-%m-%d")
@@ -1061,8 +1169,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
             # 结果 #2 刚记完“已达成”又立刻被重新发起（第 3/3 次），白跑一趟。
             if aid not in noted:
                 noted.add(aid)
+                terminal_kind[aid] = "done"   # 【Q44】贴上“今日已收工”纸条
+                # 【Q44】处方式文案：说清“已播多少 / 要今天继续改哪里”
                 _ev(aid, "auto-done",
-                    f"今日目标已达成（{label}）：{why} → 今天不再自动发起", "INFO",
+                    f"今日已收工（{label}）：{why}"
+                    "｜要今天继续：调大「每日时长额度」或「每日任务数」（账号✎或全局），"
+                    "30 秒内自动生效", "INFO",
                     code=code)
             return False
         if tier == "needs_you":
@@ -1087,9 +1199,14 @@ def cmd_auto(args: argparse.Namespace) -> int:
         if not revive:
             if (is_suspendable(code) or quota_short) and aid not in noted:
                 noted.add(aid)
+                terminal_kind[aid] = "hardstop"   # 【Q44】贴上“今日已硬停”纸条
+                # 【Q44】处方式文案：先说清“几次 / 上限多少”，再说“要今天继续该改哪里”
                 _ev(aid, "auto-hardstop",
-                    f"硬停（{label}）：今日已试 {n_aid}/{hard_tries_cap} 轮仍未成功，"
-                    "不再自动重试；可点账号卡片警示条的「立即补跑」", "WARNING",
+                    f"硬停（{label}）：今日已发起 {n_aid} 次，已达「单日硬上限 "
+                    f"{hard_tries_cap}」"
+                    + (f"；{why}" if why else "")
+                    + "｜要今天继续：① 把「单日硬上限(次)」调大 "
+                      "② 或点卡片「立即补跑」；否则明天自动恢复", "WARNING",
                     code=code)
             return False
         fired.discard(aid)
@@ -1149,6 +1266,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 tries[aid_r] = n_r
                 if ok_r:
                     fired.add(aid_r)
+                    # 【Q44】重启后也要知道纸条是哪张，否则额度调大后无法重算
+                    kind_r = _terminal_kind(evs)
+                    if kind_r:
+                        terminal_kind[aid_r] = kind_r
             # 退避时刻表也要接上（2026-10-27 实测：只存内存，重启归零 → 刚挂起的
             # 账号会被立刻重新发起，白撞一次）；已过时刻的条目直接丢弃。
             _ra = _load_retry_after(s.db_path, plan_date)
@@ -1165,6 +1286,62 @@ def cmd_auto(args: argparse.Namespace) -> int:
             conn.close()
     except Exception:
         pass
+
+    def _recompute_terminal(day: str) -> None:
+        """【Q44】终态重算：配置改过之后，“今日已收工/已硬停”的结论必须重新算。
+
+        2026-10-28 用户拍板：纸条（终态）必须服从当前配置；没达到要求就有权继续跑。
+        五道闸，顺序不可换：
+          ① 进程还活着 → 跳过（一号一进程；跑着的会话仍按启动时参数，绝不开第二个）
+          ② 今天被手动停过（在 skipped 里）→ 跳过（Q29：手动停最高优先级，今日让位）
+          ③ 今日发起次数已达「单日硬上限」→ 跳过（复用现有安全阀，不新增计数器）
+          ④ auto-done：按**当前**额度重算还达不达标；auto-hardstop：过了③就有余额 → 解除
+          ⑤ 解除：写 auto-reopen → fired.discard → 清 noted/wait_noted
+                  → 重排计划（默认等定时；reopen_run_now=开 则视为现在到点）
+        纯本地：只读库 + 读运行标记，零平台访问。
+        """
+        from .core.runmark import marker_process_alive
+
+        # 状态漂移自愈：已不在 fired 里的号不该再算终态
+        for a in [a for a in terminal_kind if a not in fired]:
+            terminal_kind.pop(a, None)
+        if not terminal_kind:
+            return
+
+        cap = hard_tries_cap or max_tries
+        for aid in sorted(terminal_kind):
+            kind = terminal_kind[aid]
+            try:
+                running = marker_process_alive(s.data_dir, aid)
+                n_try = tries.get(aid, 0)
+                # 只有 auto-done 需要查库重算额度；其余闸口先短路，避免无意义的读取
+                reached, facts = True, ""
+                if kind == "done" and not (
+                        running or aid in skipped or (cap and n_try >= cap)):
+                    reached, facts = _local_quota_reached(aid, day)
+                ok_open, why = _reopen_verdict(
+                    kind=kind, n_try=n_try, cap=cap, in_skipped=aid in skipped,
+                    running=running, reached=reached, facts=facts)
+            except Exception:
+                continue
+            if not ok_open:
+                continue
+            # ⑤ 解除
+            terminal_kind.pop(aid, None)
+            fired.discard(aid)
+            noted.discard(aid)
+            wait_noted.discard(aid)
+            retry_after.pop(aid, None)
+            _persist_retry_after(s.db_path, day, retry_after)
+            if reopen_run_now:
+                planned[aid] = _time.strftime("%H:%M")   # 视为“现在就到点”
+                tail = "→ 立刻开跑（下一轮巡检发起）"
+            else:
+                planned.pop(aid, None)                   # 按原定时/学习窗口重排
+                tail = "→ 重新排队（按定时与学习窗口）"
+            print(f"[auto] 账号#{aid} 解除今日收工：{why} {tail}")
+            _ev(aid, "auto-reopen", f"解除今日收工：{why} {tail}")
+
     def _plan_brief() -> str:
         """计划摘要进 auto-start：10-26 的 23:50/23:55 缓存残留就是靠这行一眼认出来的。"""
         if not planned:
@@ -1193,6 +1370,48 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 noted.clear()
                 retry_after.clear()
                 _persist_retry_after(s.db_path, today, retry_after)
+                terminal_kind.clear()
+            # 【Q44 热重载】面板改完额度/上限/退避后 30 秒内生效，不必重启守护。
+            # 三重保护：① 先探活数据库——`Settings()` 内部会吞掉 DB 异常并回退到
+            # 内置默认值（额度瞬间变回 240/60 会误判“今日已达成”），读不了就整轮跳过；
+            # ② 数据目录/库路径变了拒绝应用（运行中换库 = 把今天的记录拆到两个库）；
+            # ③ 出任何异常都保留旧配置，守护不崩。
+            # 注意：不能用 _settings()（它会再 setup_logging 一次 → handler 重复叠加）。
+            try:
+                if _db_readable(s.db_path):
+                    s_new = Settings()
+                    if s_new.db_path == s.db_path and s_new.data_dir == s.data_dir:
+                        s = s_new
+                        (max_tries, retry_minutes, confirm_seconds,
+                         retry_jitter_pct, retry_max_minutes,
+                         hard_tries_cap) = _auto_limits(s.raw.get("auto"))
+                        reopen_run_now = bool(
+                            s.raw.get("auto", {}).get("reopen_run_now", False))
+                        sig_now = _sched_sig(s.raw)
+                        changed = [k for k in sorted(set(sig_now) | set(last_sched_sig))
+                                   if sig_now.get(k) != last_sched_sig.get(k)]
+                        if changed:
+                            last_sched_sig = sig_now
+                            _ev(0, "auto-reload", "配置已重载："
+                                + "、".join(_SCHED_CN.get(k, k) for k in changed)
+                                + " → 本轮起按新值判断")
+                    elif (0, "data_dir") not in err_once:
+                        err_once.add((0, "data_dir"))
+                        _ev(0, "auto-reload",
+                            f"数据目录改成了 {s_new.data_dir}，运行中不生效"
+                            "（需重启守护），继续用当前库", "WARNING")
+            except Exception as exc:
+                if (0, "reload") not in err_once:
+                    err_once.add((0, "reload"))
+                    _ev(0, "auto-reload", f"配置重载失败，继续用旧值：{exc!r}", "WARNING")
+            # 【Q44】重算终态：额度调大/上限调大后，今天就有权继续跑
+            try:
+                _recompute_terminal(today)
+            except Exception as exc:
+                if (0, "recompute") not in err_once:
+                    err_once.add((0, "recompute"))
+                    _ev(0, "auto-reload", f"终态重算失败（不影响本轮巡检）：{exc!r}",
+                        "WARNING")
             # 回读上一轮已发起的账号（2026-10-27 方案 A 重写）：以前“发起成功”就当作
             # 今日已触发，子进程秒退也不回滚 → 一次失败白掉一整天。现在只有回读确认
             # 会话真在跑才记 auto-fire（成功）；秒退记 auto-error 并退避 15 分钟重试，
@@ -1290,21 +1509,27 @@ def cmd_auto(args: argparse.Namespace) -> int:
                             f"{suspend_n[aid_p]}/{hard_tries_cap} 次", "WARNING", code=code)
                     else:
                         fired.add(aid_p)  # 硬停：今日不再自动发起，面板留「立即补跑」
+                        terminal_kind[aid_p] = "hardstop"   # 【Q44】贴上硬停纸条
                         if code == "window":
                             _ev(aid_p, "auto-hardstop",
-                                f"硬停（{label}）{head}{tail}：今日学习时段已过，"
-                                "明天窗口开启后自动恢复；要现在跑可点「立即补跑」",
+                                f"硬停（{label}）{head}{tail}：今日学习时段已过"
+                                "｜要现在跑：改学习时段或点「立即补跑」；否则明天自动恢复",
                                 "WARNING", code=code)
                         else:
                             _ev(aid_p, "auto-hardstop",
-                                f"硬停（{label}）{head}{tail}：短退避与长退避都已用尽"
-                                "（硬上限见设置页），不再自动重试；"
-                                "可点账号卡片警示条的「立即补跑」", "WARNING", code=code)
+                                f"硬停（{label}）{head}{tail}：今日已发起 "
+                                f"{n_p} 次，短退避与长退避都已用尽"
+                                "｜要今天继续：① 把「单日硬上限(次)」调大 "
+                                "② 或点卡片「立即补跑」；否则明天自动恢复",
+                                "WARNING", code=code)
             new_plan: list[str] = []
             conn = connect(s.db_path)
             try:
                 rows = [r for r in acc.list_accounts(conn)
                         if r["status"] == "active" and is_valid(r)]
+                # 【Q43】优先级：数字大的先跑（面板悬停已写明“数字大=先跑”）；
+                # 放在守护侧排序而不改 SQL——面板卡片仍按 id 稳定排序，作用域隔离。
+                rows.sort(key=lambda r: (-_prio(r["priority"]), r["id"]))
             finally:
                 conn.close()
             for row in rows:

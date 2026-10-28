@@ -536,18 +536,24 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <button class="tab" onclick="switchTab(2,this)">🤖 AI 模型</button>
 </div>
 <div id="tab0">
+  <h3 style="margin:.2rem 0 .4rem;font-size:.86rem">① 今日目标 <span class="muted" style="font-size:.72rem;font-weight:400">今天要完成多少；账号 ✎ 里填了就以账号为准（填 0 = 跟随全局）</span></h3>
   <div class="llmgrid">
-    <label>每日最多自动发起<small>0=不限，1~10（安全默认 2）</small><input type="number" id="s_mt" min="0" max="10"></label>
-    <label>开跑回读（秒）<small>15~300；确认会话真在跑</small><input type="number" id="s_cs" min="15" max="300"></label>
+    <label>每日时长额度（分钟）<small>0~240，0=不限 · 默认 240 · 只算真播完的视频时长，拟人间隔/加载不算</small><input type="number" id="s_min" min="0" max="240"></label>
+    <label>每日任务额度（个）<small>0~60，0=不限 · 默认 60 · 只算真看完的视频</small><input type="number" id="s_task" min="0" max="60"></label>
   </div>
-  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">失败怎么退避 <span class="muted" style="font-size:.72rem;font-weight:400">指数递增 + 随机浮动，不像机器人</span></h3>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">② 安全阀 <span class="muted" style="font-size:.72rem;font-weight:400">一天最多起几次；比「今日目标」低就会卡住（日志会告诉你要改哪一个）</span></h3>
   <div class="llmgrid">
-    <label>退避基数（分钟）<small>1~240；第一次失败等多久</small><input type="number" id="s_rm" min="1" max="240"></label>
-    <label>随机浮动（%）<small>0~100；±这个比例内随机，不固定节奏</small><input type="number" id="s_rj" min="0" max="100"></label>
-    <label>退避封顶（分钟）<small>15~480；再糟也不会超这个间隔</small><input type="number" id="s_rx" min="15" max="480"></label>
-    <label>单日硬上限（次）<small>1~20；打不开/网络这类可恢复失败长退避再试的轮数，用尽才真停</small><input type="number" id="s_hc" min="1" max="20"></label>
+    <label>每日最多自动发起（次）<small>0~10，0=不限 · 默认 3 · 失败后短间隔重试几次</small><input type="number" id="s_mt" min="0" max="10"></label>
+    <label>单日硬上限（次）<small>1~20 · 默认 4 · 一天最多起几次，到了一次就硬停（防护号）</small><input type="number" id="s_hc" min="1" max="20"></label>
   </div>
-  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">单节怎么处理 <span class="muted" style="font-size:.72rem;font-weight:400">失败的节保持待学，不会被当成“已学”</span></h3>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">③ 失败后等多久 <span class="muted" style="font-size:.72rem;font-weight:400">指数递增 + 随机浮动，不像机器人</span></h3>
+  <div class="llmgrid">
+    <label>退避基数（分钟）<small>1~240 · 默认 15 · 第一次失败后等多久</small><input type="number" id="s_rm" min="1" max="240"></label>
+    <label>随机浮动（%）<small>0~100 · 默认 40 · ±这个比例内随机，不固定节奏</small><input type="number" id="s_rj" min="0" max="100"></label>
+    <label>退避封顶（分钟）<small>15~480 · 默认 90 · 再糟也不会超这个间隔</small><input type="number" id="s_rx" min="15" max="480"></label>
+    <label>开跑回读（秒）<small>15~300 · 默认 25 · 发起后多久确认会话真在跑</small><input type="number" id="s_cs" min="15" max="300"></label>
+  </div>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">④ 单节怎么处理 <span class="muted" style="font-size:.72rem;font-weight:400">失败的节保持待学，不会被当成“已学”</span></h3>
   <div class="llmgrid">
     <label>单节点最多点几次<small>1~5；点不开算这节失败</small><input type="number" id="s_er" min="1" max="5"></label>
     <label>连续几节打不开收工<small>1~10；失败的节保持待学</small><input type="number" id="s_ms" min="1" max="10"></label>
@@ -557,7 +563,10 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <label>每日登录预算<small>1~5 次；失败尝试也算</small><input type="number" id="s_lb" min="1" max="5"></label>
     <label class="span2">非视频节点关键词<small>逗号分隔；名字含这些词的节不会被当成“播放失败”</small><input type="text" id="s_nvm" placeholder="作业,测验,讨论,阅读,考试,练习,公告"></label>
   </div>
-  <div class="hint" style="margin-top:.55rem">守护类改动需在面板「■ 停调度 → ▶ 启调度」后生效（守护只在启动时读一次）；节级改动对下一次学习会话生效。</div>
+  <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">⑤ 自动解除与生效 <span class="muted" style="font-size:.72rem;font-weight:400">2026-10-28 新增</span></h3>
+  <div class="frow"><label>解除“今日收工”后立刻开跑<small style="display:block;color:var(--muted);font-size:.72rem">默认关：解除了也仍按定时/学习窗口排队（防封优先）；开：下一轮巡检（30 秒内）就直接发起</small></label>
+    <span class="switch"><input type="checkbox" id="s_rn"><i></i></span></div>
+  <div class="hint" style="margin-top:.55rem">改完保存即生效：守护每 30 秒重读一次配置，额度/上限/退避改了几十秒内就按新值判断（<b>不用停调度</b>）。<b>例外</b>：数据目录/数据库路径改了必须重启程序（不会把今天的记录拆到两个库）；节级四项对下一次学习会话生效。</div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
   <h3 style="margin:.2rem 0 .4rem;font-size:.86rem">🕘 最近配置变更 <span class="muted" style="font-size:.72rem;font-weight:400">每次保存都留痕旧值→新值（溯源用）</span></h3>
   <div id="auditList" style="font-size:.76rem;line-height:1.55"></div>
@@ -567,8 +576,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
     <span class="switch"><input type="checkbox" id="s_quiz"><i></i></span></div>
   <div class="frow"><label>学习窗口开始</label><input type="time" id="s_ws"></div>
   <div class="frow"><label>学习窗口结束</label><input type="time" id="s_we"></div>
-  <div class="frow"><label>每日时长额度（分钟，0 不限）<small style="display:block;color:var(--muted);font-size:.72rem">按本会话“真播完并记账”的视频时长计（拟人间隔/加载不算）；240 是上限，实际会乘一个随机系数</small></label><input type="number" id="s_min" style="width:90px"></div>
-  <div class="frow"><label>每日任务额度（视频数，0 不限）</label><input type="number" id="s_task" style="width:90px"></div>
+  <div class="hint">每日时长/任务额度已移到「⏱ 守护与节级策略 → ① 今日目标」——和「安全阀」放在一起，方便一眼看出是不是次数把额度卡住了。</div>
   <div class="frow"><label>作业策略全局默认<small>账号✎管理里单独设置的优先于此项</small></label>
     <select id="s_wm"><option value="owner">号主自理</option><option value="reference">AI 参考答案</option><option value="ai">AI 代答（semi）</option></select></div>
 </div>
@@ -636,7 +644,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="frow"><label>备注名（唯一）</label><input type="text" id="a_label" style="width:180px"></div>
   <div class="frow"><label>学习通账号/手机号</label><input type="text" id="a_user" style="width:180px"></div>
   <div class="frow"><label>密码</label><input type="password" id="a_pw" style="width:180px"></div>
-  <div class="frow"><label>优先级（默认 1.0）</label><input type="number" step="0.5" id="a_pri" style="width:90px" value="1"></div>
+  <div class="frow"><label>优先级（默认 1.0，数字越大越先跑）<small style="display:block;color:var(--muted);font-size:.72rem">多个账号同时到点时，数字大的先发起；相同数字按账号编号从小到大</small></label><input type="number" step="0.5" id="a_pri" style="width:90px" value="1"></div>
   <div class="dlgbtns"><button class="ghost" onclick="this.closest('dialog').close()">取消</button>
     <button class="primary" onclick="doAdd()">加密录入</button></div>
   <div class="hint">凭据 AES-GCM 加密存储，仅本机；添加后需为其登录一次</div>
@@ -645,7 +653,7 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
 <dialog id="editDlg"><h3>✎ 账号管理 <span id="e_title" class="muted" style="font-size:.85rem"></span></h3>
   <div class="frm"><label>备注名<small>面板显示的名字，如"同学的号"</small></label><input type="text" id="e_label"></div>
   <div class="frm"><label>状态<small>paused=暂停调度（不自动学）</small></label><select id="e_status"><option value="active">active（启用）</option><option value="paused">paused（暂停）</option></select></div>
-  <div class="frm"><label>优先级<small>课程轮换权重，越大越优先学</small></label><input type="number" step="0.5" id="e_pri"></div>
+  <div class="frm"><label>优先级<small>数字越大越先跑（多号同时到点时）；相同数字按账号编号</small></label><input type="number" step="0.5" id="e_pri"></div>
   <div class="frm"><label>定时开刷时刻<small>auto 守护的启动时间；空=系统在学习窗口开始后 0~120 分钟随机分配（面板与日志会显示分配结果）</small></label><input type="time" id="e_sa"></div>
   <div class="frm"><label>作业策略<small>空=跟随⚙全局默认（当前全局见⚙设置）；显式设置优先于全局。生效值以卡片"作业="标签为准</small></label>
     <select id="e_wm"><option value="">跟随全局默认（⚙设置）</option><option value="owner">号主自理（显式）</option><option value="reference">AI 参考答案（显式）</option><option value="ai">AI 代答 semi（显式）</option></select></div>
@@ -809,7 +817,7 @@ function renderAccounts(){
     <div class="head">
       <div class="avatar">${esc(avatar)}</div>
       <div class="names"><div class="who">${hl(a.display_name||a.platform_username||'—',q)}${(a.platform_username&&!(a.profile&&a.profile.name))?'<span class="nicktag" title="当前显示的是平台昵称；在「📈 统计 → 画像设置」手填姓名后自动换成姓名">昵称</span>':''}</div>
-        <div class="sub">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}${(a.profile&&a.profile.name&&a.platform_username&&a.profile.name!==a.platform_username)?' · 平台昵称 '+esc(a.platform_username):''}</div>
+        <div class="sub" title="优先级：数字越大越先跑（多个账号同时到点时）；相同数字按账号编号从小到大">#${a.id} ${hl(a.label,q)} · 优先级 ${a.priority}${(a.profile&&a.profile.name&&a.platform_username&&a.profile.name!==a.platform_username)?' · 平台昵称 '+esc(a.platform_username):''}</div>
         ${(a.student_no||(a.profile&&(a.profile.grade||a.profile.major||a.profile.term)))?`<div class="sub">
           🎓 ${a.student_no?`学号 ${hl(a.student_no,q)}`:''}${a.student_no&&a.profile&&(a.profile.grade||a.profile.major||a.profile.term)?' · ':''}${a.profile?[a.profile.grade,a.profile.major,a.profile.term].filter(Boolean).map(x=>esc(x)).join(' / '):''}
           <span class="muted" title="在「📈 统计 → 画像设置」里修改" style="cursor:pointer" onclick="switchView('stats')">✎</span></div>`:''}</div>
@@ -864,11 +872,13 @@ function logSourceQs(){
 const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-interrupt':'播放中断',
   'chapter-fail':'打不开','session-start':'会话开始','session-end':'会话结束',
   'session-stop':'手动停止','auto-fire':'已开跑','auto-try':'发起尝试',
-  'auto-revoke':'撤回今日已学','auto-suspend':'已挂起','auto-done':'今日已达成',
-  'auto-error':'硬停/失败','auto-hardstop':'已硬停','auto-skip':'今日跳过','auto-plan':'今日计划',
+  'auto-revoke':'撤回今日已学','auto-suspend':'已挂起','auto-done':'今日已收工',
+  'auto-error':'失败（可重试）','auto-hardstop':'已硬停','auto-skip':'今日跳过','auto-plan':'今日计划',
   'auto-start':'守护启动','auto-stop':'守护停止',
   'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
   'auto-exit':'守护异常退出','diag-visited-fix':'数据修复',
+  // 2026-10-28 Q44：配置热重载（守护每 30 秒重读）+ 终态重算（解除今日收工）
+  'auto-reload':'配置已重载','auto-reopen':'解除今日收工',
   // 2026-10-28 Q42：面板操作现在也写日志（以前只有守护/会话的事件）
   'account-add':'新增账号','account-edit':'改账号设置','account-del':'删除账号',
   'account-renew':'账号续期','settings-save':'改全局设置','llm-save':'换 AI 厂商',
@@ -892,7 +902,7 @@ function renderLogs(n){if(n)LOGN=n;
         l.event==='video-done'||l.event==='auto-fire'||l.event==='auto-done'?'ev-good':
         (l.event==='chapter-start'||l.event==='session-start'||l.event==='auto-start'||
          l.event==='auto-plan'||l.event==='auto-request'||l.event==='auto-replan'||
-         l.event==='auto-try')?'ev-info':
+         l.event==='auto-try'||l.event==='auto-reload'||l.event==='auto-reopen')?'ev-info':
         (l.event==='video-interrupt'||l.event==='chapter-fail'||l.event==='session-stop'||
          l.event==='auto-skip'||l.event==='auto-stop'||l.event==='auto-error'||
          l.event==='auto-hardstop'||
@@ -901,10 +911,11 @@ function renderLogs(n){if(n)LOGN=n;
          l.level==='WARNING'||l.level==='ERROR')?'ev-warn':'';
       const nm=EVNAME[l.event]||'';
       // 账号列必须 nowrap：中文名会被挤成“林鑫/阳”两行（用户 2026-10-27 截图反馈）
+      // Q44：事件列改为「中文为主 + 英文小字」——以前英文在上中文在下，用户看不懂主行
       return `<tr><td class="mono" style="white-space:nowrap">${esc(l.ts)}</td>
         <td class="mono" style="white-space:nowrap">${esc(l.who)}</td>
-        <td class="ev ${cls}" style="white-space:nowrap" title="${esc(l.event)}">${esc(l.event)}
-          ${nm?`<span class="muted" style="display:block;font-size:.72em;line-height:1.1">${esc(nm)}</span>`:''}</td>
+        <td class="ev ${cls}" style="white-space:nowrap" title="${esc(l.event)}">${esc(nm||l.event)}
+          ${nm?`<span class="muted" style="display:block;font-size:.72em;line-height:1.1">${esc(l.event)}</span>`:''}</td>
         <td>${esc(l.detail)}</td></tr>`;}).join('')+'</table>';
     const at=document.getElementById('logAt');
     if(at)at.textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
@@ -920,6 +931,7 @@ function loadSettings(){
     s_cs.value=d.auto_confirm_seconds??25;
     s_rj.value=d.auto_retry_jitter_pct??40; s_rx.value=d.auto_retry_max_minutes??90;
     s_hc.value=d.auto_hard_tries_cap??4;
+    s_rn.checked=!!d.auto_reopen_run_now;
     s_er.value=d.learn_enter_retries??2; s_ms.value=d.learn_max_skip_chapters??3;
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
@@ -1036,9 +1048,10 @@ function saveSettings(){
     if(el&&el.value!=='')body[k]=Math.round(+el.value);
   }
   if(s_nvm)body.learn_non_video_marks=s_nvm.value.trim();
+  body.auto_reopen_run_now=s_rn.checked;   // Q44：解除今日收工后立刻开跑（默认关）
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)}
-  ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（新会话生效）':'保存失败：'+d.error);
+  ).then(r=>r.json()).then(d=>{alert(d.ok?'已保存（守护 30 秒内自动重载，不必重启）':'保存失败：'+d.error);
     if(d.ok){window.QUIZ.work_mode_default=s_wm.value;document.getElementById('dlg').close();syncRun();}});
 }
 function reload(){fetch('/api/overview').then(r=>r.json()).then(d=>{
@@ -2268,6 +2281,7 @@ def create_app(settings: Settings) -> FastAPI:
         "auto.retry_max_minutes": "重试封顶(分)",
         "auto.hard_tries_cap": "单日硬上限(次)",
         "auto.confirm_seconds": "开跑回读(秒)",
+        "auto.reopen_run_now": "解除收工后立刻开跑",   # Q44
     }
     # 账号表的列名 → 中文（表头/审计/日志三处共用，避免三份词表各说各话）
     ACC_COL_CN = {
@@ -2344,6 +2358,8 @@ def create_app(settings: Settings) -> FastAPI:
             "auto_retry_max_minutes": _i(auto_cfg, "retry_max_minutes", 90),
             "auto_hard_tries_cap": _i(auto_cfg, "hard_tries_cap", 4),
             "auto_confirm_seconds": _i(auto_cfg, "confirm_seconds", 25),
+            # Q44：解除“今日收工”后是否立刻开跑（默认关 = 仍按定时排队）
+            "auto_reopen_run_now": bool(auto_cfg.get("reopen_run_now", False)),
             "learn_enter_retries": _i(learn_cfg, "enter_retries", 2),
             "learn_max_skip_chapters": _i(learn_cfg, "max_skip_chapters", 3),
             "learn_non_video_streak": _i(learn_cfg, "non_video_streak", 4),
@@ -2441,6 +2457,11 @@ def create_app(settings: Settings) -> FastAPI:
             if "learn_non_video_marks" in body:
                 marks = str(body["learn_non_video_marks"]).strip()
                 upsert(conn, "learn.non_video_marks", marks)  # 空串=回落内置默认
+            # Q44：解除今日收工后立刻开跑（布尔，默认关）
+            if "auto_reopen_run_now" in body:
+                if not isinstance(body["auto_reopen_run_now"], bool):
+                    return {"ok": False, "error": "auto_reopen_run_now 需为布尔"}
+                upsert(conn, "auto.reopen_run_now", body["auto_reopen_run_now"])
             for field, key in (("llm_base_url", "llm.base_url"),
                                ("llm_model", "llm.model")):
                 if field in body and str(body[field]).strip():

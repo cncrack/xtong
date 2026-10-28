@@ -66,6 +66,9 @@ DEFAULTS: dict[str, Any] = {
         "retry_jitter_pct": 40,
         "retry_max_minutes": 90,
         "hard_tries_cap": 4,
+        # Q44（2026-10-28 用户拍板：默认不要）：解除“今日收工”后是否立刻开跑。
+        # 关（默认）= 仍按定时/学习窗口排队（防封优先）；开 = 下一轮巡检即发起。
+        "reopen_run_now": False,
     },
     "stealth": {"headless": True},
 }
