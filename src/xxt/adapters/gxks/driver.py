@@ -30,6 +30,8 @@ STALL_MIN_ELAPSED = 30            # 至少观察 30 秒才判“卡顿”，避�
 STALL_LAG_SECONDS = 10            # 播放位置落后实时超过 10 秒 → 判卡顿（实测卡顿时 30 秒只走 15 秒）
 RELOAD_COOLDOWN_SECONDS = 180     # 两次重载之间至少隔 3 分钟，防重载风暴
 MAX_RECOVERIES_PER_SECTION = 6    # 单节重载上限，超了转人工
+MAX_PAUSE_RECOVERIES = 3          # 同一节反复被判 paused 时最多拉回几次（C2：不能无限 play）
+NO_REPORT_AFTER_SECONDS = 75      # 上报是 60 秒一拍；超过 75 秒没新增上报 = 网络/上报断了
 
 # 浏览器侧采样脚本：只读 DOM，不做任何操作
 _PROBE_JS = """() => {
@@ -282,6 +284,51 @@ class GxksDriver:
             }"""
         ))
 
+    def mute(self) -> bool:
+        """静音。**每次重载都会生成新的 video 元素，静音必须重设**，所以巡检循环每轮都调。"""
+        frame = self.player_frame()
+        if frame is None:
+            return False
+        try:
+            return bool(frame.evaluate(
+                "() => { const v = document.querySelector('video');"
+                " if (!v) { return false; } v.muted = true; return true; }"
+            ))
+        except Exception:                                  # noqa: BLE001  帧重载中会抛
+            return False
+
+    def pause(self) -> bool:
+        """停表：**抵达达标后必须调**，否则学时继续累加（C9：学时按累计播放时长计）。"""
+        frame = self.player_frame()
+        if frame is None:
+            return False
+        try:
+            return bool(frame.evaluate(
+                "() => { let ok = false;"
+                " if (typeof player !== 'undefined' && player && player.pause) { player.pause(); ok = true; }"
+                " const v = document.querySelector('video'); if (v) { v.pause(); ok = true; }"
+                " return ok; }"
+            ))
+        except Exception:                                  # noqa: BLE001
+            return False
+
+    def leave_player(self) -> bool:
+        """离开播放页：唯一能**彻底**停表的手段。
+
+        2026-10-29 12:32 实测：守播在达标后调了 `pause()`（`paused=True` 已确认），
+        但约 4 分钟后**播放自行恢复**，`t` 从 2166 回到 0 重播、`d` 由 2614 变 2615
+        （媒体元素被重建过），学时 43 → **48**。⇒ “调过 pause”不等于“停了”。
+        只有把播放页导航走（`m_time` 所在文档被卸载）才能保证计时链不复活。
+        """
+        frame = self.player_frame()
+        if frame is None:
+            return False
+        try:
+            frame.goto("about:blank", wait_until="commit", timeout=20000)
+            return True
+        except Exception:                                  # noqa: BLE001
+            return False
+
     def ensure_foreground(self) -> None:
         """`document.hidden` 时把窗口拉回前台：本站 hidden 会自动暂停 + 停表。"""
         try:
@@ -318,6 +365,9 @@ class GxksDriver:
         prev: dict[str, Any] | None = None
         prev_at = started
         rebuilds = 0
+        pause_recoveries = 0
+        last_updates: int | None = None
+        last_update_at = started
         next_read = started
         last_row: dict[str, Any] | None = None
 
@@ -336,6 +386,12 @@ class GxksDriver:
             if state == "rebuild":
                 rebuilds += 1
             if action == "play":
+                # C2/C5：拉回一次可以，反复拉回就是异常，转人工而不是硬刷 play
+                if pause_recoveries >= MAX_PAUSE_RECOVERIES:
+                    emit("give_up", reason="paused_too_often", recoveries=pause_recoveries)
+                    return {"result": "escalate", "seconds": now - started,
+                            "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
+                pause_recoveries += 1
                 self.play()
             elif action == "foreground":
                 self.ensure_foreground()
@@ -345,8 +401,23 @@ class GxksDriver:
                 return {"result": "escalate", "seconds": now - started,
                         "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
 
+            if state == "ok":
+                pause_recoveries = 0        # 真正在走就把计数清零，避免历史上偶发暂停把配额吃掉
+            self.mute()                     # 重载后 video 是新元素，静音要每次重设
+
             if sample:
                 prev, prev_at = sample, now
+
+                # 上报节奏（Q16）：计时不看网络，但**记账看网络**——断网时 `m_time` 照走、
+                # 那一分钟的 `updateTime` 却丢了。页面每上报一次就多一个带该 src 的 script，
+                # 所以这个计数不涨就是在白学，必须告警而不是静默继续。
+                ups = sample.get("updates")
+                if isinstance(ups, int):
+                    if last_updates is None or ups != last_updates:
+                        last_updates, last_update_at = ups, now
+                    elif now - last_update_at >= NO_REPORT_AFTER_SECONDS:
+                        emit("no_report", stale=round(now - last_update_at), updates=ups)
+                        last_update_at = now          # 每 75 秒最多报一次，不刷屏
 
             if now >= next_read:
                 last_row = self.read_row(section_id)
