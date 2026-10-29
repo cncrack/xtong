@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**第二平台独立控制台 + 课后练习 AI 回填，代码级完成**）：用户三条硬要求（面板点做作业、逐题列出「第几节第几题答案是什么」、日志记操作）＋「**这个面板和超星的是不交叉的，各自独立吧**」。① **独立**：新包 `xxt/panel_gxks/`（不 import `xxt.panel`）、新命令 `xxt gxks-panel`、端口 **8301**（超星 8300）、日志表 **`gx_ops`**（`gxks_questions.db`，schema v2→v3 原地升）、账号读 `accounts.local.json`；**只共用 AI Provider 中心**（Key 配一次两边可用）。② **回填链路** `adapters/gxks/work.py`：开卷 → `tm_arr` 读题 → 题库优先（只认 `standard_source='site'`）→ LLM 兜底 → **真点击** radio（`onclick=check_index(N)`，只置 `checked` 平台算没答）→ 回读校验 → **默认不提交**。③ **端口归属修正**：端口是账号属性，新增 `accounts.resolve_port()`，面板一律显式 `--port`——此前面板不传端口、脚本按 `port_base` 猜 9300，而账号表写 9222，两边各猜一个必然“点了没反应”。④ **安全边界**：`auto_submit` 默认 false；`allowed_types="2"` 只放单选，未实测题型**整卷停**（退出码 4）。验收：`pytest` **442 passed**（新增 `test_gxks_panel.py` 11 条、`test_gxks_work.py`、`test_gxks_ops.py`），面板在 8301 实机起过、`/api/state` 与页面均 200、JS 过 `node --check`；**AI 回填尚未在真实环境跑过**（只完成代码与合成 fixture）。
 - 2026-10-30（**第 2 节练习全链路入库；三处“形态漂移”修复；监听不再靠 URL 名单**）：① **验收**：2.1 国家安全概述 3 题单选（33/34/33），用户作答 `b/a/d`、**100 分**，交卷 `ExamSave.aspx` **54 字段**，入库 `paper_id=2`/`import_id=2`；分类字段**自动填对**（`course_id=军事理论（字幕版）`/`section_id=1298`/`section_name=2.1 国家安全概述`/`paper_label=2.01`）—— 上一条“缺陷 1”修复的实证。② **平台形态已变**：练习落地页 `ExamMain.aspx` → **`ExamTmStepMain.aspx`**（帧 `ExamTmStepHeader`/`ExamTmStepDo`，新增 `PaperSuitInfoId`/`KsSavePaper=1`/`KsCycle=5`），建卷入回移到 **`ExamCreate.ashx`**，交卷后**直跳** `viewExam.aspx?ExamID=…&Clerk_kscj_ID=…`。③ **三处修复**：`_exercise_id()` 认 `ExamID` 别名（回顾页不再带 `Tk_Cl_Id`，否则真实答卷被判“不匹配”）；`_norm_time()` 归一化凌晨不补零的小时（`0:54:42` vs `00:54:42`）；**`_answer_rows()` 按“哪个帧有 `tm_arr`”定位答题帧**，不再硬编码 `frames["ExamDo"]`，命中 0 个或多个一律拒收。④ **方法结论**：前端 JS 只写第一跳（`showExam()` → `chkExam.aspx`），落地点由服务端建卷 302 决定、**代码里查不到** → 监听从 URL 白名单改为“任何新开 page 都抓 + 等建卷中间态跳完”，`_grab_now.py` 改按“帧最多的 page”选址。验收：`pytest` **402 passed**（`test_gxks_practice.py` 16 条）。
 - 2026-10-30（**题库三处缺陷修复 + 路径统一**，代码审查后当场修）：① **分类字段恒为空**——练习页 URL 只带 `Tk_Cl_Id`（练习 ID），**没有节 ID**，原 `parse_capture` 把 `course_id`/`section_id` 硬写 `""`；现新增 `section_index(course_doc)`，从课程列表快照按 `showExam(练习ID)` 反查到 `showframe('节名', 节ID)`（实测 `15263 → 1289 / 1.1 国防概述`），并校验两侧节名一致，不一致直接 raise；`import_gxks_practice.py` 相应可选读 `practice_meta.json`。② **幂等语义错误**——原 `digest` 把 `course_id`/`section_id` 算进去且 enrich UPDATE 在幂等 return **之后**，导致“只补分类”会多出一条快照与一份重复答案；现 `_content_digest` 只取 `exam_start_id`/`exercise_id`/`questions`，enrich 提到幂等判定之前（补分类不算新作答）。③ **跨节同题无处归并**——保留 `UNIQUE(platform_qid, fingerprint)` 存证，新增 `gx_q_items.fingerprint` 索引（`GXKS_SCHEMA_VERSION` 1→2，建表全 `IF NOT EXISTS`，旧库可原地升）与新函数 `bank_items()`（按指纹归并，带 `occurrences`/`platform_qids`），导出不必全表扫。④ **路径跟随项目根**——`ledger.py`/`accounts.py` 原用相对 cwd 的 `data/...`，从别的目录启动会写出第二份账本、额度判定直接失效；改为 `find_project_root()`（`XXT_ROOT` > exe 目录 > 仓库根），新增 `backfill_classification()` 供历史数据补分类（**只填空值**，幂等）。验收：对库里唯一一条答卷补成 `course_id='军事理论（字幕版）'`/`section_id='1289'`，快照数保持 1；`pytest` **398 passed**。
 - 2026-10-30（**课后练习题库打通：离线回收 → 结构化累加入库**）：用户要求“题目 / 题型 / 选项 / 答案都要记录，表结构要有足够扩展性，后期按题目归类导出 Excel”。落地四件：① `store/schema_gxks.py` 独立迁移（独立版本键 `meta.gxks_schema_version`，**不动共享 `SCHEMA_VERSION`**，超星库零新增表列；`open_question_bank()` 拒绝已有 `accounts` 表的业务库，防路径选错污染旧库）② `store/gxks_questions.py` 幂等累加导入（同卷同 `digest` 二次导入返回 `inserted=false`；题号集合或分值变化整体回滚；题目版本共享、作答证据按 `import_id` 追加，**不覆盖旧答案**）③ `adapters/gxks/practice.py` 交叉校验解析（AttemptId / 练习 ID / 结果 ID、题数与题 ID、选项数 == `tm_arr[4]`、题干与选项顺序、开始时间、逐题得分合计 == 答卷总得分、逐题满分合计 == 试卷总分；**只接受已实测的 `type_code=2`**，其余题型直接拒绝而不是猜）④ `scripts/import_gxks_practice.py`（`--dry-run`；只存来源文件 sha256）。**关键决策**：表结构按“题目版本 + 部件表 + 作答证据”三层拆分，新题型只加部件、**不改表结构**（对应 §11.4）；答案按 `account_label` 隔离，绝不跨账号复用。验收：首批真实答卷 `1 卷 / 3 题 / 100 分`，三条作答 `c/c/a` 与标准答案逐题对齐；重复导入计数不变；`PRAGMA integrity_check=ok`、`foreign_key_check=[]`；`pytest` **396 passed**。
@@ -879,7 +880,65 @@ run_gxks_multi.py            外层：读账号表 → 额度预检 → 端口�
 1. **第二门课的切换方式**（Q30）：要等有第二个样本账号；现在 `select_course()` 只做“最低假设 + 回读校验”。
 2. **多个 Chrome 的自动拉起**：现在只探活 + 给命令，不起浏览器（起进程属于面板/人 的职责，避免和沙箱/回收打架）。
 3. **面板里的账号管理**（增删改、看额度、看今日进度）：属于第四步 MVP，排在多账号跑稳之后。
+   → **2026-10-30 部分落地**（见 §11.17）：面板能列账号、看额度、切账号；增删改仍需改 `accounts.local.json`。
 4. **账本可视化**：现在只能读 jsonl；面板/日志页后续接。
+
+
+## 十二、第二平台独立控制台与 AI 回填（2026-10-30 落地）
+
+### 12.1 用户定的边界：两个面板不交叉
+
+| 维度 | 超星 | 第二平台 |
+|---|---|---|
+| 启动命令 | `xxt panel` | **`xxt gxks-panel`** |
+| 代码 | `xxt/panel/` | **`xxt/panel_gxks/`**（新包，不 import 前者） |
+| 端口 | 8300 | **8301** |
+| 账号来源 | `accounts` 表 | `data/accounts.local.json` |
+| 操作日志 | `run_logs` | **`gx_ops`**（`gxks_questions.db`，schema v2→v3） |
+| 业务库 | `data/xxt.db` | `data/gxks_questions.db` |
+
+唯一共用的是 **AI Provider 中心**（`ai/llm.py` 读 Key、`ai/quiz.py` 出提示词与解析）：Key 配一次两边都能用，**不在这里另存一份 Key**。
+
+### 12.2 面板四块（用户三条硬要求逐条对应）
+
+| 区块 | 内容 | 对应要求 |
+|---|---|---|
+| 账号与任务 | 选中账号的端口/日额度/任务状态、开始学习（3 节）/停止、任务日志尾巴 | 「更可控，可随时开始和停」 |
+| 节进度 | 每节学时要求/已完成/状态/练习 ID；可做的节直接给「做练习」按钮 | 「刷课也能被管理」 |
+| 本次作答 | **题号 / 题干 / 我的答案 / 来源（题库·AI）/ 置信度** 逐题列出 | 「第几节第几题、答案是什么，方便查阅与核对」 |
+| 操作记录 | `gx_ops` 表：开题/回填/刷新节列表/停止/出错，带时间与结果 | 「日志也要记录操作记录」 |
+
+重活**全部交给子进程**（`scripts/gxks_sections.py` / `gxks_work.py` / `run_gxks.py`）：Playwright 同步 API 会阻塞，放面板进程里等于把界面锁死。输出全部落 `data/logs/gxks-<类型>-<代号>-<时间>.log`，**不吞 stdout/stderr**（2026-10-25 哑故障教训：DEVNULL 把 traceback 吃掉，表现为“点了没反应”），面板只读尾巴。
+
+### 12.3 端口归属（本次修的真隐患）
+
+端口是**账号属性**（一账号 = 一 Chrome = 一端口），新增 `accounts.resolve_port()`；面板起子进程**一律显式 `--port`**。
+未修前的形态：面板不传 `--port` → `gxks_work.py`/`gxks_sections.py` 按 `[gxks] port_base` 猜 9300，而当前账号在 9222，`run_gxks.py` 又默认 9222 → **三个脚本两个答案**，故障表现就是“点下去没反应”。
+
+### 12.4 AI 回填链路与安全边界
+
+```
+开卷（直连 chkExam.aspx，不走带 confirm 的按钮，Q31）
+  → 读题（哪个帧有 tm_arr 就是答题帧，不认帧名）
+  → 题库优先（只认 standard_source='site'：平台判分过的客观答案，AI 答案不跨账号借）
+  → LLM 兜底（复用 Provider 中心）
+  → 真点击 radio（onclick=check_index(N) 刷新答题卡；只置 checked 平台算没答）
+  → 回读校验（选了哪些就应读到哪些，对不上即报错，不把“部分填好”当成功）
+  → 停住，等人核对
+```
+
+边界（三条都是“宁可停也不猜”）：
+
+1. **默认不交卷**：`[gxks] auto_submit = false`。技术上 `frmExam.submit()` 不经过交卷按钮的 confirm，所以自动交卷**能**做到；但没人在场就没人看答案对不对 —— 按用户定的「后面测试成熟后可以转为自动提交」先关着。
+2. **题型白名单**：`[gxks] allowed_types = "2"` 只放**单选**（已实测）。遇到 3=多选 / 4=判断 / 其余 11 种未实测题型 → **整卷停**（`WorkError('structure')`，退出码 4），不装懂。
+3. **答卷不重复建**：每点一次「参加练习」服务端就新建一份（Q32），所以面板按钮不做“先看看”的语义，按一次就是一次。
+
+### 12.5 已知限制（不假装做完）
+
+1. **AI 回填尚未在真实环境跑过**：本次只完成代码 + 合成 fixture 测试（真实结构、合成题干）。首次实跑需要 Chrome 已登录 + 服务端真的建卷。
+2. **打包成 exe 后起不了任务**：`scripts/` 不在 exe 包内，`_start()` 会明确回“打包版面板暂不支持起脚本”，不会默默 500。
+3. **UI 是单账号视图**：右上角下拉切换账号，没有同屏多账号对照；账号增删改仍改 `accounts.local.json`。
+4. **`gx_ops` 与超星 `run_logs` 不合并**：两边账号主键不同（`account_label` vs `accounts.id`），合并需维护映射，不值得。
 
 
 

@@ -53,8 +53,16 @@ def section_index(course_doc: dict | None) -> dict[str, dict]:
     return out
 
 
-def _text(fragment: str) -> str:
+def text_of(fragment: str) -> str:
+    """HTML 片段 → 纯文本（空白归一）。
+
+    题干与选项的归一化规则必须在回收与回填两侧完全一致，否则同一道题在两边会得出
+    不同指纹、也匹配不上。因此这个函数公开给 `work.py` 复用，不各自再写一份。
+    """
     return " ".join(BeautifulSoup(fragment, "html.parser").get_text(" ", strip=True).split())
+
+
+_text = text_of  # 旧内部名，保留以免二次改动调用点
 
 
 def _params(url: str) -> dict[str, str]:

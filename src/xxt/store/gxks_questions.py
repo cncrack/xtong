@@ -206,3 +206,52 @@ def bank_counts(conn: sqlite3.Connection) -> dict:
         "attempt_questions": conn.execute("SELECT COUNT(*) FROM gx_q_paper_items").fetchone()[0],
         "snapshots": conn.execute("SELECT COUNT(*) FROM gx_q_imports").fetchone()[0],
     }
+
+
+def _norm(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
+def lookup_answer(conn: sqlite3.Connection, *, stem: str, options: list[str]) -> dict | None:
+    """按题干 + 选项查题库里的**平台标准答案**（在线作答用）。
+
+    只认 `standard_source='site'`：那是平台判分给出的客观答案，跟谁做的没关系，
+    所以可以给别的账号用。`ai` 来源的答案不外借——那是某个账号的推理结果，
+    按 PLAN-GXKS §1.1 N3「题干可共用、答案仍按账号隔离」处理。
+
+    选项文本参与校验：题库里存的是选项 key（a/b/c/d），一旦平台改了选项顺序，
+    同一个 key 指向的内容就变了，宁可当未命中也不能填错。
+
+    命中条件：题干完全相同，且存下的选项序列与本次题面逐项一致。
+    """
+    stem_norm = _norm(stem)
+    opts_norm = [_norm(o) for o in options or []]
+    if not stem_norm or not opts_norm:
+        return None
+    item_rows = conn.execute(
+        "SELECT id FROM gx_q_items WHERE stem = ? ORDER BY id DESC", (stem_norm,)
+    ).fetchall()
+    for (item_id,) in item_rows:
+        part_rows = conn.execute(
+            "SELECT part_key, content_json FROM gx_q_parts "
+            "WHERE item_id = ? AND kind = 'option' ORDER BY ordinal", (item_id,)
+        ).fetchall()
+        stored = [_norm(json.loads(r[1]).get("text")) for r in part_rows]
+        if stored != opts_norm:
+            continue
+        answer = conn.execute(
+            "SELECT a.standard_json FROM gx_q_answers a "
+            "JOIN gx_q_imports im ON im.id = a.import_id "
+            "JOIN gx_q_paper_items pi ON pi.paper_id = im.paper_id AND pi.ordinal = a.ordinal "
+            "WHERE pi.item_id = ? AND a.standard_source = 'site' "
+            "AND a.standard_json IS NOT NULL ORDER BY a.import_id DESC LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        if answer is None:
+            continue
+        data = json.loads(answer[0])
+        keys = [str(k) for k in (data.get("keys") or []) if str(k)]
+        if keys:
+            return {"item_id": item_id, "keys": keys, "source": "bank",
+                    "text": _norm(data.get("text"))}
+    return None

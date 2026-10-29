@@ -5,10 +5,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-GXKS_SCHEMA_VERSION = 2
+GXKS_SCHEMA_VERSION = 3
 # 1 → 2（2026-10-30）：仅新增 `gx_q_items.fingerprint` 索引。
 #   跨节同题（题 ID 不同、内容相同）靠 fingerprint 归并，导出时不必全表扫。
-#   建表语句全部 IF NOT EXISTS，旧库（版本 1）可原地升到 2，不重建数据。
+# 2 → 3（2026-10-30）：新增 `gx_ops` 操作日志表。面板要“记录操作记录”
+#   （用户原话），而超星的 `run_logs` 是账号 + 章节维度、绑 `accounts` 表，
+#   新站账号用 `account_label`，两边表结构不同，因此单独建表而不是复用。
+#   建表语句全部 IF NOT EXISTS，旧库（版本 1/2）可原地升到 3，不重建数据。
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -77,6 +80,21 @@ CREATE INDEX IF NOT EXISTS gx_q_papers_classify
     ON gx_q_papers(account_label, course_id, section_id, exercise_id);
 CREATE INDEX IF NOT EXISTS gx_q_items_classify ON gx_q_items(type_code);
 CREATE INDEX IF NOT EXISTS gx_q_items_fingerprint ON gx_q_items(fingerprint);
+CREATE TABLE IF NOT EXISTS gx_ops (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    account_label TEXT NOT NULL,
+    action TEXT NOT NULL,
+    result TEXT NOT NULL,
+    section_id TEXT,
+    section_name TEXT,
+    exercise_id TEXT,
+    detail TEXT NOT NULL,
+    code TEXT,
+    payload_json TEXT
+);
+CREATE INDEX IF NOT EXISTS gx_ops_by_account ON gx_ops(account_label, id);
+CREATE INDEX IF NOT EXISTS gx_ops_by_action ON gx_ops(action, id);
 """
 
 

@@ -182,6 +182,19 @@ def find_by_label(accounts: list[Account], label: str) -> Account | None:
     return None
 
 
+def resolve_port(label: str, *, accounts: list[Account] | None = None,
+                 fallback: int = DEFAULT_PORT) -> int:
+    """账号对应的 CDP 端口。
+
+    端口是**账号属性**（一账号一 Chrome 一端口），不是全局配置：脚本和面板都从
+    这里取，就不会出现“面板以为在 9300、账号表写着 9222”那种两边各猜一个端口、
+    点了没反应的故障。`fallback` 只在账号表里找不到该代号时用。
+    """
+    accs = load_accounts() if accounts is None else accounts
+    acc = find_by_label(accs, label)
+    return acc.port if acc else fallback
+
+
 def summary(accounts: list[Account]) -> str:
     """一行摘要（只含代号与端口，**不含凭据**）。"""
     if not accounts:

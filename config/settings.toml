@@ -5,9 +5,32 @@
 data_dir = "data"
 
 [platform]
-name = "chaoxing"
-login_url = "https://passport2.chaoxing.com/login"
-space_url = "https://i.chaoxing.com/"
+# 第二平台（2026-10-30 切换）：本工作树只跑新站，超星配置留在 E:\xxt。
+# 平台常量以 `adapters/gxks/selectors.py` 为准，这里的地址仅作标识与展示。
+name = "gxks"
+login_url = "http://www.gaoxiaokaoshi.com/Default.aspx"
+space_url = "http://www.gaoxiaokaoshi.com/MainPage.aspx"
+
+[panel]
+# 第二平台独立面板。超星是 8300，两边互不交叉（用户 2026-10-30 定）。
+host = "127.0.0.1"
+port = 8301
+
+[gxks]
+# 练习作答策略：
+#   ai        = AI 回填进页面（不提交），人工核对后自己点交卷——默认
+#   reference = 只在面板列出参考答案，不动页面
+#   owner     = 号主自理，只给操作指引
+work_mode = "ai"
+# 自动交卷（默认关）。需等人工核对流程跑熟后由用户手动打开。
+# 打开后由后台进程自己处理 confirm/alert 再点交卷。
+auto_submit = false
+# 仅当账号表（data/accounts.local.json）里查不到该代号时的兜底端口。
+# 端口是**账号属性**（一账号一 Chrome 一端口），以账号表为准，见 accounts.resolve_port。
+port_base = 9300
+# 允许的题型代码（逗号分隔）。目前实测只有单选=2；未实测题型一律拒收，
+# 宁可停止也不猜——新增题型实测通过后再往这里加。
+allowed_types = "2"
 
 [llm]
 # OpenAI 兼容接口，换厂商只改 base_url 和 model。

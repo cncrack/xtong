@@ -117,6 +117,37 @@ STUDY_CLOCK_LABEL = "spTitle"
 # 【实测】计时与上报节奏：墙钟每秒 +1，满 60 秒上报一次；倍速对墙钟无效
 UPLOAD_EVERY_SECONDS = 60
 
+# ---------------------------------------------------------------- 练习页（在线作答）
+
+# 【实测 2026-10-29】直接 GET 这条即等价于点「参加练习」，但**不经过 confirm**
+# （`showExam()` 里才有 `confirm('确定要参加这场练习吗?')`）——这是脚本能自己开卷的前提。
+EXAM_START_URL = f"{BASE}/ExamList/chkExam.aspx?ExamID={{exercise_id}}&SiteType=2&IsContinue=0"
+# 【实测】建卷是两跳：chkExam.aspx → ExamCreate.ashx（服务端建卷）→ 302 落地 frameset。
+# 卡在中间态就去抓会拿到空页，必须等 URL 稳定。
+EXAM_TRANSIENT_HINTS = ("chkExam.aspx", "ExamCreate.ashx")
+
+# 【实测】答题帧里有 `var tm_arr = []`。帧名换过（ExamDo → ExamTmStepDo），
+# 所以按“哪个帧有非空 tm_arr”定位，**不认帧名**。
+EXAM_TM_ARR_JS = "() => (window.tm_arr || [])"
+# tm_arr 每行（2026-10-30 从 ExamDo.html 原样读出）：
+#   [0]题ID [1]题型代码 [2]题干 [3]分值 [4]选项数 [5]选项(分号分隔) [8]知识点ID
+EXAM_TM_ARR_FIELDS = {"qid": 0, "type_code": 1, "stem": 2, "max_score": 3,
+                      "option_count": 4, "options": 5, "knowledge_id": 8}
+
+# 【实测】题型表也由页面自带（`tx_arr`，13 种，含题库里尚未实测的简答/论述等），
+# 题型名称不必我们维护。每项：[0]题型代码 [2]名称。
+EXAM_TYPE_ARR_JS = "() => (window.tx_arr || [])"
+
+# 【实测】选项是 `<input type="radio" name="tmda_<题号>" value="a|b|c|d">`，
+# value 就是选项 key，与 tm_arr[5] 分号拆分后的顺序一一对应（a,b,c,d…）。
+# `onclick="check_index(N)"` 会刷新答题卡，因此**必须真点击**，不能只置 checked。
+EXAM_RADIO_NAME = "tmda_{ordinal}"
+EXAM_RADIO_ID = "tm_{ordinal}_{idx}"   # radio 的 id 规则，仅调试用
+
+# 【实测】交卷走 `frmExam.submit()`（不是链接）。默认不调用；
+# `gxks.auto_submit` 打开后才由后台进程自己点。
+EXAM_SUBMIT_JS = "frmExam.submit()"
+
 # ---------------------------------------------------------------- 服务端以外的流量
 
 # 【实测】视频流走阿里云点播（自有 PlayDomain），不占平台带宽；播放器自带质量埋点

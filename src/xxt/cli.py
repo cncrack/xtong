@@ -527,6 +527,17 @@ def cmd_panel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gxks_panel(args: argparse.Namespace) -> int:
+    """第二平台独立控制台（默认 127.0.0.1:8301）。
+
+    与 `cmd_panel` 分开是刻意的（用户 2026-10-30：「各自独立」）：两个平台的
+    账号体系、数据表、页面都不同，塞进同一个 `create_app` 只会让每次改版互相牵连。
+    """
+    from .panel_gxks.app import serve
+
+    return serve(_settings(args))
+
+
 def _random_start(ws: str, we: str) -> str:
     """在 [ws, we] 窗口内随机开刷时刻（HH:MM），不越窗、不产生 24:xx。
 
@@ -1906,6 +1917,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="跳过同账号双开检查（确认无影响时用）")
 
     sub.add_parser("panel", help="启动 Web 管理面板（浏览器查看进度/账号/日志）")
+    sub.add_parser("gxks-panel",
+                   help="启动**第二平台**独立控制台（127.0.0.1:8301，与超星面板不交叉）")
     sub.add_parser("auto", help="常驻调度守护：各账号定时自动刷课（start_at/窗口内随机，额度停机）")
 
     p_wk = sub.add_parser("work", help="章节作业 AI 作答（P2.5，默认半自动只填不交）")
@@ -1933,6 +1946,7 @@ def main(argv: list[str] | None = None) -> int:
         "account": cmd_account,
         "mlearn": cmd_mlearn,
         "panel": cmd_panel,
+        "gxks-panel": cmd_gxks_panel,
         "auto": cmd_auto,
         "work": cmd_work,
         "machine-id": cmd_machine_id,

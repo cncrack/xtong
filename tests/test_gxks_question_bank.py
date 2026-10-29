@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 
 from xxt.store.db import connect
-from xxt.store.schema_gxks import migrate, open_question_bank
+from xxt.store.schema_gxks import GXKS_SCHEMA_VERSION, migrate, open_question_bank
 from xxt.store.gxks_questions import (backfill_classification, bank_counts, bank_items,
                                      import_bundle, read_attempt)
 
@@ -141,7 +141,10 @@ def test_migration_separate_version_and_no_chaoxing_change(tmp_path):
         version = old.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
     with closing(open_question_bank(tmp_path / "new.db")) as new:
         migrate(new)
-        assert new.execute("SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()[0] == "2"
+        # 不写死版本号：schema 会继续升，断言“用的是新站自己的版本键”即可。
+        ver_row = new.execute(
+            "SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()
+        assert int(ver_row[0]) == GXKS_SCHEMA_VERSION
         assert new.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() is None
     with pytest.raises(ValueError, match="业务库"):
         open_question_bank(tmp_path / "old.db")
