@@ -15,6 +15,9 @@ from __future__ import annotations
 
 BASE = "http://www.gaoxiaokaoshi.com"          # 【实测】仅 HTTP，HTTPS 不可达
 LOGIN_PAGE = f"{BASE}/Login.aspx"              # 【实测】1920 宽也落这里，分流规则未证实
+# 【实测】2026-10-29 12:49 会话失效时整页被踢到 **Loginb.aspx**（带 b 的另一套登录页）。
+# 两个都要认：只认一个就会把“掉登录”误当成“页面变慢”。
+LOGIN_PAGES = (LOGIN_PAGE, f"{BASE}/Loginb.aspx")
 LOGIN_POST = f"{BASE}/HidLogin.aspx"           # 【实测】表单 POST，明文
 MAIN_PAGE = f"{BASE}/Homew/MainPage.aspx?menu=3&subMenu=4"   # 【实测】学习入口
 

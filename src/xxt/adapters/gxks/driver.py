@@ -20,8 +20,11 @@ import math
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from . import listparse, selectors
+
+_LOGIN_PATHS = {urlparse(p).path.lower() for p in selectors.LOGIN_PAGES}
 
 # ---------------------------------------------------------------- 判定阈值
 
@@ -144,6 +147,23 @@ def section_status(row: dict[str, Any]) -> str:
     if state == "not_started":
         return "not_started"
     return "unknown"
+
+
+def at_login_page(url: str) -> bool:
+    """当前 URL 是不是登录页 ⇒ **会话已失效的硬证据**（Q20）。
+
+    2026-10-29 12:49 实测：守播中途整页被踢到 `Loginb.aspx`，播放帧与列表帧一起消失，
+    所有采样变 null，`classify` 只能给 `unknown`，于是守播**静默转圈到总超时**。
+    按路径精确比对（不用子串：`HidLogin.aspx` 包含 `login.aspx`，会误伤）。
+    """
+    path = urlparse(url or "").path.lower()
+    return bool(path) and path in _LOGIN_PATHS
+
+
+def shorten_url(url: str, limit: int = 80) -> str:
+    """日志用短 URL：去掉 `rnd` 参数，避免每次回读都是一串随机数。"""
+    clean = re.sub(r"([?&])rnd=[^&]*", "", url or "").replace("?&", "?")
+    return clean[:limit]
 
 
 def enough_with_margin(row: dict[str, Any],
@@ -398,6 +418,15 @@ class GxksDriver:
 
         while time.monotonic() - started < max_seconds:
             now = time.monotonic()
+
+            # 会话失效必须先认出来（Q20）：掉登录时整页被踢到 Login.aspx/Loginb.aspx，
+            # 播放帧和列表帧一起消失 → 采样全 null → 只能得到 `unknown`，守播会**静默**转圈
+            # 到总超时（2026-10-29 12:49 实测）。掉登录不是“页面慢”，必须立即报出去。
+            if at_login_page(self.page.url):
+                emit("session_lost", url=shorten_url(self.page.url))
+                return {"result": "session_lost", "seconds": now - started,
+                        "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
+
             sample = self.sample_player()
             state = classify(sample, prev, now - prev_at)
             since_reload = None if self._last_reload is None else now - self._last_reload

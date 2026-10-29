@@ -133,6 +133,29 @@ def test_enough_with_margin_requires_overrun():
     assert driver.enough_with_margin({}) is False
 
 
+# ---------------------------------------------------------------- 会话失效（Q20）
+
+
+def test_at_login_page_recognizes_both_login_pages():
+    """2026-10-29 12:49 实测：掉登录时整页落到 **Loginb.aspx**（不是 Login.aspx）。
+
+    只认 Login.aspx 会把“掉登录”当成“页面变慢”，守播于是静默转圈到超时。
+    """
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Login.aspx") is True
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Loginb.aspx") is True
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/loginb.aspx?x=1") is True
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Study/LibraryStudy.aspx?Id=1") is False
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/HidLogin.aspx") is False   # 子串会误伤
+    assert driver.at_login_page("") is False
+
+
+def test_shorten_url_strips_rnd():
+    url = "http://x/List.aspx?Id=1&rnd=123456"
+    assert "rnd" not in driver.shorten_url(url)
+    assert driver.shorten_url(url).endswith("Id=1")
+    assert driver.shorten_url("http://x/List.aspx?rnd=9").endswith("List.aspx")
+
+
 # ---------------------------------------------------------------- 切节
 
 

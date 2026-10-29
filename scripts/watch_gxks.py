@@ -39,7 +39,8 @@ from xxt.adapters.gxks import driver as gdriver
 from xxt.adapters.gxks import selectors
 
 CDP = "http://127.0.0.1:9222"
-LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached"}
+LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached",
+              "session_lost"}
 QUIET_STATES = {"ok"}
 
 
@@ -138,6 +139,8 @@ def main() -> int:
                 extra = f" {r.get('done_minutes')}/{r.get('required_minutes')} {r.get('state')}"
             elif kind == "no_report":
                 extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
+            elif kind == "session_lost":
+                extra = f" 页面={ev.get('url')} ⇒ 掉登录，学时已停（Q20，需人工重登）"
             elif kind == "margin_reached":
                 extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
                          f" → 达标收工（不卡“刚刚好”）")
@@ -155,6 +158,12 @@ def main() -> int:
     print(f"结果 {out['result']}；用时 {out['seconds'] / 60:.1f} 分钟；重载 {out['reloads']} 次；"
           f"重建 {out['rebuilds']} 次")
     print(f"列表：{final.get('done_minutes')}/{final.get('required_minutes')} {final.get('state')}")
+    if out["result"] == "session_lost":
+        # Q20：掉登录不能当“超时”收场。学时停在原地、必须人工重登，然后从这节续跑。
+        print("⚠ 会话已失效（页面落到登录页）→ 本节已中断。请在该 Chrome 窗口重新登录；"
+              "登录后重跑本命令即从这节续播（进度不会丢）。")
+        browser.close()
+        return 4
     if out["result"] == "done":
         # C9/C10：达标必须**真正**停住。`pause()` 只保证此刻停了——本站脚本里
         # `visibilitychange` 会 `player.play()`，且媒体重建后播放器会自己恢复，
