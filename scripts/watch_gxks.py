@@ -85,6 +85,11 @@ def main() -> int:
                 if f"Id={r['platform_chapter_id']}" in (frame.url or ""):
                     playing = r
                     break
+        # 播放帧里挂着的那节如果**已经达标**，绝不能选它（C9）——
+        # 否则每次自动跑都会因为“上一节的播放帧还在”而 SKIP 退出。退回到“下一个未完成”。
+        if playing is not None and gdriver.section_status(playing) == "done":
+            print(f"播放帧里是已达标的 {playing['platform_chapter_id']}，改挑下一个未完成节")
+            playing = None
         picked = playing or gdriver.pick_next_section(rows)
         if picked is None:
             print("列表里没有未完成的节了")
