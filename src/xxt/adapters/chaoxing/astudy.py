@@ -16,10 +16,13 @@ from typing import Any
 
 from ...core.accounts import effective_pace, effective_quota
 from ...core.pace import sample_gap, sample_speed, within_daily_window
-from ...core.playback import is_plausible_completion
-from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
+from ...core.playback import (WATCHER_INJECT_TRIES, WAIT_INIT_SECONDS,
+                              is_plausible_completion, next_wait_limit)
+from ...core.quota import (remaining_minutes, sample_daily_budget, sum_done_seconds,
+                           video_done_counted)
 from ...log import get_logger
-from .pagejs import WATCHER_JS, build_watcher_js, match_chapter_id  # noqa: F401
+from .pagejs import (WATCHER_JS, build_watcher_js, match_chapter_id,  # noqa: F401  (兼容导出)
+                     pick_pending_after)
 
 log = get_logger("chaoxing.astudy")
 
@@ -60,6 +63,9 @@ async def _wait_task_page(page, timeout_s: float = 15.0) -> bool:
 # 非视频节点名关键词：这些节本来就没有 video，不能拿“有没有 video-done”判完成。
 # 2026-10-27：既用于回补历史误标数据，也用于会话收尾时决定该不该记 visited。
 _NON_VIDEO_MARKS = ("作业", "测验", "讨论", "阅读", "考试", "练习", "公告")
+
+# 单节播放等待上限与注入重试次数的取值在 `core.playback`（两个引擎共用），
+# 不在这里重定义。
 
 
 def non_video_marks(settings: Any = None) -> tuple[str, ...]:
@@ -121,33 +127,6 @@ def _learn_int(settings, key: str, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         val = default
     return max(lo, min(hi, val))
-
-
-def pick_pending_after(conn, course_id: int, after_pid: str | None,
-                       tried: list[str] | set[str]) -> tuple[str, str] | None:
-    """按 idx 顺序挑下一个待学节：先取 after_pid 之后的，到尾部再从头绕回。
-
-    B2（2026-10-27）：原来直接 `ORDER BY idx LIMIT 1` 取全表第一个 pending ——
-    当前节还没播完（仍是 pending）时，取回的永远是它自己，于是 #1 在 5.1 上反复撞；
-    失败后又被标 visited，就永久跳过。现在按“当前节之后”取，本会话试过的跳过。
-    """
-    rows_p = conn.execute(
-        "SELECT platform_chapter_id, name, idx FROM chapters"
-        " WHERE course_id=? AND status='pending' ORDER BY idx",
-        (course_id,)).fetchall()
-    cur_idx = None
-    if after_pid:
-        r0 = conn.execute(
-            "SELECT idx FROM chapters WHERE course_id=? AND platform_chapter_id=?",
-            (course_id, after_pid)).fetchone()
-        cur_idx = r0["idx"] if r0 else None
-    after = [r for r in rows_p if cur_idx is not None and r["idx"] > cur_idx]
-    before = [r for r in rows_p if cur_idx is None or r["idx"] <= cur_idx]
-    for r in after + before:
-        if r["platform_chapter_id"] in tried:
-            continue
-        return r["platform_chapter_id"], r["name"]
-    return None
 
 
 async def _frame_alive(frame) -> bool:
@@ -304,14 +283,34 @@ class AsyncStudyRunner:
         # 当成新视频已播完 → 0 秒写一条假 video-done 并把章节误标 done
         # （2026-10-25 账号#2 实证：22:49:53 与 22:50:01 两条记录时长完全相同）。
         self._drain()
-        if await video_frame.evaluate(js) != "ok":
-            log.warning("[#%s][%s] watcher 注入失败（跳过）", self.account_id, label)
+        # 进度快照必须在**任何提前 return 之前**重置（A，2026-10-29）：注入失败时若留着
+        # 上一节的 `_last_progress`/`_last_video_dur`，中断日志会报“100%（346/346s）”——
+        # 既误导人（这一节一秒都没播），又误事（100% ≥ 续播门槛 → 整节重播一遍 →
+        # 写出第二条 video-done 并多扣一份额度）。
+        self._last_progress = 0.0  # B3：本节最高播放进度，用于判断“中断时已播多少”
+        self._last_video_dur = 0
+        injected = None
+        for attempt in range(WATCHER_INJECT_TRIES):
+            try:
+                if await video_frame.evaluate(js) == "ok":
+                    injected = time.monotonic()
+                    break
+                log.warning("[#%s][%s] watcher 注入返回非 ok（第 %d 次）",
+                            self.account_id, label, attempt + 1)
+            except Exception as exc:
+                log.warning("[#%s][%s] watcher 注入异常（第 %d 次）：%r",
+                            self.account_id, label, attempt + 1, exc)
+            if attempt + 1 < WATCHER_INJECT_TRIES:
+                # 异常路径的固定短等（不是拟人化节奏：刷课节奏全部走 core.pace 抽样），
+                # 只为了给 iframe 重建留出时间；正常播放路径上一节都不走这个分支
+                await page.wait_for_timeout(3000)
+        if injected is None:
+            log.warning("[#%s][%s] watcher 注入失败（试了 %d 次，本节保持待学）",
+                        self.account_id, label, WATCHER_INJECT_TRIES)
             return False
         self._drain()  # 注入瞬间到达的 watcher-ready 等也属“旧状态”，一并丢弃
-        injected = time.monotonic()
-        self._last_progress = 0.0  # B3：本节最高播放进度，用于判断“中断时已播多少”
         log.info("[#%s][%s] 开始播放：倍速 %.2f", self.account_id, label, rate)
-        max_wait, ended, last_report, start = 600, False, 0.0, time.monotonic()
+        max_wait, ended, last_report, start = WAIT_INIT_SECONDS, False, 0.0, time.monotonic()
         last_dur = 0
         saw_progress = False   # 是否见过"明确未播完"的进度（可信播放的必要证据）
         at_end_streak = 0      # 连续"一上来就在末尾"的 tick 数
@@ -345,8 +344,10 @@ class AsyncStudyRunner:
                     if time.monotonic() - last_report > 30:
                         last_report = time.monotonic()
                         log.info("[#%s][%s] 进度 %.0f/%.0fs", self.account_id, label, cur, dur)
-                        max_wait = min(max_wait, (time.monotonic() - start)
-                                       + (dur - cur) / rate + 90)
+                        # 弹性上限（B）：随剩余时长延长。长视频不再在 600 秒被砍一刀，
+                        # 卡住的视频也最多多等余量就收兵（算法在 core.playback）。
+                        max_wait = next_wait_limit(elapsed=time.monotonic() - start,
+                                                   remaining_content=dur - cur, rate=rate)
             if at_end_streak >= 5 and not saw_progress:
                 # 约 15 秒（每 3s 一 tick）始终停在末尾且从未见过进度：
                 # 判定"平台侧本来就已完成"，只标章节不记额度，避免额度虚增与死循环。
@@ -456,6 +457,38 @@ class AsyncStudyRunner:
                     stats["stop_reason"] = "打不开章节树（登录态可能已失效，或课程链接过期）——请重新登录该账号"
                     log.warning("[#%s] %s", self.account_id, stats["stop_reason"])
                     return stats
+
+                # 刷前对账（2026-10-29 用户要求“刷之前先和平台对账”）：章节树这一页本来
+                # 就要打开，顺手读平台的完成标记，把“平台已完成、本地记待学”的节先归位
+                # 再挑节——**零额外页面访问**。只升级不降级：会话中途误判降级会立刻引发
+                # 整门课重刷，风险远大于收益（降级走 `xxt chapters --demote`）。
+                # 对账后原首节可能已不再是待学，所以重挑一次；全部归位完就直接收工，不白跑。
+                from ...core.reconcile import pre_session_enabled, reconcile_local
+                if pre_session_enabled(self.settings):
+                    try:
+                        from .chapters import parse_chapter_tree
+
+                        tree_html = await tree_frame.evaluate(
+                            "(document.querySelector('#fanyaChapter') || document.body).outerHTML")
+                        rc = reconcile_local(
+                            self.conn, course_row["id"], parse_chapter_tree(tree_html),
+                            account_id=self.account_id, course_name=course_row["name"])
+                        if rc["promoted"]:
+                            stats["reconciled"] = len(rc["promoted"])
+                            log.info("[#%s] 刷前对账：《%s》有 %d 节平台已完成、本地原记待学，已归位",
+                                     self.account_id, course_row["name"], len(rc["promoted"]))
+                            again = pick_pending_after(self.conn, course_row["id"], None, [])
+                            if again is None:
+                                stats["stop_reason"] = (
+                                    f"刷前对账后已无待学章节（本次归位 {len(rc['promoted'])} 节）")
+                                log.info("[#%s] %s", self.account_id, stats["stop_reason"])
+                                return stats
+                            kid, leaf_name = again
+                    except Exception as exc:
+                        # 对账失败绝不影响学习：最多回到“按本地记账刷”的旧行为
+                        log.warning("[#%s] 刷前对账未完成（不影响本次学习）：%r",
+                                    self.account_id, exc)
+
                 # 入口/翻页兜底（2026-10-27 P0-3b/3c）：打不开任务页就换下一节，
                 # 连续 3 节都不行才收工，并把试过哪几节写进 stop_reason。
                 tried_entry: list[str] = []
@@ -622,15 +655,29 @@ class AsyncStudyRunner:
                                                  self.account_id, title, played,
                                                  self._partial_ratio() * 100)
                             if played is True:
-                                stats["videos"] += 1
                                 dur_s = int(getattr(self, "_last_video_dur", 0) or 0)
-                                session_seconds += dur_s  # 只有记账的时长才进额度
-                                self._rec("video-done",
-                                          f"{course_row['name']}｜{title}｜{dur_s}s")
-                                if cid is not None:
-                                    self.conn.execute(
-                                        "UPDATE chapters SET status='done' WHERE id=?", (cid,))
-                                self.conn.commit()
+                                # C（2026-10-29）：额度的两个口径都是直接数今天的 video-done
+                                # 行（见 run() 里的 done_today/done_seconds），所以同一节记两次
+                                # 就是白扣一份额度，还把本该学的下一节挤掉。重播只做章节状态，
+                                # 不再写第二条 video-done（上面已把进度快照归零，这里靠查库判重）。
+                                if video_done_counted(self.conn, account_id=self.account_id,
+                                                      course_name=course_row["name"], title=title):
+                                    self._rec("video-dup-skip",
+                                              f"{course_row['name']}｜{title}｜本节今天已记过时长，"
+                                              f"重播不重复计额度", "WARNING")
+                                    if cid is not None:
+                                        self.conn.execute(
+                                            "UPDATE chapters SET status='done' WHERE id=?", (cid,))
+                                        self.conn.commit()
+                                else:
+                                    stats["videos"] += 1
+                                    session_seconds += dur_s  # 只有记账的时长才进额度
+                                    self._rec("video-done",
+                                              f"{course_row['name']}｜{title}｜{dur_s}s")
+                                    if cid is not None:
+                                        self.conn.execute(
+                                            "UPDATE chapters SET status='done' WHERE id=?", (cid,))
+                                    self.conn.commit()
                             elif played == "already":
                                 # 平台侧本来就已完成：只标章节，不写 video-done（免得额度虚增），
                                 # 也不加视频数——但必须标 done，否则下次又选中它而死循环。

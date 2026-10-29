@@ -18,10 +18,13 @@ import time
 from typing import Any
 
 from ...core.pace import FocusTimer, sample_gap, sample_speed, within_daily_window
-from ...core.playback import is_plausible_completion
-from ...core.quota import remaining_minutes, sample_daily_budget, sum_done_seconds
+from ...core.playback import (WATCHER_INJECT_TRIES, WAIT_INIT_SECONDS,
+                              is_plausible_completion, next_wait_limit)
+from ...core.quota import (remaining_minutes, sample_daily_budget, sum_done_seconds,
+                           video_done_counted)
 from ...log import get_logger
-from .pagejs import WATCHER_JS, build_watcher_js, match_chapter_id  # noqa: F401  (对外兼容导出)
+from .pagejs import (WATCHER_JS, build_watcher_js, match_chapter_id,  # noqa: F401  (兼容导出)
+                     pick_pending_after)
 from .pagesync import current_task_title, find_frame_with, open_chapter_frame
 
 log = get_logger("chaoxing.study")
@@ -102,15 +105,31 @@ class StudyRunner:
         rate = sample_speed(self.rng, self.pace)
         js = build_watcher_js(rate)
         self._drain()  # 丢弃上一节残留事件
-        ret = video_frame.evaluate(js)
-        if ret != "ok":
-            log.warning("[%s] watcher 注入返回 %s（跳过该视频）", knowledge_label, ret)
+        # 与异步版同步的三项修正（2026-10-29，两条路径不许一新一旧）：
+        # A 进度快照在任何提前 return 前重置 + 注入失败重试一次
+        self._last_video_dur = 0
+        injected = None
+        for attempt in range(WATCHER_INJECT_TRIES):
+            try:
+                ret = video_frame.evaluate(js)
+                if ret == "ok":
+                    injected = time.monotonic()
+                    break
+                log.warning("[%s] watcher 注入返回 %s（第 %d 次）", knowledge_label, ret, attempt + 1)
+            except Exception as exc:
+                log.warning("[%s] watcher 注入异常（第 %d 次）：%r", knowledge_label, attempt + 1, exc)
+            if attempt + 1 < WATCHER_INJECT_TRIES:
+                # 异常路径的固定短等（不是拟人化节奏：刷课节奏全部走 core.pace 抽样），
+                # 只为了给 iframe 重建留出时间（与异步版同源）
+                page.wait_for_timeout(3000)
+        if injected is None:
+            log.warning("[%s] watcher 注入失败（试了 %d 次，该节保持待学）",
+                        knowledge_label, WATCHER_INJECT_TRIES)
             return False
         self._drain()
-        injected = time.monotonic()
         log.info("[%s] 开始播放：倍速 %.2f", knowledge_label, rate)
 
-        deadline_margin, max_wait = 90, 600
+        max_wait = WAIT_INIT_SECONDS
         ended, last_report, start = False, 0.0, time.monotonic()
         last_dur = 0
         saw_progress, at_end_streak = False, 0
@@ -143,9 +162,10 @@ class StudyRunner:
                         log.info(
                             "[%s] 进度 %.0f/%.0fs", knowledge_label, cur, dur
                         )
-                        max_wait = min(
-                            max_wait, (time.monotonic() - start) + (dur - cur) / rate + deadline_margin
-                        )
+                        # 弹性上限（B）：随剩余时长延长，不再被写死的 600 秒砍断
+                        # （那个硬顶正是长视频 79%~96% 节节中断的原因，与异步版同源）
+                        max_wait = next_wait_limit(elapsed=time.monotonic() - start,
+                                                   remaining_content=dur - cur, rate=rate)
             if at_end_streak >= 5 and not saw_progress:
                 log.warning("[%s] 一上来就在末尾（%.0fs），判为平台已完成，不记账",
                             knowledge_label, last_dur)
@@ -238,6 +258,34 @@ class StudyRunner:
                     stats["stop_reason"] = "打不开章节树（登录态可能已失效，或课程链接过期）——请重新登录该账号"
                     log.warning("%s", stats["stop_reason"])
                     return stats
+                # 刷前对账（与异步版同一份 core.reconcile 实现，两条路径不许一新一旧）：
+                # 章节树这一页本来就要打开，顺手读平台完成标记归位本地记账，零额外访问。
+                # 只升级不降级；全部归位完就直接收工，不再白跑一节。
+                from ...core.reconcile import pre_session_enabled, reconcile_local
+
+                if pre_session_enabled(self.settings):
+                    try:
+                        from .chapters import parse_chapter_tree
+
+                        tree_html = tree_frame.evaluate(
+                            "(document.querySelector('#fanyaChapter') || document.body).outerHTML")
+                        rc = reconcile_local(
+                            self.conn, course_row["id"], parse_chapter_tree(tree_html),
+                            account_id=self.account_id, course_name=course_row["name"])
+                        if rc["promoted"]:
+                            stats["reconciled"] = len(rc["promoted"])
+                            log.info("刷前对账：《%s》有 %d 节平台已完成、本地原记待学，已归位",
+                                     course_row["name"], len(rc["promoted"]))
+                            again = pick_pending_after(self.conn, course_row["id"], None, [])
+                            if again is None:
+                                stats["stop_reason"] = (
+                                    f"刷前对账后已无待学章节（本次归位 {len(rc['promoted'])} 节）")
+                                log.info("%s", stats["stop_reason"])
+                                return stats
+                            kid, leaf_name = again
+                    except Exception as exc:
+                        # 对账失败绝不影响学习：最多回到“按本地记账刷”的旧行为
+                        log.warning("刷前对账未完成（不影响本次学习）：%r", exc)
                 if not window_ok():
                     stats["stop_reason"] = "超出每日学习时段"
                     return stats  # 此处为会话中途越窗（browser 已开），交由 finally 收尾
@@ -269,19 +317,37 @@ class StudyRunner:
                             # 经"下一节"推进的知识点按任务标题精确落库
                             cid = match_chapter_id(self.conn, course_row["id"], title)
                             if played is True:
-                                stats["videos"] += 1
-                                self.conn.execute(
-                                    "INSERT INTO run_logs(ts, level, event, detail, account_id)"
-                                    " VALUES(?,?,?,?,?)",
-                                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
-                                     "video-done",
-                                     f"{course_row['name']}｜{title}｜{getattr(self, '_last_video_dur', 0)}s",
-                                     self.account_id))
-                                if cid is not None:
+                                dur_s = int(getattr(self, "_last_video_dur", 0) or 0)
+                                # C（2026-10-29）：同一节今天已记过 video-done 就不再记第二次——
+                                # 额度直接数 video-done 行，重播记两次就是白扣一份额度。
+                                if video_done_counted(self.conn, account_id=self.account_id,
+                                                      course_name=course_row["name"], title=title):
+                                    log.warning("[%s] 本节今天已记过时长，重播不重复计额度", title)
                                     self.conn.execute(
-                                        "UPDATE chapters SET status='done' WHERE id=?", (cid,)
-                                    )
-                                self.conn.commit()
+                                        "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                                        " VALUES(?,?,?,?,?)",
+                                        (time.strftime("%Y-%m-%dT%H:%M:%S"), "WARNING",
+                                         "video-dup-skip",
+                                         f"{course_row['name']}｜{title}｜本节今天已记过时长，重播不重复计额度",
+                                         self.account_id))
+                                    if cid is not None:
+                                        self.conn.execute(
+                                            "UPDATE chapters SET status='done' WHERE id=?", (cid,))
+                                    self.conn.commit()
+                                else:
+                                    stats["videos"] += 1
+                                    self.conn.execute(
+                                        "INSERT INTO run_logs(ts, level, event, detail, account_id)"
+                                        " VALUES(?,?,?,?,?)",
+                                        (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO",
+                                         "video-done",
+                                         f"{course_row['name']}｜{title}｜{dur_s}s",
+                                         self.account_id))
+                                    if cid is not None:
+                                        self.conn.execute(
+                                            "UPDATE chapters SET status='done' WHERE id=?", (cid,)
+                                        )
+                                    self.conn.commit()
                             elif played == "already":
                                 # 平台已完成：只标章节，不记账（与异步版口径一致）
                                 if cid is not None:

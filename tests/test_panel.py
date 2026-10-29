@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,6 +155,33 @@ class TestPanel(unittest.TestCase):
                     {"auto_retry_jitter_pct": 101}, {"auto_retry_max_minutes": 9999},
                     {"auto_hard_tries_cap": 0}, {"auto_hard_tries_cap": 99},
                     {"auto_max_tries": "3"}):
+            r = self.client.put("/api/settings", json=bad)
+            self.assertFalse(r.json()["ok"], bad)
+
+    def test_float_ratio_and_reconcile_roundtrip(self):
+        """额度浮动与对账参数必须能在面板改（2026-10-29 用户：“做成配置项，后期自己调节”）。"""
+        body = {"quota_float_lo": 80, "quota_float_hi": 95,
+                "reconcile_pre_session": False, "reconcile_demote": True,
+                "reconcile_min_coverage_pct": 88, "reconcile_max_demote_ratio_pct": 15}
+        self.assertEqual(self.client.put("/api/settings", json=body).json(), {"ok": True})
+        s = self.client.get("/api/settings").json()
+        for k, v in body.items():
+            self.assertEqual(s[k], v, k)
+        # 面板提交的是百分数，落库得是比例列表
+        conn = connect(self.settings.db_path)
+        raw = conn.execute(
+            "SELECT value FROM app_config WHERE key='quota.float_ratio'").fetchone()[0]
+        conn.close()
+        self.assertEqual(json.loads(raw), [0.8, 0.95])
+
+    def test_float_ratio_and_reconcile_reject_bad_values(self):
+        """越界与类型错必须当场拒绝，不能默默钳到边界值。"""
+        for bad in ({"quota_float_lo": 40},                       # 低于 50
+                    {"quota_float_hi": 120},                      # 高于 100
+                    {"quota_float_lo": 90, "quota_float_hi": 60},  # 下限>上限
+                    {"reconcile_pre_session": "yes"},              # 非布尔
+                    {"reconcile_min_coverage_pct": 30},            # 护栏低于允许范围
+                    {"reconcile_max_demote_ratio_pct": 0}):
             r = self.client.put("/api/settings", json=bad)
             self.assertFalse(r.json()["ok"], bad)
 

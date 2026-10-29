@@ -6,8 +6,12 @@
 （devlog 26）。解耦后靠三条静态断言把这类事故挡在提交前：
 
 1. `astudy.py` 不得 import `study` / `pagesync`
-2. `pagesync.py` 不得出现 `async def` / `await`（它是同步专用）
-3. `pagesync.py` 的引用方只能来自白名单（study / cli / panel）
+2. `study.py` 不得 import `astudy`（2026-10-29 补：反向同样禁止。当时图省事写了
+   `from .astudy import pick_pending_after`，而两个引擎里任何一个模块都可能含 async 函数，
+   一旦引用方拿到未 await 的协程就是 2026-10-25 那类静默事故。共用逻辑已下沉到
+   `pagejs.py`（只查库、不碰 page））
+3. `pagesync.py` 不得出现 `async def` / `await`（它是同步专用）
+4. `pagesync.py` 的引用方只能来自白名单（study / cli / panel）
 """
 
 from __future__ import annotations
@@ -46,6 +50,13 @@ class AsyncEngineIsolationTest(unittest.TestCase):
         bad2 = re.findall(r"^\s*import .*\bpagesync\b", src, re.M)
         self.assertEqual(bad2, [])
 
+    def test_study_does_not_import_async_engine(self):
+        """同步引擎也不得反向 import 异步引擎（2026-10-29）。"""
+        src = _text("adapters/chaoxing/study.py")
+        bad = re.findall(r"^\s*from \.\s*(astudy|a[a-z_]*pagesync)\s+import", src, re.M)
+        self.assertEqual(bad, [], f"study.py 不得 import 异步模块，命中：{bad}")
+        self.assertNotIn("import astudy", src)
+
     def test_pagejs_is_pure_data(self):
         """共用模块里不能出现 page/frame 对象操作——那是同步 API 的入口。"""
         src = _code("adapters/chaoxing/pagejs.py")
@@ -74,11 +85,18 @@ class PageSyncIsSyncOnlyTest(unittest.TestCase):
                          f"未授权模块引用了 pagesync（禁止用于异步引擎）：{unexpected}")
 
     def test_two_engines_expose_same_core_entrypoints(self):
-        """两个引擎都必须有 run 入口且都做时段判定——防止只修一边。"""
+        """两个引擎都必须有 run 入口且同源做同一套判断——防止只修一边。
+
+        2026-10-29 补两项：播放等待上限（B）与 video-done 去重（C）当天就是靠
+        “两条路径不许一新一旧”同时下的，写进断言以免下次又只改异步版。
+        """
         for rel in ("adapters/chaoxing/study.py", "adapters/chaoxing/astudy.py"):
             src = _text(rel)
             self.assertIn("within_daily_window", src, rel)
             self.assertIn("is_plausible_completion", src, rel)
+            self.assertIn("next_wait_limit", src, rel)
+            self.assertIn("video_done_counted", src, rel)
+            self.assertIn("WATCHER_INJECT_TRIES", src, rel)
 
 
 if __name__ == "__main__":

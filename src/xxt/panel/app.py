@@ -540,6 +540,8 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <div class="llmgrid">
     <label>每日时长额度（分钟）<small>0~240，0=不限 · 默认 240 · 只算真播完的视频时长，拟人间隔/加载不算</small><input type="number" id="s_min" min="0" max="240"></label>
     <label>每日任务额度（个）<small>0~60，0=不限 · 默认 60 · 只算真看完的视频</small><input type="number" id="s_task" min="0" max="60"></label>
+    <label>额度浮动下限（%）<small>50~100 · 默认 85 · <b>只作用于上面两个额度的抽样</b>：每次会话在「下限~上限」间抽一个系数乘额度，抽到 85% 就是 204 分钟；少掉的名额当天作废，不累积到次日。账号 ✎ 里填了额度时，浮动作用在账号级额度上</small><input type="number" id="s_fl" min="50" max="100"></label>
+    <label>额度浮动上限（%）<small>50~100 · 默认 100 · 拉到 100/100 = 不再浮动，每天固定刷满（更好刷够，但“每天精确同一个数”是典型机器特征）</small><input type="number" id="s_fh" min="50" max="100"></label>
   </div>
   <h3 style="margin:.6rem 0 .4rem;font-size:.86rem">② 安全阀 <span class="muted" style="font-size:.72rem;font-weight:400">一天最多起几次；比「今日目标」低就会卡住（日志会告诉你要改哪一个）</span></h3>
   <div class="llmgrid">
@@ -570,6 +572,15 @@ padding:.58rem 1.05rem;cursor:pointer;font-size:.9rem;transition:.15s}
   <h3 style="margin:.7rem 0 .4rem;font-size:.86rem">⑥ 浏览器形态 <span class="muted" style="font-size:.72rem;font-weight:400">2026-10-28 新增</span></h3>
   <div class="frow"><label>无头模式<small style="display:block;color:var(--muted);font-size:.72rem">开（默认）：不弹窗口，挂机时桌面干净；关：刷课/抓课程/作业都会弹出浏览器窗口，仅调试或人工核对时用。<b>人工登录始终有头</b>，不受此开关影响。保存后<b>下一次启动浏览器</b>生效</small></label>
 <span class="switch"><input type="checkbox" id="s_hl"><i></i></span></div>
+  <h3 style="margin:.7rem 0 .4rem;font-size:.86rem">⑦ 记账对账 <span class="muted" style="font-size:.72rem;font-weight:400">本地记录以平台标识为准修正；<b>不影响</b>额度/倍速/重试/作业</span></h3>
+  <div class="frow"><label>刷前对账<small style="display:block;color:var(--muted);font-size:.72rem">开（默认）：每次学习会话打开章节树后，先读平台的“已完成”标记归位本地记账，再挑节开刷。<b>作用对象：全部账号的每次学习会话</b>；章节树那一页本来就要打开，<b>零额外页面访问</b>。只把“待学→已完成”单向升级，会话内绝不降级（误判降级会立刻引发整门课重刷）</small></label>
+    <span class="switch"><input type="checkbox" id="s_rc"><i></i></span></div>
+  <div class="frow"><label>允许降级（已完成→待学）<small style="display:block;color:var(--muted);font-size:.72rem"><b>作用对象：只有命令行 chapters 抓章节树</b>（面板不会触发它），学习会话不用它。开：平台标“未完成”而本地记“已完成”时打回待学（能发现虚标进度、避免静默漏刷丢学分）。下面两道护栏任一不过则只报警、不改库</small></label>
+    <span class="switch"><input type="checkbox" id="s_rd"><i></i></span></div>
+  <div class="llmgrid">
+    <label>护栏一 · 覆盖度下限（%）<small>50~100 · 默认 90 · <b>只对“允许降级”生效</b>：本次抓到的节数不足本地已记录节数×此比例 → 判定“树没抓全”，不降级</small><input type="number" id="s_rmc" min="50" max="100"></label>
+    <label>护栏二·单次比例上限（%）<small>1~100 · 默认 20 · <b>只对“允许降级”生效</b>：一次要打回的节数超过本次节数×此比例 → 判定“完成图标未渲染/页面改版”，只报警</small><input type="number" id="s_rmr" min="1" max="100"></label>
+  </div>
   <div style="border-top:1px solid var(--line);margin:.8rem 0"></div>
   <h3 style="margin:.2rem 0 .4rem;font-size:.86rem">🕘 最近配置变更 <span class="muted" style="font-size:.72rem;font-weight:400">每次保存都留痕旧值→新值（溯源用）</span></h3>
   <div id="auditList" style="font-size:.76rem;line-height:1.55"></div>
@@ -889,7 +900,9 @@ const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-
   'plan-delete':'删安排','profile-read':'读平台资料',
   'login-manual':'人工登录','login-auto':'自动登录','login-success':'登录成功',
   'login-blocked':'登录预算用尽',
-  'work-answer':'作业作答','work-review':'作业判分回读'};
+  'work-answer':'作业作答','work-review':'作业判分回读',
+  // 2026-10-29：刷前对账（本地记账归位到平台标识）+ 重播不重复扣额度
+  'reconcile':'记账对账','video-dup-skip':'重播不重复计'};
 // 日志页“类别”筛选（与后端 /api/logs?cat= 的取值一一对应）
 const LOGCAT={'auto':'⏱ 调度','learn':'💻 学习','panel':'🖱 面板操作',
   'work':'📝 作业','warn':'⚠ 仅异常'};
@@ -929,6 +942,7 @@ function loadSettings(){
     s_quiz.checked=!!d.quiz_enabled;
     s_ws.value=d.window_start||'08:00'; s_we.value=d.window_end||'23:00';
     s_min.value=d.daily_minutes??0; s_task.value=d.daily_tasks??0;
+    s_fl.value=d.quota_float_lo??85; s_fh.value=d.quota_float_hi??100;
     s_wm.value=d.work_mode_default||'owner';
     s_mt.value=d.auto_max_tries??2; s_rm.value=d.auto_retry_minutes??15;
     s_cs.value=d.auto_confirm_seconds??25;
@@ -940,6 +954,9 @@ function loadSettings(){
     s_ns.value=d.learn_non_video_streak??4; s_pr.value=d.learn_partial_retries??1;
     s_prr.value=d.learn_partial_retry_ratio_pct??60; s_lb.value=d.learn_login_budget_per_day??2;
     s_nvm.value=d.learn_non_video_marks||'';
+    s_rc.checked=d.reconcile_pre_session!==false;      // ⑦ 刷前对账（默认开）
+    s_rd.checked=!!d.reconcile_demote;                  // ⑦ 允许降级（默认关，只作用于 chapters 命令）
+    s_rmc.value=d.reconcile_min_coverage_pct??90; s_rmr.value=d.reconcile_max_demote_ratio_pct??20;
     renderAudit(d.recent_changes||{rows:[],total:0});
     s_lurl.value=d.llm_base_url||''; s_lmodel.value=d.llm_model||'';
     s_lkeyv.value='';s_lkeyv.dataset.hasKey=d.llm_key_stored?'1':'0';
@@ -1048,9 +1065,12 @@ function saveSettings(){
       ['auto_hard_tries_cap',s_hc],['auto_confirm_seconds',s_cs],['learn_enter_retries',s_er],
       ['learn_max_skip_chapters',s_ms],['learn_non_video_streak',s_ns],
       ['learn_partial_retries',s_pr],['learn_partial_retry_ratio_pct',s_prr],
-      ['learn_login_budget_per_day',s_lb]]){
+      ['learn_login_budget_per_day',s_lb],['quota_float_lo',s_fl],['quota_float_hi',s_fh],
+      ['reconcile_min_coverage_pct',s_rmc],['reconcile_max_demote_ratio_pct',s_rmr]]){
     if(el&&el.value!=='')body[k]=Math.round(+el.value);
   }
+  body.reconcile_pre_session=s_rc.checked;   // ⑦ 只对每次学习会话的刷前对账生效
+  body.reconcile_demote=s_rd.checked;        // ⑦ 只对 chapters 命令的降级生效
   if(s_nvm)body.learn_non_video_marks=s_nvm.value.trim();
   body.auto_reopen_run_now=s_rn.checked;   // Q44：解除今日收工后立刻开跑（默认关）
   body.stealth_headless=s_hl.checked;      // Q36：无头模式（默认开）
@@ -2076,7 +2096,7 @@ def create_app(settings: Settings) -> FastAPI:
                 cat_sql = {
                     "auto": "l.event LIKE 'auto-%'",
                     "learn": "(l.event LIKE 'session-%' OR l.event LIKE 'chapter-%'"
-                             " OR l.event LIKE 'video-%')",
+                             " OR l.event LIKE 'video-%' OR l.event = 'reconcile')",
                     "panel": "(l.event LIKE 'account-%' OR l.event LIKE 'settings-%'"
                              " OR l.event LIKE 'llm-%' OR l.event LIKE 'plan-%'"
                              " OR l.event LIKE 'profile-%' OR l.event LIKE 'login-%'"
@@ -2273,6 +2293,10 @@ def create_app(settings: Settings) -> FastAPI:
         "quota.daily_minutes": "全局·时长额度(分钟)",
         "quota.daily_tasks": "全局·任务额度(个)",
         "quota.float_ratio": "额度浮动比例",
+        "reconcile.pre_session": "刷前对账（作用于每次学习会话）",
+        "reconcile.demote": "对账允许降级（只作用于 chapters 命令）",
+        "reconcile.demote_min_coverage_pct": "降级护栏·覆盖度(%)",
+        "reconcile.demote_max_ratio_pct": "降级护栏·单次比例(%)",
         "rotation.courses_per_day": "每日课程数",
         "rotation.priorities": "课程优先级",
         "quiz.enabled": "弹题AI开关",
@@ -2349,12 +2373,28 @@ def create_app(settings: Settings) -> FastAPI:
 
         auto_cfg = fresh.raw.get("auto") or {}
         learn_cfg = fresh.learn or {}
+        rec_cfg = fresh.reconcile or {}
+        # 面板用百分数两个数呈现，写回时合并成 [lo, hi] 小数列表
+        fr = fresh.quota.get("float_ratio") or [0.85, 1.0]
+        try:
+            float_lo = int(round(float(fr[0]) * 100))
+            float_hi = int(round(float(fr[1]) * 100))
+        except (TypeError, ValueError, IndexError):
+            float_lo, float_hi = 85, 100
         return {
             "quiz_enabled": bool(fresh.quiz["enabled"]),
             "window_start": fresh.pace["daily_window"][0],
             "window_end": fresh.pace["daily_window"][1],
             "daily_minutes": int(fresh.quota["daily_minutes"]),
             "daily_tasks": int(fresh.quota["daily_tasks"]),
+            # 额度浮动：只作用于上面两个额度的上限抽样（作用对象详见配置 [quota].float_ratio 注释）
+            "quota_float_lo": float_lo,
+            "quota_float_hi": float_hi,
+            # ⑦ 记账对账：pre_session 作用于每次学习会话；demote 与两道护栏只作用于 chapters 命令
+            "reconcile_pre_session": bool(rec_cfg.get("pre_session", True)),
+            "reconcile_demote": bool(rec_cfg.get("demote", False)),
+            "reconcile_min_coverage_pct": _i(rec_cfg, "demote_min_coverage_pct", 90),
+            "reconcile_max_demote_ratio_pct": _i(rec_cfg, "demote_max_ratio_pct", 20),
             "work_mode_default": fresh.quiz.get("work_mode_default", "owner"),
             # 守护与节级策略（2026-10-27 用户：“必为配置项，面板可改”）
             "auto_max_tries": _i(auto_cfg, "max_tries", 2),
@@ -2432,6 +2472,24 @@ def create_app(settings: Settings) -> FastAPI:
                     if not isinstance(v, int) or v < 0:
                         return {"ok": False, "error": f"{field} 需为非负整数"}
                     upsert(conn, key, v)
+            # 额度浮动比例（2026-10-29 补入面板）：两个百分数 → 一个比例列表。
+            # 只影响“每日额度上限”的抽样，不影响完成状态/作业/倍速/重试。
+            if "quota_float_lo" in body or "quota_float_hi" in body:
+                flo, fhi = body.get("quota_float_lo"), body.get("quota_float_hi")
+                for nm, v in (("quota_float_lo", flo), ("quota_float_hi", fhi)):
+                    if isinstance(v, bool) or not isinstance(v, int):
+                        return {"ok": False, "error": f"{nm} 需为整数（%）"}
+                if not (50 <= flo <= fhi <= 100):
+                    return {"ok": False,
+                            "error": "额度浮动需为 50~100 之间的两个数，且下限≤上限"}
+                upsert(conn, "quota.float_ratio", [flo / 100.0, fhi / 100.0])
+            # ⑦ 记账对账开关（布尔）：pre_session 作于学习会话，demote 只作于 chapters 命令
+            for field, key in (("reconcile_pre_session", "reconcile.pre_session"),
+                               ("reconcile_demote", "reconcile.demote")):
+                if field in body:
+                    if not isinstance(body[field], bool):
+                        return {"ok": False, "error": f"{field} 需为布尔"}
+                    upsert(conn, key, body[field])
             if "work_mode_default" in body:
                 if body["work_mode_default"] not in ("owner", "reference", "ai"):
                     return {"ok": False, "error": "作业策略仅 owner/reference/ai"}
@@ -2451,6 +2509,9 @@ def create_app(settings: Settings) -> FastAPI:
                 "learn_partial_retries": ("learn.partial_retries", 0, 3),
                 "learn_partial_retry_ratio_pct": ("learn.partial_retry_ratio_pct", 30, 95),
                 "learn_login_budget_per_day": ("learn.login_budget_per_day", 1, 5),
+                # ⑦ 降级两道护栏（只对 chapters 命令的降级生效）
+                "reconcile_min_coverage_pct": ("reconcile.demote_min_coverage_pct", 50, 100),
+                "reconcile_max_demote_ratio_pct": ("reconcile.demote_max_ratio_pct", 1, 100),
             }
             for field, (key, lo, hi) in int_rules.items():
                 if field not in body:

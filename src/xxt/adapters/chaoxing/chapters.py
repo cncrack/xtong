@@ -47,3 +47,6 @@ def parse_chapter_tree(html: str) -> list[dict[str, Any]]:
                 }
             )
     return leaves
+
+# 本地记账与平台标识的对齐逻辑不在此处：它不含任何平台细节（URL/选择器/接口），
+# 属于跨平台通用能力，故放在 `xxt.core.reconcile`；本文件只负责“把页面解析成抽象字段”。

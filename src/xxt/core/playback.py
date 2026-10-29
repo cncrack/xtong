@@ -29,3 +29,25 @@ def is_plausible_completion(*, saw_progress: bool, wall_seconds: float,
     expected = duration / rate
     # 门槛同时封顶 20 秒：长视频不必等满一半，短视频也不会被 20 秒卡住
     return wall_seconds >= min(expected * 0.5, 20.0)
+
+
+# 单节播放等待（B，2026-10-29）。旧实现把 `max_wait` 写死 600 秒，凡是
+# 「视频时长 ÷ 倍速 > 600 秒」的一节必然在 79%~96% 被砍一刀——实测账号#1 一天
+# 6 次中断全是这一类（644/816s、710/741s、716/796s），白跑一次“中断→重载”。
+WAIT_INIT_SECONDS = 600     # 还没收到第一个进度 tick（不知道时长）时的起步上限
+WAIT_SLACK_SECONDS = 120    # 弹性上限的余量：缓冲/加载/弹题耗时都从这里扣
+WAIT_CEIL_SECONDS = 1800    # 绝对上限 30 分钟：再长的视频也不无限等，防卡死
+
+# watcher 注入重试次数（A，2026-10-29）：注入失败最常见的原因是“上一节播完时
+# iframe 刚重建”，等一下再试基本就能成。实测 21:33:19 一次失败直接导致整节重播。
+WATCHER_INJECT_TRIES = 2
+
+
+def next_wait_limit(*, elapsed: float, remaining_content: float, rate: float) -> float:
+    """算出“这一节还应给多久”。两个引擎共用同一份算法，不各写一套。
+
+    = 已过时间 + 剩余内容÷倍速 + 余量，再封顶 `WAIT_CEIL_SECONDS`。
+    倍速未知（<=0）时按 1.0 算，宁可多等也不误砍正常播放。
+    """
+    r = rate if rate and rate > 0 else 1.0
+    return min(WAIT_CEIL_SECONDS, elapsed + remaining_content / r + WAIT_SLACK_SECONDS)

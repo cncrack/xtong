@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import random
 import re
+import sqlite3
+import time
 from typing import Any, Iterable
 
 # video-done 的 detail 形如 `课程名｜知识点标题｜123s`（全角竖线分隔，秒数在末尾）
@@ -73,3 +75,29 @@ def remaining_minutes(budget_minutes: float, done_seconds: int) -> float:
     if not budget_minutes:
         return 0.0
     return budget_minutes - done_seconds / 60
+
+
+def video_done_counted(conn, *, account_id: int, course_name: str, title: str,
+                       day: str | None = None) -> bool:
+    """这一节今天是否已经记过 `video-done`（C，2026-10-29）。
+
+    为什么需要：额度的两个口径都直接数当天的 `video-done` 行（见模块文档），
+    所以**同一节被记两次就是白扣一份额度**。实测 2026-10-29 账号#1：watcher
+    注入失败 → 中断日志读到上一节遗留的“100%” → 误判“值得续播” → 整节重播 →
+    21:33:15 与 21:39:16 两条同样的 `346s`。多花一次真实页面访问，还虚耗额度、
+    挤掉本该学的下一节。
+
+    判据只用 `detail` 里的既有结构（`课程名｜节名｜Ns`），用 `instr` 精确子串匹配
+    而不是 LIKE：节名里可能含 `%`/`_` 这类 LIKE 元字符。查询失败一律按“没记过”
+    处理——宁可多记一次，也不要因为查库异常把真播完的一节丢掉不记账。
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM run_logs WHERE event='video-done' AND account_id=?"
+            " AND ts LIKE ? AND instr(detail, ?) > 0 LIMIT 1",
+            (account_id, f"{(day or time.strftime('%Y-%m-%d'))}%",
+             f"{course_name}｜{title}｜"),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None

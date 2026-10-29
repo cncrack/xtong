@@ -204,9 +204,23 @@ def _account_id_of(conn, needle: str | None) -> int:
     return row["id"]
 
 
+# 章节树入库语句（模块级常量：cmd_chapters 与 tests 共用同一份 SQL，避免测试测的是复刻品）。
+#
+# 职责边界：本语句只**建行与更新元数据**——新行的 status 取平台当次事实，
+# 已存在的行**不在此处改 status**；完成状态的对齐（升级/降级）统一由
+# `xxt.core.reconcile.reconcile_local` 一处处理，避免同一规则在两个地方各写一套。
+CHAPTERS_UPSERT = """
+    INSERT INTO chapters(course_id, platform_chapter_id, name, idx, status)
+    VALUES(?, ?, ?, ?, ?)
+    ON CONFLICT(course_id, platform_chapter_id)
+    DO UPDATE SET name=excluded.name, idx=excluded.idx
+"""
+
+
 def cmd_chapters(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
     from .core.accounts import account_state_path
+    from .core.reconcile import guardrails, reconcile_local
     from .store.db import connect
 
     s = _settings(args)
@@ -224,23 +238,36 @@ def cmd_chapters(args: argparse.Namespace) -> int:
             print(f"[FAIL] {exc}")
             return 1
         _save_username(conn, adapter, account_id)
+
         for ch in chapters:
-            conn.execute(
-                """
-                INSERT INTO chapters(course_id, platform_chapter_id, name, idx, status)
-                VALUES(?, ?, ?, ?, ?)
-                ON CONFLICT(course_id, platform_chapter_id)
-                DO UPDATE SET name=excluded.name, idx=excluded.idx
-                """,
-                (course["id"], ch["platform_chapter_id"], ch["name"], ch["idx"],
-                 "done" if ch["done_on_platform"] else "pending"),
-            )
+            conn.execute(CHAPTERS_UPSERT, (course["id"], ch["platform_chapter_id"],
+                                           ch["name"], ch["idx"],
+                                           "done" if ch["done_on_platform"] else "pending"))
         conn.commit()
+
+        if getattr(args, "no_sync", False):
+            res: dict[str, list | str] = {"promoted": [], "demoted": [], "demote_blocked": None}
+        else:
+            # --demote 是一次性授权，覆盖配置 `[reconcile].demote`（默认关）
+            res = reconcile_local(
+                conn, course["id"], chapters, account_id=account_id,
+                course_name=course["name"],
+                **guardrails(s, allow_demote=True if args.demote else None))
+
         rows = conn.execute(
             "SELECT name, status FROM chapters WHERE course_id=? ORDER BY idx", (course["id"],)
         ).fetchall()
         done = sum(1 for r in rows if r["status"] == "done")
-        print(f"《{course['name']}》共 {len(rows)} 个知识点（平台已完成 {done}）：")
+        print(f"《{course['name']}》共 {len(rows)} 个知识点（本地记已完成 {done}）：")
+        if getattr(args, "no_sync", False):
+            print("[..] --no-sync：只更新了名称与序号，已有行的完成状态未对齐")
+        if res["promoted"]:
+            print(f"[OK] 对账升级 {len(res['promoted'])} 节（待学/已访问→已完成）")
+        if res["demoted"]:
+            print(f"[OK] 对账降级 {len(res['demoted'])} 节（已完成→待学，以平台标识为准）")
+        if res["demote_blocked"]:
+            print(f"[WARN] 降级未执行：{res['demote_blocked']}"
+                  "（确认要按平台打回可加 --demote，护栏不过仍会拦）")
         for r in rows:
             mark = "✓" if r["status"] == "done" else " "
             print(f"  [{mark}] {r['name']}")
@@ -1858,6 +1885,10 @@ def main(argv: list[str] | None = None) -> int:
     p_ch = sub.add_parser("chapters", help="抓取指定课程的章节树并入库")
     p_ch.add_argument("course", help="课程名（支持模糊）或 courseid")
     p_ch.add_argument("--account", default=None, help="账号 id/标签（缺省 default）")
+    p_ch.add_argument("--no-sync", action="store_true",
+                      help="只更新名称与序号，不对齐已有行的完成状态（新抓的节仍按平台状态入库）")
+    p_ch.add_argument("--demote", action="store_true",
+                      help="本次允许“平台标未完成 → 本地打回待学”（覆盖配置 reconcile.demote；仍受两道护栏限制）")
 
     p_learn = sub.add_parser("learn", help="自动学习（不带课程名则按轮换策略自动选课）")
     p_learn.add_argument("course", nargs="?", default=None, help="课程名（支持模糊）或 courseid，可省略")

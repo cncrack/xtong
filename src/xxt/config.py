@@ -52,7 +52,31 @@ DEFAULTS: dict[str, Any] = {
     "quota": {
         "daily_minutes": 240,
         "daily_tasks": 60,
-        "float_ratio": [0.7, 1.0],
+        # 作用范围：**只作用于“每日额度上限”的抽样**。每次学习会话启动时在这个区间
+        # 抽一个系数 × 额度，作为当天预算（时长与任务数各抽一次）；抽到 0.85 就是
+        # 204 分钟，少掉的名额当天作废、不累积到次日。不影响完成状态判定、作业、
+        # 倍速、重试次数。账号 ✎ 里填了额度时，浮动作用在账号级额度上而非全局值。
+        "float_ratio": [0.85, 1.0],
+    },
+    # 记账对齐（对账，2026-10-29 用户要求“刷之前先和平台对账”）。
+    # 背景：平台是唯一事实来源，但旧写回只更名称序号、不回写完成状态，导致
+    # “平台已完成、本地记待学”的缺口永不自愈（实测账号#2《知行合一》70/70 已完成、
+    # 本地仍记 29 节待学），调度因而反复白跑真实页面。
+    # 本段**只影响本地完成状态与平台标识的对齐**，不改变额度/倍速/重试/作业任何行为。
+    "reconcile": {
+        # 刷前对账开关。作用对象：**全部账号的每次学习会话**（xxt learn / mlearn /
+        # 面板 ▶）。章节树那一页本来就要打开，顺手读平台标记，零额外页面访问。
+        # 只会把“本地待学 → 已完成”单向升级，会话内绝不降级。
+        "pre_session": True,
+        # 降级开关（已完成 → 待学）。作用对象：**只有 `xxt chapters` 命令**。
+        # 默认关：学习路径不用它（误判会立刻引发整门课重刷）；需要时显式开。
+        "demote": False,
+        # 护栏 1・覆盖度下限（%）。作用对象：demote 开时的 chapters 命令——
+        # 本次抓到的节数 < 本地已记录节数 × 此比例 → 判定“树没抓全”，禁止降级。
+        "demote_min_coverage_pct": 90,
+        # 护栏 2・单次降级比例上限（%）。作用对象同上：一次要打的节数超过本次
+        # 抓到的节数 × 此比例 → 判定“完成图标未渲染 / 页面改版”，只报警不降级。
+        "demote_max_ratio_pct": 20,
     },
     "rotation": {
         "courses_per_day": [1, 3],
@@ -149,6 +173,7 @@ class Settings:
         self.pace: dict[str, Any] = data["pace"]
         self.quiz: dict[str, Any] = data["quiz"]
         self.quota: dict[str, Any] = data["quota"]
+        self.reconcile: dict[str, Any] = data["reconcile"]
         self.rotation: dict[str, Any] = data["rotation"]
         self.stealth: dict[str, Any] = data["stealth"]
 
