@@ -158,10 +158,15 @@ def main() -> int:
         print(f"\n----- 第 {idx} 节 {section} {row['name']}：{row['done_minutes']}/{row['required_minutes']}"
               f"（{row['state']}）；达标线 {target} -----")
 
-        if not drv.open_section(section):
-            print("[FAIL] 打不开播放页 → 停")
-            code = 2
-            break
+        # 已经停在就是这节的播放页 → **不要重点「开始学习」**（那会让播放页重载：
+        # `m_time` 归 0、`updates` 归 0，视频按 cookie 续播。学时不会丢（Q12/Q13），
+        # 但没必要：重启接手、断点续跑时白换一次会话。
+        frame = drv.player_frame()
+        if frame is None or f"Id={section}" not in (frame.url or ""):
+            if not drv.open_section(section):
+                print("[FAIL] 打不开播放页 → 停")
+                code = 2
+                break
         drv.mute()
         if drv.sample_player().get("paused") is not False:
             print("开播:", drv.play())
