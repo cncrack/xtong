@@ -156,6 +156,27 @@ def test_shorten_url_strips_rnd():
     assert driver.shorten_url("http://x/List.aspx?rnd=9").endswith("List.aspx")
 
 
+# ---------------------------------------------------------------- 视频播完的边界
+
+
+def test_meets_required_ignores_margin():
+    """视频播完时只能按「要求」判，不能按「要求+余量」。
+
+    2026-10-29 1.3 实测：视频 47 分 53 秒，播完列表 46（要求 45，余量线 47）——
+    够不着余量是正常边界（没东西可再播），必须按达标收工，否则每节都报 escalate。
+    """
+    assert driver.meets_required({"done_minutes": 46, "required_minutes": 45}) is True
+    assert driver.meets_required({"done_minutes": 45, "required_minutes": 45}) is True
+    assert driver.meets_required({"done_minutes": 44, "required_minutes": 45}) is False
+    assert driver.meets_required({"done_minutes": None, "required_minutes": 45}) is False
+    assert driver.meets_required({}) is False
+
+    # 与余量判定是两条线：46 过“要求”，但过不了“要求+2”
+    row = {"done_minutes": 46, "required_minutes": 45}
+    assert driver.meets_required(row) is True
+    assert driver.enough_with_margin(row, 2) is False
+
+
 # ---------------------------------------------------------------- 上报状态（Q20 取证）
 
 

@@ -40,7 +40,7 @@ from xxt.adapters.gxks import selectors
 
 CDP = "http://127.0.0.1:9222"
 LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached",
-              "session_lost", "report_bad"}
+              "session_lost", "report_bad", "ended_reached"}
 QUIET_STATES = {"ok"}
 
 
@@ -81,6 +81,10 @@ def make_printer(log_path: Path):
             elif kind == "report_bad":
                 extra = (f" 上报返回 {ev.get('status')}（累计第 {ev.get('total')} 次）"
                          f" → 302=会话已死，5xx=服务端问题")
+            elif kind == "ended_reached":
+                r = ev.get("row") or {}
+                extra = (f" 视频播完且列表 {r.get('done_minutes')}/{r.get('required_minutes')}"
+                         f" ≥ 要求 → 按达标收工（时长不够超跑余量）")
             elif kind == "margin_reached":
                 extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
                          f" → 达标收工（不卡“刚刚好”）")
@@ -181,10 +185,9 @@ def main() -> int:
               "登录后重跑本命令即从这节续播（进度不会丢）。")
         browser.close()
         return 4
-    if out["result"] == "done":
-        # C9/C10：达标必须**真正**停住。`pause()` 只保证此刻停了——本站脚本里
-        # `visibilitychange` 会 `player.play()`，且媒体重建后播放器会自己恢复，
-        # 两者都会把 `m_time` 从原值接着累加（2026-10-29 12:32 实测 43→48）。
+    if out["result"] != "session_lost":
+        # C10：**任何收场都要离开播放页**。不只是达标——`ended`/`escalate` 时页面仍挂着计时链，
+        # 1.1 的 236 分钟就是这么涨出来的。`pause()` 只保证此刻停了，导航走才销毁 `m_time`。
         before = drv.sample_player().get("paused")
         drv.pause()
         page.wait_for_timeout(1500)

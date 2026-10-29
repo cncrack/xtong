@@ -152,18 +152,20 @@ def main() -> int:
             print("⚠ 会话失效（Q20）→ 停。重登后重跑本命令即从下一节续播")
             code = 4
             break
-        if out["result"] != "done":
-            print("⚠ 本节非正常收场（学时不涨）→ 停，不再换节硬跑")
-            code = 1
-            break
 
-        # C10：达标必须真正停表 —— pause 只是“此刻停了”，导航离开才销毁计时链
+        # C10：**任何收场都离开播放页**（不只达标）——`ended`/`escalate` 时计时链还挂着
         before = drv.sample_player().get("paused")
         drv.pause()
         page.wait_for_timeout(1500)
         after = drv.sample_player().get("paused")
         print(f"停表检查：{section} paused {before} → {after}")
         drv.leave_player()
+
+        if out["result"] != "done":
+            print("⚠ 本节非正常收场（学时不涨）→ 停，不再换节硬跑")
+            code = 1
+            break
+
         finished.append({"section": section, "name": row["name"], "done": final.get("done_minutes")})
 
         if idx < args.max_sections:

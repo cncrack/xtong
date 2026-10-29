@@ -196,6 +196,20 @@ def report_summary(reports: list[dict[str, Any]]) -> dict[str, Any]:
     return {"count": len(reports or []), "by_status": counts, "last": tail}
 
 
+def meets_required(row: dict[str, Any]) -> bool:
+    """列表学时是否已达「学时要求」（**不含余量**）。
+
+    单独拎出来是因为 **视频播完（`ended`）时要求与余量可能无法同时满足**：
+    2026-10-29 1.3 实测——视频时长 47 分 53 秒，播完时列表 46（要求 45，余量线 47）。
+    此时已达标且去无可去（没法再超跑），必须按达标收工，而不是转人工。
+    """
+    done_n = (row or {}).get("done_minutes")
+    need_n = (row or {}).get("required_minutes")
+    if not isinstance(done_n, int) or not isinstance(need_n, int):
+        return False
+    return done_n >= need_n
+
+
 def pick_next_section(rows: list[dict[str, Any]], current_id: str | None = None) -> dict[str, Any] | None:
     """按页面顺序挑下一个要学的节：跳过已完成的，从当前节之后开始找。"""
     ordered = sorted(rows, key=lambda r: r.get("idx", 0))
@@ -484,6 +498,12 @@ class GxksDriver:
             elif action == "reload":
                 self.reload_player()
             elif action == "escalate":
+                # 视频播完是**正常边界**，不是异常：`ended` 后站点 `stopLoop()`（实测 m_time 冻在 2816）。
+                # 只要列表已达“要求”（即便够不着余量线），就按达标收工——没东西可再播了。
+                if state == "ended" and meets_required(last_row):
+                    emit("ended_reached", row=last_row)
+                    return {"result": "done", "seconds": now - started, "reloads": self._reloads,
+                            "rebuilds": rebuilds, "last_row": last_row, "reason": "ended_at_required"}
                 return {"result": "escalate", "seconds": now - started,
                         "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
 
