@@ -15,7 +15,9 @@
 - **任何非 `done` 收场**（超时 / 反复 pause / 反复未知）→ 立即停，返回码 1，因为它意味着
   “页面在但学时不涨”，继续换节只会把问题带下去、浪费时间。
 - **总时长上限** `--max-total-hours`：防止异常情况下通宵跑。
-- 每节之间随机歇 25~60 秒：既是拟人化，也给服务端最后一次上报留出落账时间。
+- **节间拟人化**（2026-10-29 用户要求）：默认短歇 45~180 秒，每 `--long-gap-every 3` 节插一次
+  4~10 分钟长歇；`--start-jitter` 可让每日开跑时间随机错峰。只在**时间轴**上加随机性，
+  不动播放行为（不快进、不跳段、不伪造上报）。短歇同时给服务端最后一次上报留出落账时间。
 
 日志：每节一个 `data/debug/watch_gxks_<标签>_<节ID>_<时间戳>.jsonl`（gitignore 内）。
 """
@@ -33,7 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import watch_gxks as wg  # noqa: E402  复用连浏览器 / 事件打印
 
+from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
+from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
 
@@ -71,10 +75,22 @@ def main() -> int:
     ap.add_argument("--progress-every", type=float, default=300.0, help="回读列表间隔秒")
     ap.add_argument("--margin", type=int, default=gdriver.OVERRUN_MARGIN_MINUTES,
                     help="超跑余量：学时 ≥ 要求+余量 才停")
-    ap.add_argument("--gap-min", type=float, default=25.0, help="节间最短歇息秒")
-    ap.add_argument("--gap-max", type=float, default=60.0, help="节间最长歇息秒")
+    ap.add_argument("--gap-min", type=float, default=45.0, help="节间最短歇息秒")
+    ap.add_argument("--gap-max", type=float, default=180.0, help="节间最长歇息秒")
+    ap.add_argument("--long-gap-every", type=int, default=3,
+                    help="每播几节插入一次长歇（0=禁用；拟人化，像人起来喝水）")
+    ap.add_argument("--long-gap-min", type=float, default=240.0, help="长歇最短秒")
+    ap.add_argument("--long-gap-max", type=float, default=600.0, help="长歇最长秒")
+    ap.add_argument("--start-jitter", type=float, default=0.0,
+                    help="开跑前随机等 0~N 秒（每日错峰用，默认 0 不等）")
     ap.add_argument("--port", type=int, default=9222, help="Chrome 调试端口")
     ap.add_argument("--label", default="", help="日志标签（如 甲）；不得写真实姓名")
+    ap.add_argument("--account-label", default="",
+                    help="账本里的账号代号（用于日额度）；缺省用 --label，再缺省 default")
+    ap.add_argument("--course", default=None,
+                    help="只跑指定课程 value（列表页 ddlClass）；缺省跑当前课程")
+    ap.add_argument("--ignore-quota", action="store_true",
+                    help="忽略当日额度（调试用）")
     ap.add_argument("--no-relogin", action="store_true",
                     help="禁用自动重登（即使 data/account.local.json 已配好）")
     args = ap.parse_args()
@@ -89,6 +105,25 @@ def main() -> int:
     wanted = [s.strip() for s in args.sections.split(",")] if args.sections else None
     tag = f"{args.label}_" if args.label else ""
     finished: list[dict] = []
+
+    # ---- 当日额度（本地账本）----
+    # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
+    acc_label = args.account_label or args.label or "default"
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
+    secs_limit = acc.daily_sections if acc else gaccounts.DEFAULT_SECTIONS_PER_DAY
+    mins_limit = acc.daily_minutes if acc else gaccounts.DEFAULT_MINUTES_PER_DAY
+    if not args.ignore_quota:
+        q = gledger.quota_left(acc_label, sections_limit=secs_limit, minutes_limit=mins_limit)
+        print(f"账号 {acc_label} 今日：已 {q['sections']} 节 / {q['minutes']:.0f} 分钟；"
+              f"额度 {secs_limit} 节 / {mins_limit} 分钟 → 还剩 {q['left_sections']} 节 / "
+              f"{q['left_minutes']:.0f} 分钟")
+        if q["exhausted"]:
+            print("[SKIP] 今日额度已用完 → 不跑（明天再继续，或 --ignore-quota 调试）")
+            browser.close()
+            return 0
+        if args.max_sections > q["left_sections"]:
+            print(f"额度限制：本次最多播 {q['left_sections']} 节（原定 {args.max_sections}）")
+            args.max_sections = int(q["left_sections"])
 
     # 自动重登：只读本地凭据文件（gitignore），占位符/缺失 → None = 不启用（掉线即停）
     cred = None if args.no_relogin else glogin.load_credentials()
@@ -117,7 +152,15 @@ def main() -> int:
     print(f"=== 连续播放开始 {datetime.now():%H:%M:%S}"
           f"（最多 {args.max_sections} 节 / {args.max_total_hours:.1f} 小时）===")
 
+    # 拟人化（2026-10-29 用户要求）：节间不再是固定几十秒，改为「每节随机短歇 + 每 N 节一次长歇」。
+    # 只在**时间轴**上加随机性，不碰播放行为（不快进、不跳段、不伪造上报）。
+    if args.start_jitter > 0:
+        jitter = random.uniform(0, args.start_jitter)
+        print(f"错峰：随机等 {jitter:.0f} 秒再开播 …")
+        time.sleep(jitter)
+
     code = 0
+    course_ready = not args.course        # 只需切一次课程
     for idx in range(1, args.max_sections + 1):
         spent_h = (time.monotonic() - started) / 3600
         if spent_h >= args.max_total_hours:
@@ -136,6 +179,14 @@ def main() -> int:
             print("\n[FAIL] 列表读不到行 → 停")
             code = 2
             break
+        # 多课程：只在第一轮切一次；切不过去就停（不猜切换方式，见 driver.select_course）
+        if not course_ready:
+            if not drv.select_course(args.course):
+                print(f"\n[FAIL] 切不到课程 {args.course}（这个账号可能没有这门课，或站点改了切换方式）→ 停")
+                code = 2
+                break
+            course_ready = True
+            print(f"已切到课程 {args.course}")
         # **逐页找节**（Q27）：列表 1/4 共 36 节，只在当前页挑会误报“没有未完成的节”。
         # 找到后 find_section 会停在该节所在页——`read_row` 的回读靠当前页。
         row = drv.find_section(wanted)
@@ -204,10 +255,21 @@ def main() -> int:
             break
 
         finished.append({"section": section, "name": row["name"], "done": final.get("done_minutes")})
+        # 记账：日额度与“今天学了哪几节”的唯一依据（写失败不打断连播）
+        try:
+            gledger.record(account=acc_label, section_id=section, name=row["name"],
+                           minutes=out["seconds"] / 60.0, result="done")
+        except Exception as exc:                            # noqa: BLE001
+            print(f"⚠ 记账失败（不影响播放）：{exc}")
 
         if idx < args.max_sections:
-            gap = random.uniform(args.gap_min, args.gap_max)
-            print(f"歇 {gap:.0f} 秒再切下一节 …")
+            # 拟人化节奏：默认每 3 节插一次 4~10 分钟长歇；其余节间 45~180 秒随机短歇。
+            if args.long_gap_every > 0 and idx % args.long_gap_every == 0:
+                gap = random.uniform(args.long_gap_min, args.long_gap_max)
+                print(f"长歇 {gap / 60:.1f} 分钟（每 {args.long_gap_every} 节一次）再切下一节 …")
+            else:
+                gap = random.uniform(args.gap_min, args.gap_max)
+                print(f"歇 {gap:.0f} 秒再切下一节 …")
             time.sleep(gap)
 
     print("\n=== 本次汇总 ===")
@@ -217,6 +279,10 @@ def main() -> int:
     else:
         print("  （没有完成任何节）")
     print(f"总耗时 {(time.monotonic() - started) / 60:.1f} 分钟")
+    if not args.ignore_quota:
+        q = gledger.quota_left(acc_label, sections_limit=secs_limit, minutes_limit=mins_limit)
+        print(f"今日累计：{q['sections']} 节 / {q['minutes']:.0f} 分钟"
+              f"（额度 {secs_limit} 节 / {mins_limit} 分钟）")
     browser.close()
     return code
 

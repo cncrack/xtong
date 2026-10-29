@@ -365,6 +365,62 @@ class GxksDriver:
                 return row
         return None
 
+    # ---------------------------------------------------------- 课程（多课程）
+
+    def list_courses(self) -> list[dict[str, Any]]:
+        """读课程下拉：`[{value, text, selected}]`（一页就能拿全，不用翻页）。
+
+        【实测 2026-10-29】当前账号只有 1 项（`32 / 军事理论`）。列表页一旦有第二门课，
+        这里会自动多出一项——**调用方不必知道具体课程**。
+        """
+        frame = self.list_frame()
+        if frame is None:
+            return []
+        try:
+            return frame.evaluate(
+                """(sel) => {
+                  const s = document.querySelector(sel);
+                  if (!s) return [];
+                  return Array.from(s.options).map(o => ({
+                    value: o.value, text: (o.text || '').trim(), selected: o.selected }));
+                }""", f"#{selectors.COURSE_SELECT_ID}")
+        except Exception:                                  # noqa: BLE001
+            return []
+
+    def select_course(self, value: str | int) -> bool:
+        """切到指定课程并**回读校验**；校验不过返回 False。
+
+        ⚠ 切换方式**未证实**：当前账号 `ddlClass` 只有一门课、`onchange` 为空，无法确认站点
+        用哪种方式切换（`__doPostBack('ddlClass','')`？换 URL？）。所以这里只做“最低假设”：
+        选中 + 派发 change + 若页面有 `__doPostBack` 就回发一次，然后回读 `selected` 校验。
+        失败由调用方报“该课程切不过去”，**不重试、不猜**（“不能硬闯”的同一原则）。
+        """
+        frame = self.list_frame()
+        if frame is None:
+            return False
+        try:
+            ok = frame.evaluate(
+                """([sel, val]) => {
+                  const s = document.querySelector(sel);
+                  if (!s) return false;
+                  const id = sel.replace(/^#/, '');
+                  const hit = Array.from(s.options).some(o => o.value === String(val));
+                  if (!hit) return false;
+                  s.value = String(val);
+                  s.dispatchEvent(new Event('change', { bubbles: true }));
+                  try { if (typeof __doPostBack === 'function') __doPostBack(id, ''); } catch (e) {}
+                  return true;
+                }""", [f"#{selectors.COURSE_SELECT_ID}", str(value)])
+        except Exception:                                  # noqa: BLE001
+            return False
+        if not ok:
+            return False
+        self.page.wait_for_timeout(self.settle_seconds * 1000)
+        for c in self.list_courses():
+            if str(c.get("value")) == str(value):
+                return bool(c.get("selected"))
+        return False
+
     # ---------------------------------------------------------- 翻页
 
     def current_pager(self) -> dict[str, Any]:

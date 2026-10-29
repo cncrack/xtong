@@ -78,6 +78,11 @@ STATE_NOT_STARTED = "未学习"
 ALLOWED_HOSTS = {"g.alicdn.com"}
 ALLOWED_HOST_SUFFIXES = (".gaoxiaokaoshi.com", ".aliyuncs.com")
 
+# 【实测 2026-10-29 19:58】课程下拉：`<select name="ddlClass" id="ddlClass" onchange="">`。
+# 当前账号**只有 1 项**（`value=32 军事理论`），且 `onchange` 为空 ⇒ 切换方式**未证实**；
+# 见到第二门课时必须重新侦察再改 `driver.select_course()`，不得凭猜。
+COURSE_SELECT_ID = "ddlClass"
+
 # 【实测】分页是 ASP.NET 回发（__doPostBack），不能用 URL 参数翻页
 PAGER_LABEL = ".page .fright li"               # 形如 "1/4"
 PAGER_PREV = "#PageSplit1_BtnPrevious"
