@@ -117,6 +117,22 @@ def test_section_status_pending_is_not_done():
     assert driver.section_status({"state": "unknown"}) == "unknown"
 
 
+def test_enough_with_margin_requires_overrun():
+    """2026-10-29 用户要求：“已完成学时要比学时要求多一点，不能是刚刚好”。
+
+    停在刚刚好（42/42）时，最后一分钟的 updateTime 一旦碰上 503/断网就不会入账，
+    列表会卡在 41/42，表现为“视频播完了却还显示学习中”。
+    """
+    exact = {"done_minutes": 42, "required_minutes": 42}
+    assert driver.enough_with_margin(exact) is False          # 默认余量 2
+    assert driver.enough_with_margin(exact, 0) is True        # 显式要“刚刚好”才退化为等号
+    assert driver.enough_with_margin({"done_minutes": 43, "required_minutes": 42}) is False
+    assert driver.enough_with_margin({"done_minutes": 44, "required_minutes": 42}) is True
+    assert driver.enough_with_margin({"done_minutes": 48, "required_minutes": 42}) is True
+    assert driver.enough_with_margin({"done_minutes": None, "required_minutes": 42}) is False
+    assert driver.enough_with_margin({}) is False
+
+
 # ---------------------------------------------------------------- 切节
 
 
@@ -149,6 +165,7 @@ def test_cache_busted_appends_when_absent():
     assert "?Id=1&rnd=" in out
 
 
-@pytest.mark.parametrize("name", ["watch", "read_row", "open_section", "reload_player", "sample_player"])
+@pytest.mark.parametrize("name", ["watch", "read_row", "open_section", "reload_player",
+                                  "sample_player", "mute", "pause", "leave_player"])
 def test_driver_exposes_thin_io_methods(name):
     assert callable(getattr(driver.GxksDriver, name, None))

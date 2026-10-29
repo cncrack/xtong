@@ -32,6 +32,7 @@ RELOAD_COOLDOWN_SECONDS = 180     # 两次重载之间至少隔 3 分钟，防�
 MAX_RECOVERIES_PER_SECTION = 6    # 单节重载上限，超了转人工
 MAX_PAUSE_RECOVERIES = 3          # 同一节反复被判 paused 时最多拉回几次（C2：不能无限 play）
 NO_REPORT_AFTER_SECONDS = 75      # 上报是 60 秒一拍；超过 75 秒没新增上报 = 网络/上报断了
+OVERRUN_MARGIN_MINUTES = 2        # 达标不能“刚刚好”：学时 ≥ 要求 + 本余量 才停（C11）
 
 # 浏览器侧采样脚本：只读 DOM，不做任何操作
 _PROBE_JS = """() => {
@@ -143,6 +144,21 @@ def section_status(row: dict[str, Any]) -> str:
     if state == "not_started":
         return "not_started"
     return "unknown"
+
+
+def enough_with_margin(row: dict[str, Any],
+                       margin_minutes: int = OVERRUN_MARGIN_MINUTES) -> bool:
+    """达标线：`已完成学时 ≥ 学时要求 + 余量`（C11：**不停在“刚刚好”**）。
+
+    为什么要余量：最后一分钟的 `updateTime` 碰上 503/断网就不会入账（R1 只对单次抖动自愈），
+    停在刚好等于要求时，服务端少记一分钟就卡在 `要求-1`，表现为“视频播完了却还是学习中”。
+    `margin_minutes=0` 时退化为“达到要求即可”。
+    """
+    done_n = (row or {}).get("done_minutes")
+    need_n = (row or {}).get("required_minutes")
+    if not isinstance(done_n, int) or not isinstance(need_n, int):
+        return False
+    return done_n >= need_n + margin_minutes
 
 
 def pick_next_section(rows: list[dict[str, Any]], current_id: str | None = None) -> dict[str, Any] | None:
@@ -355,8 +371,13 @@ class GxksDriver:
 
     def watch(self, section_id: str | int, *, interval: float = 30.0,
               max_seconds: float = 6 * 3600, read_progress_every: float = 600.0,
+              margin_minutes: int = OVERRUN_MARGIN_MINUTES,
               on_event: Any = None) -> dict[str, Any]:
         """守一节：保活 + 重建恢复 + 定期回读达标。
+
+        `margin_minutes`：**超跑余量**（2026-10-29 用户要求）。不要停在“刚刚好”：最后那一分钟的
+        `updateTime` 碰上 503/断网就不会入账，列表会卡在 `要求-1`，变成“视频播完了却还显示学习中”。
+        所以判定线是 `已完成学时 ≥ 要求 + 余量`，而不是 `≥ 要求`。
 
         返回 `{result, seconds, reloads, rebuilds, last_row}`，
         `result` ∈ `done|pending|timeout|escalate`（由调用方决定要不要切下一节）。
@@ -423,10 +444,22 @@ class GxksDriver:
                 last_row = self.read_row(section_id)
                 status = section_status(last_row or {})
                 emit("progress", status=status, row=last_row)
-                if status == "done":
+                # 达标线带余量：平台侧“已完成”与“学时列”会差一分钟，卡在刚好等于要求时
+                # 一旦最后一条上报丢了就永远差 1 分钟（C11）。
+                done_n = (last_row or {}).get("done_minutes")
+                need_n = (last_row or {}).get("required_minutes")
+                enough = enough_with_margin(last_row or {}, margin_minutes)
+                if enough or (status == "done" and margin_minutes <= 0):
+                    if status != "done" and enough:
+                        emit("margin_reached", done=done_n, need=need_n, margin=margin_minutes)
                     return {"result": "done", "seconds": now - started,
                             "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
-                next_read = now + read_progress_every
+                # 收尾阶段加密回读：距目标不足 10 分钟时改每 60 秒读一次，
+                # 否则 5 分钟一回读会把超跑余量拖成“多跑 5~7 分钟”（36 节就是白跑 4 小时）。
+                read_every = read_progress_every
+                if isinstance(done_n, int) and isinstance(need_n, int) and done_n >= need_n - 10:
+                    read_every = min(read_progress_every, 60.0)
+                next_read = now + read_every
 
             self.page.wait_for_timeout(interval * 1000)
 

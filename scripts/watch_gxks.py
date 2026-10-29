@@ -39,7 +39,7 @@ from xxt.adapters.gxks import driver as gdriver
 from xxt.adapters.gxks import selectors
 
 CDP = "http://127.0.0.1:9222"
-LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report"}
+LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached"}
 QUIET_STATES = {"ok"}
 
 
@@ -59,6 +59,8 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=30.0, help="巡检间隔秒")
     ap.add_argument("--max-hours", type=float, default=2.0, help="兜底超时（小时）")
     ap.add_argument("--progress-every", type=float, default=300.0, help="回读列表间隔秒")
+    ap.add_argument("--margin", type=int, default=gdriver.OVERRUN_MARGIN_MINUTES,
+                    help="超跑余量：学时 ≥ 要求+余量 才停（默认 2 分钟，不要“刚刚好”）")
     ap.add_argument("--port", type=int, default=9222, help="Chrome 调试端口（多账号时一账号一个）")
     ap.add_argument("--label", default="", help="日志标签（如 甲/帐户1）；不得写真实姓名")
     args = ap.parse_args()
@@ -94,7 +96,9 @@ def main() -> int:
         print(f"[FAIL] 列表里找不到节 {section}")
         return 2
     status = gdriver.section_status(row)
-    print(f"目标节 {row['name']}：{row['done_minutes']}/{row['required_minutes']} 分钟，状态 {row['state']}（{status}）")
+    target = row["required_minutes"] + args.margin
+    print(f"目标节 {row['name']}：{row['done_minutes']}/{row['required_minutes']} 分钟，状态 {row['state']}（{status}）；"
+          f"达标线 {target} 分钟（要求 + 余量 {args.margin}）")
     if status == "done":
         # C9：已达标节再播只会把学时堆成异常数据
         print("[SKIP] 该节已达标，不播。换一节或指定别的 --section。")
@@ -129,12 +133,16 @@ def main() -> int:
                 extra = f" {r.get('done_minutes')}/{r.get('required_minutes')} {r.get('state')}"
             elif kind == "no_report":
                 extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
+            elif kind == "margin_reached":
+                extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
+                         f" → 达标收工（不卡“刚刚好”）")
             print(f"[{stamp}] {kind}{extra}", flush=True)
         last["state"] = kind
 
     print(f"开始守播（间隔 {args.interval:.0f}s，回读 {args.progress_every:.0f}s，日志 {log_path.name}）")
     out = drv.watch(section, interval=args.interval, max_seconds=args.max_hours * 3600,
-                    read_progress_every=args.progress_every, on_event=on_event)
+                    read_progress_every=args.progress_every, margin_minutes=args.margin,
+                    on_event=on_event)
 
     fh.close()
     final = out.get("last_row") or {}
