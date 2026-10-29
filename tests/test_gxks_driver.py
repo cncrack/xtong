@@ -156,6 +156,19 @@ def test_shorten_url_strips_rnd():
     assert driver.shorten_url("http://x/List.aspx?rnd=9").endswith("List.aspx")
 
 
+# ---------------------------------------------------------------- 上报状态（Q20 取证）
+
+
+def test_report_summary_counts_by_status():
+    """会话失效时靠“上报返回什么状态”分辨要不要人工介入：200 = 服务端照收，302 = 会话已死。"""
+    reports = [{"at": 60, "status": 200}, {"at": 120, "status": 200}, {"at": 180, "status": 302}]
+    s = driver.report_summary(reports)
+    assert s["count"] == 3
+    assert s["by_status"] == {"200": 2, "302": 1}
+    assert s["last"] == [200, 200, 302]
+    assert driver.report_summary([]) == {"count": 0, "by_status": {}, "last": []}
+
+
 # ---------------------------------------------------------------- 切节
 
 

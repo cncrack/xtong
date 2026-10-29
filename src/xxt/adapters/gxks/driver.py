@@ -181,6 +181,21 @@ def enough_with_margin(row: dict[str, Any],
     return done_n >= need_n + margin_minutes
 
 
+def report_summary(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """上报状态码汇总（Q20 取证用）。
+
+    会话失效时最容易分辨的就是这里：上报返回 **200** = 服务端照收（问题在页面侧）；
+    返回 **302** = 被重定向到登录页（会话已死）；**500** = 服务端报错。
+    只统计状态码，不碰 URL 参数与响应体。
+    """
+    counts: dict[str, int] = {}
+    for r in reports or []:
+        key = str(r.get("status"))
+        counts[key] = counts.get(key, 0) + 1
+    tail = [r.get("status") for r in (reports or [])[-5:]]
+    return {"count": len(reports or []), "by_status": counts, "last": tail}
+
+
 def pick_next_section(rows: list[dict[str, Any]], current_id: str | None = None) -> dict[str, Any] | None:
     """按页面顺序挑下一个要学的节：跳过已完成的，从当前节之后开始找。"""
     ordered = sorted(rows, key=lambda r: r.get("idx", 0))
@@ -416,6 +431,26 @@ class GxksDriver:
             if on_event:
                 on_event({"kind": kind, "at": round(time.monotonic() - started), **extra})
 
+        # Q20 取证：只记上报的**状态码**，不记 URL 参数、不记响应体（它们含 SessionId/StudentId）。
+        # 2026-10-29 实测：正常上报返回 200；若会话失效能直接看到 302/500，一眼分辨“谁的问题”。
+        reports: list[dict[str, Any]] = []
+
+        def on_response(resp: Any) -> None:
+            try:
+                if "updateTime" not in (resp.url or ""):
+                    return
+                reports.append({"at": round(time.monotonic() - started), "status": resp.status})
+                del reports[:-200]
+                if resp.status not in (200, 204, 304):
+                    emit("report_bad", status=resp.status, total=len(reports))
+            except Exception:                              # noqa: BLE001
+                pass
+
+        try:
+            self.page.on("response", on_response)
+        except Exception:                                  # noqa: BLE001
+            pass
+
         while time.monotonic() - started < max_seconds:
             now = time.monotonic()
 
@@ -423,9 +458,10 @@ class GxksDriver:
             # 播放帧和列表帧一起消失 → 采样全 null → 只能得到 `unknown`，守播会**静默**转圈
             # 到总超时（2026-10-29 12:49 实测）。掉登录不是“页面慢”，必须立即报出去。
             if at_login_page(self.page.url):
-                emit("session_lost", url=shorten_url(self.page.url))
+                emit("session_lost", url=shorten_url(self.page.url), reports=report_summary(reports))
                 return {"result": "session_lost", "seconds": now - started,
-                        "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
+                        "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row,
+                        "reports": report_summary(reports)}
 
             sample = self.sample_player()
             state = classify(sample, prev, now - prev_at)
@@ -466,7 +502,8 @@ class GxksDriver:
                     if last_updates is None or ups != last_updates:
                         last_updates, last_update_at = ups, now
                     elif now - last_update_at >= NO_REPORT_AFTER_SECONDS:
-                        emit("no_report", stale=round(now - last_update_at), updates=ups)
+                        emit("no_report", stale=round(now - last_update_at), updates=ups,
+                             reports=report_summary(reports))
                         last_update_at = now          # 每 75 秒最多报一次，不刷屏
 
             if now >= next_read:

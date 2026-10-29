@@ -40,7 +40,7 @@ from xxt.adapters.gxks import selectors
 
 CDP = "http://127.0.0.1:9222"
 LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached",
-              "session_lost"}
+              "session_lost", "report_bad"}
 QUIET_STATES = {"ok"}
 
 
@@ -140,7 +140,12 @@ def main() -> int:
             elif kind == "no_report":
                 extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
             elif kind == "session_lost":
-                extra = f" 页面={ev.get('url')} ⇒ 掉登录，学时已停（Q20，需人工重登）"
+                rep = ev.get("reports") or {}
+                extra = (f" 页面={ev.get('url')} 上报状态={rep.get('by_status')}"
+                         f" → 掉登录，学时已停（Q20，需人工重登）")
+            elif kind == "report_bad":
+                extra = (f" 上报返回 {ev.get('status')}（累计第 {ev.get('total')} 次）"
+                         f" → 302=会话已死，5xx=服务端问题")
             elif kind == "margin_reached":
                 extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
                          f" → 达标收工（不卡“刚刚好”）")
