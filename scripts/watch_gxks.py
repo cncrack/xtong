@@ -53,6 +53,46 @@ def connect_page(cdp: str = CDP):
     return browser, None
 
 
+def make_printer(log_path: Path):
+    """事件 → jsonl 落盘，同时终端只打印**有意义的变化**（避免每 30 秒刷一行）。
+
+    返回 `(on_event, close)`。连续调度器（`run_gxks.py`）每节换一个日志文件，也用它。
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = log_path.open("a", encoding="utf-8")
+    last = {"state": None}
+
+    def on_event(ev: dict) -> None:
+        fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        fh.flush()
+        kind = ev.get("kind")
+        if kind in LOUD_KINDS or (kind not in QUIET_STATES and kind != last["state"]):
+            stamp = datetime.now().strftime("%H:%M:%S")
+            extra = ""
+            if kind == "progress" and ev.get("row"):
+                r = ev["row"]
+                extra = f" {r.get('done_minutes')}/{r.get('required_minutes')} {r.get('state')}"
+            elif kind == "no_report":
+                extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
+            elif kind == "session_lost":
+                rep = ev.get("reports") or {}
+                extra = (f" 页面={ev.get('url')} 上报状态={rep.get('by_status')}"
+                         f" → 掉登录，学时已停（Q20，需人工重登）")
+            elif kind == "report_bad":
+                extra = (f" 上报返回 {ev.get('status')}（累计第 {ev.get('total')} 次）"
+                         f" → 302=会话已死，5xx=服务端问题")
+            elif kind == "margin_reached":
+                extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
+                         f" → 达标收工（不卡“刚刚好”）")
+            print(f"[{stamp}] {kind}{extra}", flush=True)
+        last["state"] = kind
+
+    def close() -> None:
+        fh.close()
+
+    return on_event, close
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
@@ -122,42 +162,14 @@ def main() -> int:
 
     tag = f"{args.label}_" if args.label else ""
     log_path = Path("data/debug") / f"watch_gxks_{tag}{section}_{datetime.now():%Y%m%d-%H%M%S}.jsonl"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = log_path.open("a", encoding="utf-8")
-    last = {"state": None}
-
-    def on_event(ev: dict) -> None:
-        fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
-        fh.flush()
-        kind = ev.get("kind")
-        # 只打印有意义的变化，避免每 30 秒刷一行
-        if kind in LOUD_KINDS or (kind not in QUIET_STATES and kind != last["state"]):
-            stamp = datetime.now().strftime("%H:%M:%S")
-            extra = ""
-            if kind == "progress" and ev.get("row"):
-                r = ev["row"]
-                extra = f" {r.get('done_minutes')}/{r.get('required_minutes')} {r.get('state')}"
-            elif kind == "no_report":
-                extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
-            elif kind == "session_lost":
-                rep = ev.get("reports") or {}
-                extra = (f" 页面={ev.get('url')} 上报状态={rep.get('by_status')}"
-                         f" → 掉登录，学时已停（Q20，需人工重登）")
-            elif kind == "report_bad":
-                extra = (f" 上报返回 {ev.get('status')}（累计第 {ev.get('total')} 次）"
-                         f" → 302=会话已死，5xx=服务端问题")
-            elif kind == "margin_reached":
-                extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
-                         f" → 达标收工（不卡“刚刚好”）")
-            print(f"[{stamp}] {kind}{extra}", flush=True)
-        last["state"] = kind
+    on_event, close_log = make_printer(log_path)
 
     print(f"开始守播（间隔 {args.interval:.0f}s，回读 {args.progress_every:.0f}s，日志 {log_path.name}）")
     out = drv.watch(section, interval=args.interval, max_seconds=args.max_hours * 3600,
                     read_progress_every=args.progress_every, margin_minutes=args.margin,
                     on_event=on_event)
 
-    fh.close()
+    close_log()
     final = out.get("last_row") or {}
     print("\n=== 收尾 ===")
     print(f"结果 {out['result']}；用时 {out['seconds'] / 60:.1f} 分钟；重载 {out['reloads']} 次；"
