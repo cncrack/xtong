@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**部署形态与提交确认定稿：练习不拆环境、C 形态面板二次确认、容器对外同源面板、兼容矩阵**）：纯设计会话，零代码改动，结论落 §十三。① 用户实机指出「回填没有保存，要么提交要么退出」→ **作废“容器回填 + 本机交卷”**，练习只能单一环境闭环；新增 **形态 C**（回填断开 CDP → 面板展示整卷 → 人点“确认提交” → 脚本重连、自己 accept confirm、点交卷、读分入库）。② **刷课与练习分开部署**：刷课进容器（无人工中间态），练习按 A/B/C；容器还顺带消掉 U7（v2rayN 系统代理拖死 `updateTime.ashx`）。③ **容器可对外提供同一套面板**，但三个前置：`host` 必须 `0.0.0.0` 且可环境变量覆盖、浏览器切 `managed` 后端（`persistent_launch` 现成且全仓库零调用）、无头下交卷只能由脚本代点。④ **兼容矩阵 8 层**：代码层可零影响（硬规矩“只新增不改 `launch`/`hardened_context`/`Settings` 既有键语义”），真耦合点是**共享的 `config/settings.toml`**（本分支缺 `[reconcile]` 段、`float_ratio` 为旧值，合并回 main 必冲突）与**共享 git 历史**（落后 main 3 个提交 / 21 文件）→ **P0 配置隔离为一切前置**。⑤ 另查实：两目录是同一仓库的两个 worktree；全仓库无 Chrome 路径探测；`.ASPXAUTH` 语义在 `selectors.py:36` 与 `__init__.py:66` 互相矛盾（⇒ 会话判据只认探 `MAIN_PAGE`，不看 `expires`）；无 `.dockerignore`（构建上下文会带走 `data/` 凭据）。
 - 2026-10-30（**第二平台独立控制台 + 课后练习 AI 回填，代码级完成**）：用户三条硬要求（面板点做作业、逐题列出「第几节第几题答案是什么」、日志记操作）＋「**这个面板和超星的是不交叉的，各自独立吧**」。① **独立**：新包 `xxt/panel_gxks/`（不 import `xxt.panel`）、新命令 `xxt gxks-panel`、端口 **8301**（超星 8300）、日志表 **`gx_ops`**（`gxks_questions.db`，schema v2→v3 原地升）、账号读 `accounts.local.json`；**只共用 AI Provider 中心**（Key 配一次两边可用）。② **回填链路** `adapters/gxks/work.py`：开卷 → `tm_arr` 读题 → 题库优先（只认 `standard_source='site'`）→ LLM 兜底 → **真点击** radio（`onclick=check_index(N)`，只置 `checked` 平台算没答）→ 回读校验 → **默认不提交**。③ **端口归属修正**：端口是账号属性，新增 `accounts.resolve_port()`，面板一律显式 `--port`——此前面板不传端口、脚本按 `port_base` 猜 9300，而账号表写 9222，两边各猜一个必然“点了没反应”。④ **安全边界**：`auto_submit` 默认 false；`allowed_types="2"` 只放单选，未实测题型**整卷停**（退出码 4）。验收：`pytest` **442 passed**（新增 `test_gxks_panel.py` 11 条、`test_gxks_work.py`、`test_gxks_ops.py`），面板在 8301 实机起过、`/api/state` 与页面均 200、JS 过 `node --check`；**AI 回填尚未在真实环境跑过**（只完成代码与合成 fixture）。
 - 2026-10-30（**第 2 节练习全链路入库；三处“形态漂移”修复；监听不再靠 URL 名单**）：① **验收**：2.1 国家安全概述 3 题单选（33/34/33），用户作答 `b/a/d`、**100 分**，交卷 `ExamSave.aspx` **54 字段**，入库 `paper_id=2`/`import_id=2`；分类字段**自动填对**（`course_id=军事理论（字幕版）`/`section_id=1298`/`section_name=2.1 国家安全概述`/`paper_label=2.01`）—— 上一条“缺陷 1”修复的实证。② **平台形态已变**：练习落地页 `ExamMain.aspx` → **`ExamTmStepMain.aspx`**（帧 `ExamTmStepHeader`/`ExamTmStepDo`，新增 `PaperSuitInfoId`/`KsSavePaper=1`/`KsCycle=5`），建卷入回移到 **`ExamCreate.ashx`**，交卷后**直跳** `viewExam.aspx?ExamID=…&Clerk_kscj_ID=…`。③ **三处修复**：`_exercise_id()` 认 `ExamID` 别名（回顾页不再带 `Tk_Cl_Id`，否则真实答卷被判“不匹配”）；`_norm_time()` 归一化凌晨不补零的小时（`0:54:42` vs `00:54:42`）；**`_answer_rows()` 按“哪个帧有 `tm_arr`”定位答题帧**，不再硬编码 `frames["ExamDo"]`，命中 0 个或多个一律拒收。④ **方法结论**：前端 JS 只写第一跳（`showExam()` → `chkExam.aspx`），落地点由服务端建卷 302 决定、**代码里查不到** → 监听从 URL 白名单改为“任何新开 page 都抓 + 等建卷中间态跳完”，`_grab_now.py` 改按“帧最多的 page”选址。验收：`pytest` **402 passed**（`test_gxks_practice.py` 16 条）。
 - 2026-10-30（**题库三处缺陷修复 + 路径统一**，代码审查后当场修）：① **分类字段恒为空**——练习页 URL 只带 `Tk_Cl_Id`（练习 ID），**没有节 ID**，原 `parse_capture` 把 `course_id`/`section_id` 硬写 `""`；现新增 `section_index(course_doc)`，从课程列表快照按 `showExam(练习ID)` 反查到 `showframe('节名', 节ID)`（实测 `15263 → 1289 / 1.1 国防概述`），并校验两侧节名一致，不一致直接 raise；`import_gxks_practice.py` 相应可选读 `practice_meta.json`。② **幂等语义错误**——原 `digest` 把 `course_id`/`section_id` 算进去且 enrich UPDATE 在幂等 return **之后**，导致“只补分类”会多出一条快照与一份重复答案；现 `_content_digest` 只取 `exam_start_id`/`exercise_id`/`questions`，enrich 提到幂等判定之前（补分类不算新作答）。③ **跨节同题无处归并**——保留 `UNIQUE(platform_qid, fingerprint)` 存证，新增 `gx_q_items.fingerprint` 索引（`GXKS_SCHEMA_VERSION` 1→2，建表全 `IF NOT EXISTS`，旧库可原地升）与新函数 `bank_items()`（按指纹归并，带 `occurrences`/`platform_qids`），导出不必全表扫。④ **路径跟随项目根**——`ledger.py`/`accounts.py` 原用相对 cwd 的 `data/...`，从别的目录启动会写出第二份账本、额度判定直接失效；改为 `find_project_root()`（`XXT_ROOT` > exe 目录 > 仓库根），新增 `backfill_classification()` 供历史数据补分类（**只填空值**，幂等）。验收：对库里唯一一条答卷补成 `course_id='军事理论（字幕版）'`/`section_id='1289'`，快照数保持 1；`pytest` **398 passed**。
@@ -939,6 +940,74 @@ run_gxks_multi.py            外层：读账号表 → 额度预检 → 端口�
 2. **打包成 exe 后起不了任务**：`scripts/` 不在 exe 包内，`_start()` 会明确回“打包版面板暂不支持起脚本”，不会默默 500。
 3. **UI 是单账号视图**：右上角下拉切换账号，没有同屏多账号对照；账号增删改仍改 `accounts.local.json`。
 4. **`gx_ops` 与超星 `run_logs` 不合并**：两边账号主键不同（`account_label` vs `accounts.id`），合并需维护映射，不值得。
+
+## 十三、部署形态、提交确认与超星兼容边界（2026-10-30 设计定稿）
+
+> 本节只定“怎么干”，未落地的部分**明确标注为未做**，不写进已完成清单。
+
+### 13.1 平台硬事实：练习回填**没有草稿**
+
+用户实机确认：「这个平台里面的回填是没有保存的，要么直接提交，要么退出」。代码侧对得上：草稿路径 `SaveMode=0` 只存在于 `btnCancel_onclick()`，**界面上没有保存按钮**（Q28 实测）。
+
+⇒ **练习作答必须单一环境闭环**。原先设想的“Docker 回填 → 本机交卷”**作废**：没有草稿就没有跨环境的桥。
+
+### 13.2 三种作答形态（差别只在“最后那一下谁点”）
+
+| 形态 | 谁点交卷 | 环境 | 前提 / 风险 |
+|---|---|---|---|
+| **A 半自动** | 人，在同一窗口核对后点 | 本机有头 Chrome | 脚本填完必须**断开 CDP**（Q31：连着会吞 confirm） |
+| **B 全自动** | 脚本 | 容器 / 无头均可 | `auto_submit = true`，答错风险自负 |
+| **C 面板确认**（新增，推荐） | 脚本，但由人在**面板**点「确认提交」触发 | 本机或容器均可 | 回填后断开 CDP → 面板展示整卷 → 人点确认 → 脚本重连、注册 dialog accept、点交卷、读分入库 |
+
+C 的两条硬约束：
+
+1. **窗口期内页面不能关、不能刷新**——无草稿，关了答案就没了；
+2. 点确认后**先回读校验**（radio 是否仍被选中），对不上就重新回填再交，**不把“填了但丢了”当成功**。
+
+### 13.3 刷课与练习分开部署（不是一件事劈两半）
+
+- **刷课**：播放 → 达标 → 记账 → 歇，无人中间态 → **天然适合容器**，全自动。
+- **练习**：有“人点交卷”这个必须中间态 → 按 13.2 的 A/B/C 三选一。
+- 容器带来的**额外收益**：U7（宿主机 v2rayN 重启写回系统代理，把 `updateTime.ashx` 拖成 503、学时真丢）**天然消失**——容器有独立网络栈，不继承 Windows 系统代理。
+
+### 13.4 容器对外提供同一套面板（可行，三个前置）
+
+同源：容器内 `python -m xxt.cli gxks-panel`，宿主映射 8301，浏览器打开即**同一个 UI、同一套 API**。前置：
+
+1. **监听地址**：`serve()` 读 `[panel] host`，现为 `127.0.0.1` → 容器只绑回环，`-p 8301:8301` **转不进去**。必须 `0.0.0.0`，且要能由 `XXT_PANEL_HOST` / `XXT_PANEL_PORT` 覆盖（否则又得改共享 settings.toml）；
+2. **浏览器归谁管**：容器里没有宿主 Chrome，`connect_over_cdp(127.0.0.1)` 连的是容器自己 → 必须切 `managed` 后端（自己 `persistent_launch`，profile 落挂卷的 `data/profiles/<label>`）；
+3. **“看得见的窗口”**：无头容器里没人能点交卷 → 只能走 B 或 C；真要窗口需 noVNC，本阶段不排期。
+
+### 13.5 与超星的兼容矩阵
+
+| 层 | 会不会冲突 | 依据 / 对策 |
+|---|---|---|
+| 代码模块 | **不会**（前提“只新增不改”） | `persistent_launch()` 已存在且**全仓库零调用**，本是给本平台留的；`hardened_context(**kw)` 签名不动。**禁止**改 `launch()` / `hardened_context()` 默认行为，**禁止**改变 `Settings` 既有键语义 |
+| 配置 | **会，且已出现过** | 本分支 `config/settings.toml` 缺整个 `[reconcile]` 段、`float_ratio` 仍为 `[0.7,1.0]`（main 为 `[0.85,1.0]`）→ 靠 **P0** 解决 |
+| 端口 | 不会撞（8300/8301） | 但 `[panel] host/port` 在共享文件里，容器需 `0.0.0.0` → 靠 P0 + 环境变量 |
+| 数据 | 不会 | `xxt.db` vs `gxks_questions.db`；`run_logs` vs `gx_ops`；`data/` 各 worktree 一份 |
+| 镜像 | 不冲突，但会“变胖” | `pip install .` 装整个包，本平台镜像也带超星代码；运行命令不同即可，可接受 |
+| git 历史 | **会冲突** | `feat/gxks` 落后 main 3 个提交（缺 `core/reconcile.py` 等 21 文件），合并会在 `[platform]`、`cli.py`、`test_panel.py` 处冲突 → P0 后做一次 `merge main` 对齐 |
+| Docker 文件 | 不会 | 新增 `Dockerfile.gxks` / `docker-compose.gxks.yml`，不动超星那份 |
+| `.dockerignore` | ⚠ 需用户点头 | 当前**不存在**：构建上下文会把 `data/`（真实凭据）、`.venv/`、`.git/` 传给 daemon，构建变慢且凭据外传。加它属共享改动 |
+
+### 13.6 落地路线（P0 是地基）
+
+| 阶段 | 产出 | 工时 | 不做的后果 |
+|---|---|---|---|
+| **P0 配置隔离** | `config/settings.local.toml`（gitignored）+ `Settings` 在 toml 之后、DB 覆盖层之前加一层 `_deep_merge`（现成函数复用）+ `XXT_PANEL_HOST/PORT` | 1h | Docker 里面板直接访问不到；合并回 main 必改到超星 |
+| **P1 浏览器后端** | `[gxks] browser_backend = "cdp" \| "managed"` 统一入口 | 2h | 容器里起不了浏览器 |
+| **P2 面板接管登录** | `/api/browser/start\|stop`、`/api/login`、账号卡“会话”列（探 `MAIN_PAGE`，**不看 cookie `expires`**） | 2h | 仍需手敲 `chrome.exe` |
+| **P3 Docker 交付** | `Dockerfile.gxks` + `docker-compose.gxks.yml`（8301）+ `.dockerignore` | 1.5h | 无法一步起容器 |
+
+部署当天 5 步：① 装 Docker ② 放 `data/accounts.local.json` 与 `settings.local.toml` ③ 首次登录（容器内 headless；**仅遇验证码需人工**：拷入本机已登录 profile）④ `docker compose -f deploy/docker-compose.gxks.yml up -d` ⑤ 开 `http://<IP>:8301`。
+
+### 13.7 未验证 / 风险（不假装做完）
+
+1. **C 形态与 `managed` 后端均未实现**，本节是设计，不是已完成功能；
+2. **无头容器里的登录成功率未知**：可能触发验证码（站点侧规则未证实），届时只能拷 profile 兜底；
+3. **`.ASPXAUTH` 语义两处矛盾未裁决**（`selectors.py:36` 会话级 vs `__init__.py:66` 持久 cookie）→ 一律不据 `expires` 判活，只认探活结果；
+4. **P0 撤回 settings.toml 后本工作树行为不变**这件事本身需要一次实跑验证（面板起得来、8301 可访问、`settings.local.toml` 生效）。
 
 
 
