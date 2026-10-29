@@ -89,3 +89,42 @@ def test_green_selected_is_not_official_answer(capture):
     capture["review_html"] = capture["review_html"].replace('class="red"', 'class="green"')
     answer = parse_capture(**capture)["questions"][0]["answer"]
     assert answer["picked"]["keys"] == ["a"] and answer["standard"]["keys"] == ["b"]
+
+
+def test_review_page_accepts_examid_alias(capture):
+    """交卷后站点直接跳 `viewExam.aspx?ExamID=…&Clerk_kscj_ID=…`（不再带 `Tk_Cl_Id`）。
+
+    2026-10-30 实测第 2 节：只认 `tk_cl_id` 会把真实答卷判成“不匹配”而拒收。
+    """
+    url = "http://example.test/viewExam.aspx?ExamID=exercise-1&Clerk_kscj_ID=result-1"
+    capture["stage2"] = {"exam_pages": [{"url": url}]}
+    capture["review_meta"] = {"final_url": url}
+    assert parse_capture(**capture)["exercise_id"] == "exercise-1"
+
+
+def test_unpadded_hour_matches_review_time(capture):
+    """凌晨时段站点写 `0:00:00`、回顾页写 `00:00:00`，不能因此判成旧答卷误拒。"""
+    capture["stage1"]["url"] = capture["stage1"]["url"].replace("12:00:00", "0:00:00")
+    capture["review_html"] = capture["review_html"].replace("2026-01-01 12:00:00",
+                                                            "2026-01-01 00:00:00")
+    got = parse_capture(**capture)
+    assert got["start_time"] == "2026/01/01 0:00:00"
+    assert got["questions"][0]["answer"]["standard"]["keys"] == ["b"]
+
+
+def test_answer_frame_located_by_structure_not_name(capture):
+    """帧名属于模板细节：`ExamDo` 与 `ExamTmStepDo` 都必须能认出来。"""
+    capture["stage1"]["frames"] = {
+        "topFrame_ExamTmStepHeader": {"text": "2.01"},
+        "mainFrame_ExamTmStepDo": capture["stage1"]["frames"]["ExamDo"],
+    }
+    got = parse_capture(**capture)
+    assert got["questions"][0]["qid"] == "q-1"
+
+
+def test_two_answer_frames_rejected(capture):
+    """两个帧都有 `tm_arr` 时无法判断哪个是本次答卷，必须拒收。"""
+    rows = capture["stage1"]["frames"]["ExamDo"]
+    capture["stage1"]["frames"]["ExamView"] = rows
+    with pytest.raises(ValueError, match="答题帧"):
+        parse_capture(**capture)

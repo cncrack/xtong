@@ -291,8 +291,18 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 | 13 | `tm_arr` 的选项串用 **分号 `;`** 拼接（不是竖线），`tm_arr[4]` 是选项数 | 拆分后必须自校验“项数 == `tm_arr[4]`” |
 | 14 | 交卷前「成绩分析」的课后练习分类是 **空表**；交卷后**出现一行**（试卷名 + 起止时间 + 得分 + 及格 + 试题解析/成绩分析入口） | **不交卷 = 不判分 = 不留成绩**（反证已确立）；但要进回顾页，必须真交卷 |
 | 15 | 页面开着到 0 分会自动交卷（`startclock → btnSumbit_onclick`）；**关标签页不能停表**（服务端已记 `StartTime`） | 练习通道要算好时长再进；“看一眼”不是免费操作 |
+| 16 | ⚠ **前端 JS 只写第一跳**：列表页 `showExam(p_ExamId)` 实为 `confirm("确定要参加这场练习吗?")` → `window.open("../ExamList/chkExam.aspx?ExamID="+id+"&SiteType=2&IsContinue=0", 'exam', …)`。**`ExamTmStepMain.aspx` 在全站前端代码里 0 命中**——它是 `chkExam` 经服务端 `ExamCreate.ashx` 建卷后 302 的落地点 | “从网页代码里穷举练习页 URL”**做不到**；2026-10-30 首版用 URL 白名单监听，因此两轮都漏抓 |
+| 17 | **三个比 URL 稳定的锚点**：① `confirm("确定要参加这场练习吗?")` 的文案 ② `window.open` 第 2 参窗口名 **`'exam'`** ③ `chkExam.aspx?ExamID=…&SiteType=2&IsContinue=0` | 监听与识别应锚定这三个，而不是落地点 URL |
+| 18 | ⚠ **帧名换过一轮，字段名没换**：普通练习 `ExamMain/ExamHeader/ExamDo` → 单题步骤练习 `ExamTmStepMain/ExamTmStepHeader/ExamTmStepDo`；而 `tm_arr`、`tmda_N`、`ksid_N`、`frmExam.submit()` → `ExamSave.aspx` **全部不变** | 解析层只认“哪个帧里有 `tm_arr`”，不认帧名；`practice.py` 的 `_answer_rows()` 即按此定位，命中 0 个或多个答题帧一律拒收 |
+| 19 | 2026-10-30 交卷后**直接跳** `viewExam.aspx?ExamID=<练习ID>&Clerk_kscj_ID=<成绩单ID>`（不再经 `ExamMessage.aspx`）；回顾页把练习 ID 写成 **`ExamID`** 而非 `Tk_Cl_Id`；凌晨时间 `StartTime=0:54:42` vs 回顾页 `00:54:42`（小时不补零） | 解析层须同时认 `ExamID` 别名并做时间归一化（`practice.py` 的 `_exercise_id()` / `_norm_time()`），否则真实答卷会被判成“不匹配 / 开始时间不一致”而拒收 |
 
 **结论边界**：本节是**一次成功交卷**的样本（单选 3 题 × 100 分），其余题型的渲染、判分与回填方式仍属未知；字号、颜色等展示层判断一律不可替代结构化解析。
+
+**形态会再变，所以别按名字认页面**（2026-10-30 两次漏抓换来的原则）：
+
+1. **不维护 URL 白名单**。练习页落地点由服务端建卷接口决定，前端代码里查不到；白名单只能追着改。监听改为“任何新开的 page 都抓”，只排除已知非练习页（`Login.aspx` / `MainPage.aspx` / `LibraryStudyList.aspx` / `Error.aspx`），并对建卷中间态（`chkExam.aspx`、`ExamCreate.ashx`）多等一次跳转。
+2. **不按帧名取数**。帧名是模板细节（已换过一次），`tm_arr` / `span.tmda` 这类字段名才是真锚点。
+3. **静态 JS 能查的是“第一跳与入口”，查不到“终点”**。所以每次形态变化都该回到列表页重读 `showExam()` / `showframe()` / `js/main.js` 三个入口，确认第一跳没改，再由实际抓到的落地点反推新模板 —— 而不是去猜 URL 命名规则。
 
 
 ---
@@ -416,6 +426,10 @@ https://api.github.com/repos/EchoPing07/gaoxiaokaoshi-helper/contents
 → 修正后的分层（这是最终版）：**静态/内容页可走 `httpx`（带重试）；登录与登录后的业务页统一走真浏览器**——因为在浏览器里 `Default.aspx` 的分流 JS 会自动完成，而纯 HTTP 要自己复刻“解析 JS 分流规则 + 按屏幕宽度选页 + 处理 302”，不划算且易出自洽破绽。工作量按这个分层重估（§0.2 定的人天仍不立刻下调，因为登录后的页面还未实测）。
 → **边界修正**：观测到 503/截断，但仅凭空 body、缺少 WAF 头或少量 UA 对比不能确定原因，也不能排除风控。遇此类响应有限退避，不绕过、不反复请求来判断阈值。
 
+⚠ **2026-10-30 补充：另一类 503 来自本机，不是站点**。用户点「参加练习」后连续 `chrome-error://chromewebdata/`，一度怀疑时间不对。双向计时探针找到真因：系统代理 `127.0.0.1:10808`（v2rayN / xray，全局模式）把国内站点绕到境外节点，**单次请求 24 秒**（`Login.aspx` 直连 279ms / 走代理 23517ms，慢 80 倍）→ `ExamCreate.ashx` 写库超时。清除系统代理后 `ProxyEnable=0`、直连 323ms，故障消失。
+
+⇒ 排查顺序应固定为：**先验本机出口（直连 vs 代理计时对比）→ 再看页面错误码 → 最后才怀疑站点**。对刷课影响更大：`updateTime.ashx` 每 60 秒上报一次，每次拖 24 秒会让上报节奏崩掉、学时真丢，**刷课前必须确认该域名直连**。
+
 ### 7.4 登录形态与跳转链（原 A2/A3 已全部答完，A 级）
 
 **凭据形态**（用户 2026-10-27 确认：“**学号加密码，没有看到图形验证码**”）：
@@ -463,6 +477,8 @@ else                         location.href = "Loginb.aspx";   // 大屏版
 ## 八、变更记录
 
 > 以下旧记录保留历史原貌；其中“客户端零检测”“503 非 WAF”等绝对结论已由本轮证据边界修正，不作为当前事实引用。
+
+- 2026-10-30（二）：**第 2 节练习全链路复验，并确认“练习页形态会变、前端代码查不到终点”**。① 落地页已由 `ExamMain.aspx` 换成 **`ExamTmStepMain.aspx`**（帧名 `ExamTmStepHeader` / `ExamTmStepDo`，新增参数 `PaperSuitInfoId` / `KsSavePaper=1` / `KsCycle=5`），新建考卷入回改为 **`ExamCreate.ashx?Tk_Cl_Id=…&Clerk_id=…&SiteType=2`**；② 交卷后**不再经 `ExamMessage.aspx`**，直跳 `viewExam.aspx?ExamID=<练习ID>&Clerk_kscj_ID=<成绩单ID>`，且凌晨 `StartTime` 小时**不补零**；③ 最重要的方法论结论：列表页 `showExam()` 源码只写第一跳 `chkExam.aspx`，**`ExamTmStepMain` 在全站前端代码里 0 命中**（服务端 `ExamCreate.ashx` 建卷后 302 产生）→ “从网页代码里穷举练习页 URL”不可行，监听已改为“任何新开 page 都抓”。§2.11 新增第 16~19 条与“形态会再变”三原则。凭据与真名不入档。
 
 - 2026-10-30：**课后练习页与答卷回顾全量实测（新增 §2.11，15 条 A 级事实）**。用户授权下先“把页面全部代码读一下”（3 个 HTML + 15 个外链 JS 全量落盘），再用“注入一次记录器 → 立即断开 → 事后收回”拿到真实操作序列（**不用持续 CDP 连接**——那会吞掉交卷链路上的 `confirm`）。最重要的七条：① 落地 frameset 6 帧，作答在 `ExamDo`、按钮与计时在 `ExamHeader`；② **`.green` 只是染色**，考生答案与标准答案在同一 `<dd>` 里相邻且都可能带 `.green` → 必须按标签定位（**推翻**上下游“绿=正确答案”的直觉用法）；③ **题型字典 14 种**（1/2/3/4/5/52/53/54/70/71/72/73/75/77），此前只知道“题型码 2 = 单选”；④ 交卷目标 `ExamSave.aspx`、52 个表单字段、答案打包为 XML 明文，**无真加密**；⑤ 成绩单真实入口 `ExamList/ExamPage/ViewExam.aspx?Clerk_Kscj_ID=`（**少 `ExamPage/` 跳 `Error.aspx`**）；⑥ 交卷后成绩分析才出现记录 → **不交卷不留成绩**反证确立；⑦ 验证了“逐题得分合计 == 总得分、逐题满分合计 == 试卷总分”。凭据与真名不入档。
 - 2026-10-29（四）：**播放页与计时机制实测（新增 §2.10）**。用户授权后进入 1.1 真实播放约 7 分钟（学时 0→10 分钟、状态「未学习」→「学习中」）。拿到 12 条事实，最重要的三条：① 计时是**纯墙钟** `m_time`（每秒 +1，**不读** `video.currentTime`），**每 60 秒**通过 `updateTime.ashx?pTime=<累计秒>` 上报一次；② `visibilitychange` 切后台即 `player.pause()` 并停表；③ **全页无机器人检测**（`checkRate` 名不副实、`disable.js` 只禁右键/禁 F12、无指纹 SDK、无鼠标键盘活跃度判定）。同时**修正 §2.3 两处历史说法**（不是“服务器时钟同步”、不是“按课程表分钟数 seek”）。负向对照：**打开不播 5 分钟 → 学时仍为 0**。凭据值（学号、会话 ID、`playauth`）一律不入档。

@@ -25,17 +25,22 @@ def main() -> int:
              "review_html": "exam_html/viewExam.html"}
     # 可选：课程列表页快照。有它才能把节 ID 与课程名填进答卷（练习页 URL 里没有节 ID）。
     optional = {"course_doc": "practice_meta.json"}
+    files = {**names, **optional}
     try:
-        source = {k: (args.capture_dir / v).read_bytes() for k, v in names.items()}
-        for key, filename in optional.items():
-            extra = args.capture_dir / filename
-            if extra.exists():
-                source[key] = extra.read_bytes()
+        source = {}
+        for key, filename in files.items():
+            path = args.capture_dir / filename
+            if not path.exists():
+                if key in optional:
+                    continue
+                raise OSError(f"缺少必需文件 {filename}")
+            source[key] = path.read_bytes()
         parsed = {k: json.loads(v.decode("utf-8")) if k != "review_html" else v.decode("utf-8")
                   for k, v in source.items()}
         bundle = parse_capture(account_label=args.account_label, **parsed)
         # 只存来源文件名及指纹，不把整页姓名/账号/ViewState 等复制到正式题库。
-        bundle["source_files"] = {names[k]: hashlib.sha256(v).hexdigest() for k, v in source.items()}
+        bundle["source_files"] = {files[k]: hashlib.sha256(v).hexdigest()
+                                  for k, v in source.items()}
         summary = {"questions": len(bundle["questions"]), "got_score": bundle["got_score"],
                    "standards": [q["answer"]["standard"] for q in bundle["questions"]]}
         if args.dry_run:

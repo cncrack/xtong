@@ -61,6 +61,29 @@ def _params(url: str) -> dict[str, str]:
     return {k.lower(): v[0] for k, v in parse_qs(urlparse(url).query).items()}
 
 
+def _exercise_id(params: dict[str, str]) -> str:
+    """练习 ID：练习页写 `Tk_Cl_Id`，答卷回顾页写 `ExamID`，两者是同一个值。
+
+    2026-10-30 实测：交卷后站点直接跳到
+    `viewExam.aspx?ExamID=14669&Clerk_kscj_ID=22359501`（不再经过带 `Tk_Cl_Id`
+    的交卷成功页），只认 `tk_cl_id` 会把真实答卷判成“不匹配”而拒之门外。
+    """
+    return params.get("tk_cl_id") or params.get("examid") or ""
+
+
+def _norm_time(value: str) -> str:
+    """把 `2026/10/30 0:54:42` 与 `2026-10-30 00:54:42` 归一成同一串。
+
+    站点在凌晨时段用**不补零的小时**（`0:54:42`），回顾页却写 `00:54:42`；
+    直接比字符串会把合法答卷判成“开始时间不一致”。
+    """
+    m = re.match(r"\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})", value or "")
+    if not m:
+        return (value or "").strip().replace("/", "-")
+    year, month, day, hour, minute, second = m.groups()
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{minute}:{second}"
+
+
 def _labeled(node: Tag, label: str) -> Tag | None:
     for span in node.select("span.tmda"):
         if span.get_text(strip=True) == label:
@@ -80,6 +103,21 @@ def _choice(value: Tag | None, keys: list[str]) -> dict | None:
     return {"kind": "single", "keys": [selected] if selected else [], "text": shown}
 
 
+def _answer_rows(frames: dict) -> list:
+    """取答题帧的 `tm_arr`：不认帧名，只认结构。
+
+    站点在不同练习模板下换过帧名：普通练习是 `ExamDo`，2026-10-30 实测的单题步骤
+    练习是 `ExamTmStepDo`（`ExamTmStepMain.aspx` 的 frameset）。帧名属于模板细节，
+    `tm_arr` 才是真锚点，因此按“哪个帧里有非空 tm_arr”定位；命中零个或多个都
+    视为快照不完整，宁可拒收也不猜。
+    """
+    hits = [f["tm_arr"] for f in frames.values()
+            if isinstance(f, dict) and isinstance(f.get("tm_arr"), list) and f["tm_arr"]]
+    if len(hits) != 1:
+        raise ValueError(f"提交前快照应恰有一个答题帧，实际命中 {len(hits)} 个")
+    return hits[0]
+
+
 def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
                   stage2: dict, review_meta: dict, review_html: str,
                   course_doc: dict | None = None) -> dict:
@@ -97,10 +135,10 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
     result_id = review.get("clerk_kscj_id")
     matches = [p for p in stage2.get("exam_pages", [])
                if _params(p["url"]).get("clerk_kscj_id") == result_id
-               and _params(p["url"]).get("tk_cl_id") == start.get("tk_cl_id")]
+               and _exercise_id(_params(p["url"])) == start.get("tk_cl_id")]
     if not result_id or len(matches) != 1:
         raise ValueError("答卷回顾与交卷成功页不匹配")
-    rows = stage1["frames"]["ExamDo"]["tm_arr"]
+    rows = _answer_rows(stage1["frames"])
     soup = BeautifulSoup(review_html, "html.parser")
     blocks = soup.select('div[id^="ddTm_"]')
     if not rows or len(rows) != len(blocks) or len(rows) != len(questions_doc["questions"]):
@@ -158,7 +196,7 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
         })
     body = soup.get_text(" ", strip=True)
     time_match = re.search(r"答卷时间\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", body)
-    if not time_match or time_match[1] != start.get("starttime", "").replace("/", "-"):
+    if not time_match or _norm_time(time_match[1]) != _norm_time(start.get("starttime", "")):
         raise ValueError("答卷开始时间不一致，不能把旧答卷关联到新作答")
     total = re.search(r"总得分\s*(\d+(?:\.\d+)?)", body)
     maximum = re.search(r"试卷总分\s*(\d+(?:\.\d+)?)", body)
