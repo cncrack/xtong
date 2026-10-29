@@ -19,7 +19,7 @@
 
 - **独立排期线，允许隔离并行**：用户 2026-10-28 明确纠正“可以同时开发”，且“超星肯定要保持现状”，已批准同仓库独立分支 + 独立工作树。旧“不并行推进”和“必须先等超星验收”规则被本次授权替代；两平台不互相借用实测结论。
 - **规则先于动手**：用户 2026-10-27 原话：「**做好规则再动手**。」→ 本文与 `gaoxiaokaoshi.md` 就是"规则"的载体；规则没落地成文之前，不写一行 adapter。
-- **当前状态**（2026-10-29 更新）：首版需求已确认（视频学习 + 多账号管理与调度 + 章节课后题 AI 辅助回填、人工确认提交；正式考试与独立题库练习后置），技术实施方案已写入 §十一。公开入口已核实：HTTPS 不可达，登录表单 `POST http://www.gaoxiaokaoshi.com/HidLogin.aspx`。**尚未实现新站 adapter，尚未完成登录后只读核实**。
+- **当前状态**（2026-10-30 更新）：首版需求已确认（视频学习 + 多账号管理与调度 + 章节课后题 AI 辅助回填、人工确认提交；正式考试与独立题库练习后置），技术方案见 §十一。已落地并实测：**刷课 adapter**（节级达标、守播、翻页回读、续播/补播）、**多账号骨架 + 运行账本**（`run_gxks_multi.py`）、**课后练习题库离线回收 → 累加入库**（§11.4 的 `gx_q_*`，首批真实答卷 1 卷 3 题 100 分已入库且幂等）。**仍未做**：在线 AI 回填与人工确认提交、面板、题库检索与 Excel 导出。
 - **操作路线**：真实浏览器 + 正常页面控件 + 低频操作，不预先逆向 POST。WebForms、iframe 和 JS 分流支持这一路线，但不能据此断言“没有 API”或“不可能检测自动化”。平台证据见 `gaoxiaokaoshi.md` §7.4 / §7.5。
 
 ### 1.1 需求与功能范围（首次成文：2026-10-27，根据用户提供的登录后框架页）
@@ -276,6 +276,16 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**课后练习题库打通：离线回收 → 结构化累加入库**）：用户要求“题目 / 题型 / 选项 / 答案都要记录，表结构要有足够扩展性，后期按题目归类导出 Excel”。落地四件：① `store/schema_gxks.py` 独立迁移（独立版本键 `meta.gxks_schema_version`，**不动共享 `SCHEMA_VERSION`**，超星库零新增表列；`open_question_bank()` 拒绝已有 `accounts` 表的业务库，防路径选错污染旧库）② `store/gxks_questions.py` 幂等累加导入（同卷同 `digest` 二次导入返回 `inserted=false`；题号集合或分值变化整体回滚；题目版本共享、作答证据按 `import_id` 追加，**不覆盖旧答案**）③ `adapters/gxks/practice.py` 交叉校验解析（AttemptId / 练习 ID / 结果 ID、题数与题 ID、选项数 == `tm_arr[4]`、题干与选项顺序、开始时间、逐题得分合计 == 答卷总得分、逐题满分合计 == 试卷总分；**只接受已实测的 `type_code=2`**，其余题型直接拒绝而不是猜）④ `scripts/import_gxks_practice.py`（`--dry-run`；只存来源文件 sha256）。**关键决策**：表结构按“题目版本 + 部件表 + 作答证据”三层拆分，新题型只加部件、**不改表结构**（对应 §11.4）；答案按 `account_label` 隔离，绝不跨账号复用。验收：首批真实答卷 `1 卷 / 3 题 / 100 分`，三条作答 `c/c/a` 与标准答案逐题对齐；重复导入计数不变；`PRAGMA integrity_check=ok`、`foreign_key_check=[]`；`pytest` **396 passed**。
+- 2026-10-29（**Q32 补：选项分隔符是分号，不是竖线**）：用户拿截图逐字对原题时发现“选项像被省略了字”。复查 `tm_arr[5]` 原文：`《中华人民共和国国家安全法》;《中华人民共和国宪法》;《中华人民共和国国防法》;《中华人民共和国国防教育法》` —— **四个选项用分号 `;` 拼接**，而我之前的脚本用 `split("|")`（竖线）拆，整串被当成**1 个选项**，所以输出看起来“只有一个选项、字都在但没拆开”。已同步修 `data/debug/probe_exam_live.py` 与 `capture_stage1.py`（改 `split(";")`），并把本文件 Q28 里“竖线分隔”的表述改成分号。**教训**：把“一眼看出结构”和“脚本实际拆出来”当同一件事，就会把拆错的输出当结论；以后分隔符类结论必须用“拆完的项数 == `tm_arr[4]` 选项数”自校验。
+- 2026-10-29（**Q32：练习“点一次就新建一份”，但不交卷＝不留成绩**）：读课程页自带的 `showExam()` 源码（`data/debug/showexam_src.json`）：`IsContinue=0` **写死**、函数体**没有任何次数检查或上限判断**（唯一分支是 `p_ExamId==0 → alert("没有课后练习！")`）⇒ 每点一次「参加练习」服务端就新建一份 `ExamStartId`（1.1 今天已有 2 条：`23547173`@19:13:38、`23548425`@20:20:18）。同时把“留痕”查清（`probe_exam_records.py`/`probe_practice_meta.py`）：**「我的考试」`ExamList.aspx` 空表**（课后练习不在那页）、**「成绩分析」切到课后练习分类仍空表 `1/0`** ⇒ 两次进入**成绩侧零痕迹**；「我的课程」的课后练习列只显示「参加练习」，**没有次数/成绩/做过标记**。⇒ “不答会怎样”的准确表述：**不提交＝不判分＝不留成绩（已证实）**；页面开着到 0 分会自动交卷（`startclock → btnSumbit_onclick`，源码已看）；**关窗后服务端是否按 `StartTime` 判废——未证实**。另：试卷名「1.01（新）」在 `ExamHeader`/`ExamDo` 两帧 **0 命中**，在**顶层 `ExamMain`**（本轮未读），`（新）`含义待下次进入确认；`showframe()` 用 `ddlClass.value` 当 `PlanId`，佐证 Q30“切课就是切这个值”。
+- 2026-10-29（**Q28 二次实测：练习页界面与数据结构的四个新事实**，窗口开着时零请求读 DOM）：① **界面只有「检查」与「交卷」两个图片按钮，没有「保存」**——`btnCancel_onclick()`（`SaveMode=0` 草稿）在脚本里真实存在，但**界面上没有对应按钮**（所以用户最初问“有没有保存选项”的答案是：**能力有，按钮没有**）；② `SaveMode` 隐藏字段**默认就是 1**（即默认语义是“交卷”），想存草稿必须显式改 0；③ **倒计时是自校正的真计时**：`startclock()` 每次用 `new Date().getTime()` 对 `startTime + timeCount*1000` 算 `nextTime`，并把剩余写回隐藏字段 `LeftTime`（实测 3349）/`PassTime`（已用 251 秒），且服务端已记 `StartTime=2026/10/29 20:20:18` → **关掉标签页再回来不能“停表”**；④ **选项可程序化回填**：`input[type=radio] id=tm_<题号>_<序号> name=tmda_<题号> value=a/b/c/d onclick=check_index(n)`，3 题 × 4 选项，题 ID `ksid_1/2/3`（9558077/78/79）、题型 `tmtx=1`、分值 `tmfs`=33/34/33；⑤ `tm_arr` 14 字段实测口径：`[题ID, 题型(2), 题干, 分值, 选项数(4), 选项串(**分号** `;` 分隔，**不是竖线**——2026-10-29 核对原题时修正), '', 主题ID, 知识点ID, '', 'z', '0', '', '1']`。⚠ 本次为**第 2 条记录**（`ExamStartId=23548425`），用户看完自行关窗，未交卷、未保存。
+- 2026-10-29（**Q31：“点了没反应”的真因是 Playwright 吞掉了 confirm**）：用户反馈在 Chrome 里点「参加练习」**既不开窗口也无提示**，且已确认站点弹窗权限是开的。排查结论：元素正常（`A.btn_4`、`onclick=showExam(15263)`、可点），**真正原因是我们自己**——`run_gxks.py` 用 Playwright `connect_over_cdp` 连着同一个浏览器，而 **Playwright 默认自动 dismiss 所有 `confirm/alert`**，站点 `showExam()` 第一行的 `confirm('确定要参加这场练习吗?')` 被静默关闭 → 不弹窗，后续 `alert` 提示也同类被吞。规避手段有二：**人工操作前先停脚本**，或**写脚本代点**（注册 dialog accept）。已用 `data/debug/open_practice.py` 不经 confirm 直接导航验证成功（`ExamStartId=23548425`，3 道题）。⚠ 此坑对**所有带 confirm/alert 的人工操作**都成立，面板化时必修（需把确认框转发到 UI）。
+- 2026-10-29（**多账号 + 多课程骨架落地**，用户“按你推荐的做”）：新增三块地基——① `adapters/gxks/accounts.py` 账号表（`data/accounts.local.json`：`label`代号/`port`/`profile`/`courses`/`daily_sections`/`daily_minutes`，**一账号一端口一 user-data-dir**；无新表时**回落到老 `account.local.json` 单账号**，不影响已在跑的流程；`label` 只允许 `[a-z0-9_-]`，真名只进 `display`、不进文件名）；② `adapters/gxks/ledger.py` 运行账本（`data/gxks_ledger.jsonl`，只追加 + `account+section+date` 去重 + 坏行跳过）：**站点查不到“今天”，日额度只能本地记账**；③ `scripts/run_gxks_multi.py` 多账号串行调度（额度预检 → 端口探活（只读 `/json/version`）→ 逐账号调 `run_gxks.py` → **失败隔离**：某人掉登录只记下游、不拖住后面的人）。`run_gxks.py` 相应新增 `--account-label`（账本代号）、`--course`（多课程）、`--ignore-quota`，并在每节 `done` 后自动记账、开跑前按额度收敛 `--max-sections`。`pytest` **364 passed**（新增 16 条）。⚠ 账本 **2026-10-29 当天上线，历史未追溯**（今日 1.1~2.2 共 11 节未入账），次日零点起准确。
+- 2026-10-29（Q29 补扫：播放页本机信息）：`data/debug/probe_study_fp.py` **零请求**读正在播放那页的 DOM 与内联脚本（不进新页、不 GET，避免同账号并发）：**硬件指纹 0 / 网络探针 0 / 上报端点 0 / 存储 0** 命中，唯一 `uuid` 是 Aliplayer 调试面板的字段名（值空）；外链脚本只有 `disable.js` + 3 个 Aliplayer + `jquery.js`；加密面仅 `encryptType:1` + `playauth`（阿里云自解）与 1 处 `unescape`（读 cookie）。⇒ Q29 三页已全覆盖，**站点不做设备指纹、不做第三方统计**。
+- 2026-10-29（Q29：本机信息上报排查）：用户问“站里会不会记录/上传刷课电脑的硬件地址、IP”。静态全扫 3 个页面 + 6 个 JS：**硬件指纹 0 命中**（无 canvas/WebGL/AudioContext、无 `hardwareConcurrency/deviceMemory/plugins`、无 `ActiveXObject/WScript.Network`、无 MAC/CPU 序列号类调用）、**网络探针 0 命中**（无 `RTCPeerConnection`、无取公网 IP 的第三方接口）、**第三方统计 0 命中**（无百度/CNZZ/51.la/GA，页面外链资源 0 条）、**本地指纹 0 命中**（无 localStorage/uuid/clientId）；`navigator.userAgent` 仅用于判 IE/移动端，`screen.width/height` 仅用于定弹窗尺寸。cookie 仅 4 条。结论：浏览器侧不采集设备指纹；**MAC/CPU 在纯 HTTP 下拿不到**（需 ActiveX 或客户端，本站无）；**IP 在 TCP 层必然被服务端记录，无法规避**。未做任何伪装指纹/IP 的动作（伪装反而异常）。⚠ 播放页 `LibraryStudy.aspx` 本轮未扫（2.2 正在播，避免同账号并发），待空窗补。
+- 2026-10-29（Q28：课后练习页全代码侦察）：用户要求“探网页内所有代码，包括防刷、加密”，并先给定边界“只读打开、不答题、不提交”。只读侦察 9 轮拿到：入口 `showExam(id)` → `window.open(chkExam.aspx?ExamID=…&SiteType=2&IsContinue=0)`；`chkExam` 是自动 POST viewstate 到 `ExamMain.aspx` 的过渡页，落地后 frameset = `topFrame`（计时）/`mainFrame`（ExamDo 答题）/`postFrame`/`ExamView`。**两个关键结论**：① **有“保存”且只保存不判分**——`btnCancel_onclick()` 置 `SaveMode=0` 后 `PackAnswer()` + `frmExam.submit()` 到 `ExamSave.aspx`（提示“已保存”），`btnSumbit_onclick()` 置 `SaveMode=1` 才是交卷 ⇒ “AI 回填 + 只保存”可行；② **没有真加密也没有真防刷**——题目明文内嵌在 `tm_arr`（无标准答案字段），答案打包是 XML 明文，`atob/eval/AES/MD5` 全 0 命中；`disable.js` 只禁右键/F5/Alt+*/Ctrl+字母等**键盘与鼠标**层面，而 `ErrTimes()`（切屏计次→违纪自动交卷）**第一行就是 `return;`**，被彻底短路；真正约束只剩 60 分钟倒计时。⚠ **代价必须记住**：GET `chkExam.aspx` 就会在服务端新建一场考试（本次为 1.1 留下 `ExamStartId=23547173`、60 分钟倒计时已走），所以“只读看一眼”不能当免费操作，练习通道必须算好时长再进。
+- 2026-10-29（节间拟人化，用户要求）：原来节间只歇 25~60 秒，看着太规律。`run_gxks.py` 改为：短歇 **45~180 秒**随机，每 **3 节**插一次 **4~10 分钟**长歇（`--long-gap-every`/`--long-gap-min`/`--long-gap-max`），新增 `--start-jitter` 让每日开跑时间随机错峰（默认 0）。边界：**只动时间轴，不动播放行为**——不快进、不跳段、不伪造上报、不自动切标签。`pytest` 348 passed。
 - 2026-10-29（Q27：翻页 + 第 2 页起的回读刷新）：第 1 页 9 节全部达标后才发现列表是 **`1/4` 共 36 节**，而调度器只在当前页挑节——不修就会在无人值守时误报“全部学完”。更隐蔽的是：翻页是 `__doPostBack` 回发，**GET 重载会跳回第 1 页**（`goto_page(2)` → `read_page()` → `1/4`），意味着第 2 页之后的节用旧 `read_row` **永远读不到进度**。落地：`driver.py` 新增 `current_pager/next_page/prev_page/goto_page/find_section/refresh_here`（第 1 页仍 GET，其余页回发刷新），`read_row()` 改用 `refresh_here()`，`run_gxks.py` 改用 `find_section()` 逐页挑节；`pytest` **348 passed**（薄壳清单新增 7 项）；`total=4` 且第 2 页要求 31~60 分钟 ⇒ 单日 10 节的额度是当前真正的瓶颈（与 §11.11 估算一致）。
 - 2026-10-29（Q26：`ended` 时 fresh 回读；不够再等、最后才补播）：1.7《陆战先锋》16:50:13 视频播完时列表 **19/20**，旧逻辑判“学时不涨”→ `escalate` → 整批停机；事后回读已是 **20/20 `done`**。1.8《海天利剑》当晚复验把因果钉死：ended 瞬间 **fresh 回读**，**2 秒后即 20/20 done（`settled: 0`）** ⇒ 1.7 是**回读快照过期**（用了 1 分钟之前的值），不是丢分钟。据此改 `driver.watch()`：① `ended` 时**立即 fresh 回读**，达标即 `ended_reached` 收工；② 仍差则进 `ENDED_SETTLE_SECONDS=240` 兜底等待期（每 60 秒回读，事件 `ended_short`）；③ 等过仍差才补播一次（新纯函数 `should_replay()` + `MAX_REPLAYS_PER_SECTION=1`；Q12 已证重播是增量记账），补播只盯 `REPLAY_WINDOW_SECONDS=300`、达标线放宽到“要求”（补的是差的那一分钟，不追余量），事件 `replay_short`/`replay_filled`/`replay_failed`；④ 补播失败才 `escalate`。`watch()` 返回值与两个 CLI 汇总行新增 `replays`；测试 +1 条（`test_should_replay_only_when_short_and_budget_left`）。
 - 2026-10-29（Q20 关键补证：真正凭据票 = `.ASPXAUTH`；登录/会话工具链落地）：① 用 `scripts/export_state_gxks.py` 导出当前会话（零请求）得到 **10 条站点 cookie**：`.ASPXAUTH`、`ASP.NET_SessionId`、`Clerk`、`ZYLTheme`、`p_h5_u`、`selectedStreamLevel` + 每节一条进度 cookie；其中 **`.ASPXAUTH`/`ASP.NET_SessionId`/`Clerk`/`ZYLTheme` 是会话级（`expires=-1`，关浏览器即失）**。② 对照 12:49 掉线时的 cookie 清单（**无 `.ASPXAUTH`**）⇒ 修正之前“凭据 cookie 未被清”的说法：**掉登录的直接成因是认证票 `.ASPXAUTH` 不在**（谁删的仍未定：服务端 302 时下发过期 / 从未签发，两者均可能）；好在它是**本地零请求可读**的，可提前告警。③ 新增 `adapters/gxks/login.py`（`load_credentials/is_configured/is_need_verify/has_auth_ticket/login`）与两个 CLI：`scripts/relogin_gxks.py`（只在已落登录页时重登，`--dry-run` 先看）、`scripts/export_state_gxks.py`（导出 `data/storage_state_gxks.json`，gitignore）。④ 自动重登接进 `run_gxks.py`：**只试一次**，遇 `needVerify=1` 即停转人工；重登成功后**重新挑节**继续。⑤ 顺带修掉两个真缺口：`ended`（视频播完）但列表已达「要求」时按达标收工（`meets_required()`；1.3 实测视频 47:53、播完列表 46 < 余量线 47），且**任何收场都 `pause`+`leave_player()`**（原来只在 `done` 时离开，计时链会继续挂着）。
@@ -442,10 +452,18 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 | `groups` / `account_groups` | 新增表 | 多选自定义分组；一账号多组 |
 | `runs` | 新增表 | 任务指令与状态（`queued/running/stopping/stopped/done/failed/blocked`），跨重启恢复 |
 | `schedules` | 新增表 | 定时计划与暂停标志；与 `runs` 分离 |
-| `gx_questions` / `gx_attempts` | 新增表 | 题目版本（题干+选项 hash）与每次作答记录分离 |
+| `gx_q_types` | 新增表 | 题型字典（14 种，`code` + 中文名），取自平台 `tx_arr` 实测 |
+| `gx_q_items` | 新增表 | **题目版本**：`UNIQUE(platform_qid, fingerprint)`；`fingerprint` = sha256(题型 + 题干 + 题干 HTML + 部件 + extra)。题 ID 相同但内容或选项顺序变了即算**新版本**，避免答案字母错配 |
+| `gx_q_parts` | 新增表 | **部件表** `(item_id, ordinal, kind, part_key, content_json)`：题干 / 选项 / 材料 / 子问由部件承接，**新题型不改表结构** |
+| `gx_q_papers` | 新增表 | 一次答卷：`account_label`、`exam_start_id`、`exercise_id`、`course_id`、`section_id`、`section_name`、`paper_label`、`start_time`，`UNIQUE(account_label, exam_start_id)` |
+| `gx_q_paper_items` | 新增表 | 卷面题序：`(paper_id, ordinal, item_id, max_score)` |
+| `gx_q_imports` | 新增表 | 导入批次：`digest`（幂等键） + `raw_json`，同一答卷可多次追加证据 |
+| `gx_q_answers` | 新增表 | 逐题作答证据：`picked_json` / `standard_json` 及各自 `*_source`（`human`/`site`/`ai`）、`score_got`、`is_correct`、`explanation_html`；主键 `(import_id, ordinal)` ⇒ **新判分追加、不覆盖旧答案** |
 | `answers` | 复用（谨慎） | 题干共用、答案按 `account_id` 隔离；跨账号复用默认关闭 |
 
 题干可共用、答案不可共用——沿用超星 2026-10-26 定案。用户要求“碰到的题自动收库供后期检索”，只放宽**题干**，不放宽**答案**。
+
+**已落地实现**：`store/schema_gxks.py`（`GXKS_SCHEMA_VERSION=1`，7 张表 + 2 索引；拒绝降级打开、拒绝带未提交事务、`open_question_bank()` 见到 `accounts` 表即拒）+ `store/gxks_questions.py`（`import_bundle` 幂等、`read_attempt`、`bank_counts`）+ `adapters/gxks/practice.py`（`parse_capture` 交叉校验）+ `scripts/import_gxks_practice.py`（离线导入，`--dry-run`）。导入只存**来源文件 sha256**，姓名 / 学号 / ViewState 不入正式题库。
 
 ### 11.5 控制协议与启停语义
 
@@ -756,7 +774,12 @@ daily_minutes = 600            # 【每账号】日时长上限。0 = 不限。�
 | **Q25** | **`ended_reached` 分支在真机上跑通没有**（修完的当天验证） | 1.5《国防动员》（要求 43）：15:22:37 列表 **43/43 done** → 15:23:37 `t=d` 播完 → `ended_reached` 命中 → 结果 **done**（旧逻辑此处会 `escalate` 并停整批）、用时 44.6 分钟、零重载零重建、`paused True → True` | 验证了“视频比要求+余量短”是**常态而非异常**：本站要求值（43/45/60）与视频时长并不对应，余量能不能拿到完全看视频长度 | 已接线：`watch()` 在 `action == escalate` 前先判 `ended + meets_required`；两个 CLI 均在**任何收场**后 `pause`+`leave_player` | 1.4（47/45，停在余量线）与 1.5（43/43，视频先播完）两节连续跑，两种收场都出现过 | 2026-10-29 | **已结案：两种收场均已真机验证** |
 | **Q26** | **视频播完时列表还差 1 分钟（1.7 实测 19/20），是“最后一分钟的报丢了”还是“压根没读到”？** | **是没读到——用了过期快照**：① 1.7《陆战先锋》（要求 20）16:50:13 `ended` 时，代码用的是 16:49:13 的回读值（**19/20**）→ 旧逻辑直接 `escalate` → 整批停机；事后回读已是 **20/20 `done`**；② 1.8《海天利剑》17:20:20 `ended`（当时 last_row 也是 **19/20**）→ 新逻辑在 ended 瞬间 **fresh 回读**，**2 秒后即 20/20 `done`（`settled: 0`）** ⇒ 服务端早就记上了，是旧快照没跟上，不是丢分钟、也不是落库延迟 | 旧行为把“快照过期”误判成“学时不涨”，无人值守时**停掉整批**（当天等于收工）；反过来“立刻重播”也不对：白播整段视频 | ① `ended` 时**必须 fresh 回读**（不等下个 5 分钟周期）；② 仍差则进 `ENDED_SETTLE_SECONDS=240` 兜底等待期（每 60 秒回读，事件 `ended_short`），兜住真正的落库延迟；③ 等过仍差才**补播一次**（纯函数 `should_replay` + `MAX_REPLAYS_PER_SECTION=1`，Q12 已证重播是增量记账），补播只盯 `REPLAY_WINDOW_SECONDS=300` 且按**要求**（不追余量）收工（事件 `replay_short`/`replay_filled`/`replay_failed`）；④ 补播失败才 `escalate` | 1.8 真机全链路：ended 19/20 → fresh 回读 20/20 done（`settled: 0`）；1.7 全链路：ended 19/20（旧代码停机）→ 事后回读 20/20 | 2026-10-29 | **已真机验证（等待期与补播作为兜底，未触发）** |
 
-| **Q27** | **调度器会不会漏掉第 2 页以后的节；翻页后又能不能读到进度**（2026-10-29 发现） | ① 列表 `pager=1/4` ⇒ 共 **36 节**，而 `run_gxks.py` 只在**当前页** `rows` 里挑节 ⇒ 第 1 页 9 节跑完就报“没有未完成的节”收工（实际还有 27 节）；② **真陷阱**：翻页是 `__doPostBack` 回发，页号只存 viewstate，**GET 重载会跳回第 1 页**（`probe_pager.py` 实测：`goto_page(2)` 成功 → `read_page()` cache-bust 后回到 `1/4`）——若沿用旧 `read_row`，第 2 页之后的节**永远读不到自己的进度**，守播会一路超时；③ 第 2 页实测 9 节：`1298~1306`（2.1~2.6 / 3.1~3.3），要求 **31~60 分钟** | 不翻页 = 无人值守时“假完成”；GET 重载丢页号 = 第 2 页起永远不达标 | ① 新增 `current_pager()`（只读 DOM 不重载）、`next_page()`/`prev_page()`（点 ASP.NET 按钮）、`goto_page(n)`、`find_section()`（逐页找未完成节，**找到后停在该页**）、`refresh_here()`（第 1 页用 GET；第 2 页起用「下一页→上一页」回发刷新）；② `read_row()` 改用 `refresh_here()`；③ `run_gxks.py` 挑节改调 `find_section()` | `probe_find_section.py`：`find_section()` 7.0s 找到 1298（第 2 页）；`read_row(1298)` 8.2s 且刷新后 pager 仍为 2；`pytest` 348 passed（薄壳清单 +7 项） | 2026-10-29 | **已实现并真机验证（2.1 ~ 60 分钟要求，实播验证中）** |
+| **Q27** | **调度器会不会漏掉第 2 页以后的节；翻页后又能不能读到进度**（2026-10-29 发现） | ① 列表 `pager=1/4` ⇒ 共 **36 节**，而 `run_gxks.py` 只在**当前页** `rows` 里挑节 ⇒ 第 1 页 9 节跑完就报“没有未完成的节”收工（实际还有 27 节）；② **真陷阱**：翻页是 `__doPostBack` 回发，页号只存 viewstate，**GET 重载会跳回第 1 页**（`probe_pager.py` 实测：`goto_page(2)` 成功 → `read_page()` cache-bust 后回到 `1/4`）——若沿用旧 `read_row`，第 2 页之后的节**永远读不到自己的进度**，守播会一路超时；③ 第 2 页实测 9 节：`1298~1306`（2.1~2.6 / 3.1~3.3），要求 **31~60 分钟** | 不翻页 = 无人值守时“假完成”；GET 重载丢页号 = 第 2 页起永远不达标 | ① 新增 `current_pager()`（只读 DOM 不重载）、`next_page()`/`prev_page()`（点 ASP.NET 按钮）、`goto_page(n)`、`find_section()`（逐页找未完成节，**找到后停在该页**）、`refresh_here()`（第 1 页用 GET；第 2 页起用「下一页→上一页」回发刷新）；② `read_row()` 改用 `refresh_here()`；③ `run_gxks.py` 挑节改调 `find_section()` | `probe_find_section.py`：`find_section()` 7.0s 找到 1298（第 2 页）；`read_row(1298)` 8.2s 且刷新后 pager 仍为 2；`pytest` 348 passed（薄壳清单 +7 项） | 2026-10-29 | **已实现并真机验证（2.1 62/60 done，实播通过）** |
+| **Q28** | **课后练习页到底是什么结构：能不能“只保存不提交”、有没有防刷与加密**（2026-10-29 用户要求探全代码） | 只读侦察 9 轮（`data/debug/probe_exam_1~9.py`，全程不答题不提交）。① **入口**：列表行 `onclick=showExam(15263)` → `confirm('确定要参加这场练习吗?')` → `window.open('../ExamList/chkExam.aspx?ExamID=…&SiteType=2&IsContinue=0','exam',…)`；② ⚠ **GET `chkExam.aspx` 就已经在服务端建了一场考试**：落地 URL 带 `ExamStartId=23547173&PaperSuitInfoId=109840&StartTime=2026/10/29 19:13:38`，1.1（15263）因此留下 1 条考试记录；③ `chkExam` 只是自动 POST `__VIEWSTATE` 到 `ExamMain.aspx` 的过渡页，`ExamMain` 是 frameset：`topFrame`=ExamHeader（计时）/ `mainFrame`=ExamDo（答题）/ `postFrame` / `ExamView`；④ **题目明文内嵌**在 `ExamDo` 的内联 JS 里：`tm_arr[i]=[题ID, 题型, 题干, 本题分数, ?, 选项(竖线分隔), '', 主题ID, 知识点ID, '', 'z', '0', '', '1']`，本次 3 题（33+34+33 分），**没有标准答案字段**；⑤ **有“保存”**：`btnCancel_onclick()` = `SaveMode=0` + `LeftTime=lefttime` + `PackAnswer()` + `frmExam.submit()` → `ExamSave.aspx`，提示“已保存”，**只有 1 秒自动关闭**；`btnSumbit_onclick()` 才是交卷（`ForbitOperate=1` + `stopclock()` + `SaveMode=1`）⇒ **`SaveMode` 就是“草稿/正式”开关**；⑥ **答案打包无加密**：`PackAnswer()` 用 `DOMParser` 拼 **XML**（root 属性 `global=true`、`FlagId=ExamStartId`，每题 `ksid_/tmtx_/tmfs_/tmbzda_…`）；⑦ **防刷**：`ExamPage/js/disable.js`（GBK，3374 字节）禁右键/禁选中/禁 F5、Alt+*、Ctrl+C/V/F/W/E/H/I/O/L/P/B/N、Esc/空格/退格（输入框除外）、Alt+F4（用 `showModalDialog(about:blank)` 吞关闭）；`onpaste/oncut/onselectstart=return false`；`document.onfocusout → mainFrame.ErrTimes()` 想做“切屏计次、超次违纪自动交卷”——**但 `ErrTimes()` 第一行就是 `return;`，整段被短路**，实际只余“倒计时归零自动交卷”（`startclock()`）；⑧ **无加密/无签名**：`atob/btoa/eval/unescape/fromCharCode/AES/MD5` 在 ExamDo 与 ExamControl.js 里 **0 命中**；参数 `LeftTime=3600`（60 分钟）、`KsSavePaper=1`、`KsCycle=5`、`MoveOutEnabled=1`、`MoveOutTimes=0`、`ErrTimes=0`、`AllowSeePaper=1`、`minSubmit=0`（无最短交卷时长）、`LocalCache=0` | ① 用户要的“**只回填不提交**”技术上成立：填完点“保存”即 `SaveMode=0` 草稿，**不点交卷就不会判分**；② 但**进入练习页本身有代价**：会新建一条考试记录 + 60 分钟倒计时开始走，所以“只读看一眼”不能当免费操作；③ 无防刷实际约束，真正会咬人的是倒计时（到点自动交卷）与“保存会写回 `LeftTime`” | ① 练习模块单独做 `practice` 通道：`chkExam` → 等 frameset → 读 `tm_arr`（明文题干/选项）→ AI 出答案 → 填 DOM → **只调 `btnCancel_onclick()` 等价动作（`SaveMode=0` + 提交）**，**永不调 `btnSumbit_onclick`**；② 每场进入前先算总时长，剩余不足 10 分钟不进场；③ 保存后回读列表/成绩页确认是草稿（未判分）；④ 首版不碰 `disable.js`（它是页面级 event 绑定，自动化点击 `input` 不受影响） | 侦察脚本 9 个（`probe_exam_1~9.py`，均为只读 GET 或一次性进入后立即关窗）；关键函数 `btnCancel_onclick`/`btnSumbit_onclick`/`PackAnswer`/`ErrTimes` 已拿到原文 | 2026-10-29 | **已摸清结构 + 页面开着时二次实测（`data/debug/exam_live.json`）：界面只有「检查/交卷」两个图片按钮，没有「保存」；`SaveMode` 默认值就是 1；倒计时自校正**；“保存=草稿”待一次真机验证 |
+| **Q29** | **这站会不会采集/上传本机硬件信息、IP、指纹**（2026-10-29 用户要求查） | 静态全扫：`Login.aspx` + `Homew/MainPage.aspx` + `Study/LibraryStudyList.aspx` 及它们引用的 6 个 JS（`Dialog.js`/`Login.js`/`easydialog.min.js`/`iframeAutoHeight.js`/`index.js`/`main.js`），按 5 组关键字扫：① **硬件指纹 0 命中**——没有 `canvas/toDataURL/getImageData`、`WebGL`、`AudioContext`、`navigator.hardwareConcurrency/deviceMemory/plugins`、`fingerprint/deviceId/machineCode`、`ActiveXObject`、`WScript.Network`、`Win32_*`、`ProcessorId`、`MACAddress`；② **网络探针 0 命中**——没有 `RTCPeerConnection`（WebRTC 内网 IP）、没有 ipify/ip-api 之类取公网 IP 的调用；③ **第三方统计 0 命中**——没有百度统计/CNZZ/51.la/GA/gtag，页面 `img/iframe` 外链**外部资源 0 条**；④ **本地标识 0 命中**——没有 `localStorage/sessionStorage/uuid/guid/clientId`；⑤ `navigator.userAgent` 只用来判 IE/Opera/移动端，`screen.width/height` 只用来定弹窗尺寸，都不上报；⑥ cookie 只有 4 条：`.ASPXAUTH`、`ASP.NET_SessionId`、`Clerk`、`ZYLTheme` | 用户最担心的“记录电脑硬件地址/IP”分三种：**MAC/CPU/硬盘序列号**在纯 HTTP 下浏览器**拿不到**（除非 IE ActiveX 或客户端程序，本站均无）；**浏览器指纹**需要 canvas/WebGL/音频等 API，本站一个都没用；**IP** 只要发生 TCP 连接，服务端必然记（反代/日志），这不是“前端上不上传”，而是**无法隐藏**——但站点后台是否长期留存、与账号绑定，前端看不到 | ① 结论写进文档，不做任何“伪装 IP/改指纹”的动作（改了指纹反而更像异常）；② 若将来要判断“是否被设备级封控”，只能从**行为后果**看（同账号换机是否被踢、是否要求验证码），不从代码猜；③ **播放页（LibraryStudy.aspx）本轮未扫**（正在播 2.2，避免同账号并发请求干扰），待空窗补扫一次 | 上述 3 个页面 + 6 个 JS 的全文关键字扫描（`data/debug/probe_fp.py`/`probe_fp.log`）；cookie 只取名单不取值 | 2026-10-29 | **已结案：站点不做设备指纹、不做第三方统计；IP 服务端必记（无法规避）** |
+| **Q30** | **多课程能不能刷：列表页的课程下拉支持切课吗**（2026-10-29 用户问“是只固定这一门课、一个人用，还是可以多人不同课”） | 只 GET 一次列表页读 DOM：`<select name="ddlClass" id="ddlClass" onchange="">` **只有 1 个选项**（`value=32` 军事理论，已选中）。⇒ 这个账号**只报了 1 门课**，不是代码不支持。切换方式**无法证实**：`onchange` 为空，看不出是 `__doPostBack` 还是换 URL；**交叉证据（2026-10-29 读 `showframe()` 源码）**：学习按钮把 `document.getElementById("ddlClass").value` 当 `PlanId` 传给学习页 ⇒ `ddlClass` 的值就是“学习计划 ID”，**切课＝切这个值**（但“怎么触发重载”仍未证实） | ① “多课程”当前不是代码问题，而是**账号维度没有第二门课的样本**；② 若强行按 `__doPostBack('ddlClass','')` 实现，遇到站点用别的方式就会“选了没反应、还继续按旧课跑”——**静默跑错课比报错更危险** | 已落 `driver.list_courses()`（读全部选项，零猜测）+ `driver.select_course(value)`（选中 → 派发 change → 有 `__doPostBack` 就回发一次 → **回读 `selected` 校验**，不过就返回 False 让调用方停下）；`run_gxks.py --course <value>` 接好；`run_gxks_multi.py` 按账号表的 `courses` 逐课跑 | 见到第二门课时：① 先 `list_courses()` 看是否真的多出选项；② 手动切一次，对比切换前后列表行是否变化（`8~9 行`的课程名称列）；③ 确定方式后再改 `select_course()` | 待有第二门课的账号 | **OPEN（结构就绪，切换方式未证实）** |
+| **Q31** | ⚠ **只要后台脚本连着 Chrome，人工点「参加练习」就“点了没反应也没提示”**（2026-10-29 用户实测） | ① 用户已确认站点弹窗权限**是开着的**（`弹出式窗口和重定向` 蓝色开关为开），所以**不是弹窗拦截**；② `probe_click.py` 读 DOM：`A.btn_4` / `onclick=showExam(15263)` / 可见 / 可点 / 无遮挡父级 ⇒ 元素本身没问题；③ **真因**：`run_gxks.py` 等脚本用 Playwright `connect_over_cdp` 连着**同一个** Chrome，**Playwright 默认会自动 dismiss 所有 `confirm/alert`**（未注册 `page.on("dialog")` 时）——站点 `showExam()` 第一步就是 `confirm('确定要参加这场练习吗?')`，被静默 dismiss → 返回 false → 不 `window.open`，且站点后置的提示也是 `alert`（同样被吞）⇒ **完全静默**；④ 证据：绕过 confirm 直接导航 `chkExam.aspx` **成功**（`open_practice.py`，落地 `ExamStartId=23548425`、`StartTime=2026/10/29 20:20:18`、题目 3 道、`LeftTime=3591`） | **这是“人机协作”模式的结构性坑**：不只是练习入口，**任何带 `confirm/alert` 的人工操作都会失灵**（如退出登录、保存确认），且失败形态是“无任何提示”，人根本无法自救；不修就会反复被当成“网站坏了/脚本坏了” | ① **短期（已告知用户）**：需要人工点击前，先停掉后台脚本（`run_gxks`/`watch`/任何连着 9222 的临时脚本），点完再启动；② **代点**：要做什么就写脚本代点（注册 `page.on("dialog", lambda d: d.accept())` + 捕 `popup`），如 `open_practice.py`；③ **面板化时必须解决**（待办）：面板自己持有连接，就要提供“人工接管模式”——主动注册 dialog 并**把确认框内容转发到面板 UI**，用户点“确定/取消”再 `accept()/dismiss()`；④ 不得用“去掉站点的 confirm”之类改页面代码的方法绕过 | 已双重取证：DOM 元素正常（`probe_click.py`）+ 不经 confirm 直接导航成功（`open_practice.py`） | 待排（面板化前必修） | **已定位根因（未修）；待办：人工接管模式** |
+| **Q32** | **练习“点一次是不是就多一份、不答会怎样、我的两次进入有没有留痕”**（2026-10-29 用户三连问） | 20:32~20:39 三页只读实证（`probe_exam_records.py`/`probe_practice_meta.py`/`probe_showexam.py`，全部开独立窗口读完即自关）：① **`showExam()` 里 `IsContinue=0` 是写死的**，函数体**没有次数检查/上限判断**，唯一分支是 `p_ExamId==0 → alert("没有课后练习！")` ⇒ **每点一次「参加练习」＝服务端新建一份作答记录**（`ExamStartId` 递增；1.1 今天已 2 条：`23547173`@19:13:38、`23548425`@20:20:18）；② **「我的考试」`ExamList/ExamList.aspx` 是空表**（只有 5 列表头：考试名称/起止时间/时长/次数/参加考试，`1/0` 页）⇒ 课后练习**不在**这页；③ **「成绩分析」`MyCj.aspx` 默认 `ddlCertificateId=0`（普通考试）空表；切到 `1`（课后练习，`__doPostBack` 回发）后仍空表 `1/0`** ⇒ 这两次进入**在成绩侧零痕迹**；④ **「我的课程」的「课后练习」列只有「参加练习」链接**（`onclick=showExam(15263/14664/14666/14667/14668…)`），**不显示次数、不显示成绩、也没有“做过”标记**；⑤ 试卷名「1.01（新）」在 `ExamHeader`/`ExamDo` 两帧 **0 命中** ⇒ 它在**顶层 `ExamMain` 帧**（本轮窗口已关未读，`（新）`含义未证实） | ① “再看一眼”**不是免费操作**：每进一次多一条作答记录（服务端），只是**不交卷就不进成绩表**；② “不答＝自动作废”要分两半说：**不提交 ⇒ 不判分、不留成绩（已证实）**；**页面开着到 0 分会自动交卷（源码已看）**；**关掉窗口后服务端是否按 `StartTime` 判超时作废——未证实**；③ 正式考试页与课后练习是两套入口，**不能用它判断练习做没做** | ① 练习模块**不追求“只进一次”**（站点没限次），但**禁止“进来看一眼就走”**：每次进入必须带明确目的，按“**一次读全**”执行（顶层 `ExamMain` 文本＝试卷名与工具按钮＋`ExamHeader` 计时＋`ExamDo` 题目/隐藏字段/函数源码）；② 判分与成绩回读**只在提交之后**看 `MyCj.aspx` 的课后练习分类；③ 是否允许“交一份空卷验证作废语义”**须用户单独授权** | 下次进入练习（获授权后）：一次读三帧并落盘；若用户授权交空卷，交完立刻读 `MyCj` 课后练习分类，看是否新增一行 0 分 | 待下次进入练习 | **部分结案（新建/不留成绩已证实）；“不交卷是否超时作废”OPEN** |
 
 **已闭环（不需再查）**：
 | ID | 问题 | 结论 | 证据 |
@@ -767,5 +790,86 @@ daily_minutes = 600            # 【每账号】日时长上限。0 = 不限。�
 | R4 | 解析层到底坏了几个地方 | **只坏了 1 个**（表头当数据行）；其余“取不到 id / 分页为 None”都是**读太早**，不是选择器问题 | 真 HTML 10 行=9 数据+1 表头；`1.6` onclick = `showframe('1.6 《国防公开课》',1294)`；`.page` 文本 `1/4` |
 
 ⚠ **统计纪律（本轮踩到）**：守播脚本自报的 `[Nm]` 是**采样循环**时间，每轮多出 3~5 秒开销，累计比真实墙钟少约 10%。**比对进度要用「上报次数」或页面学时为准**，不要用脚本自报 elapsed 去算准确率（否则会把 8% 的采样误差当成“学时虚高”）。
+
+### 11.16 多账号与多课程（2026-10-29 落地第一半）
+
+**目标**：用户问“是只固定这一门课、这一个人用，还是可以多人用、可选不同课程”。结论先摆：
+
+- **多个人用：能做，已落地骨架**——账号表 + 串行调度 + 失败隔离。
+- **多课程：代码已就绪，但今天验证不了**——这个账号的课程下拉只有 1 项（军事理论，见 Q30）。
+
+#### 分层（谁干什么）
+
+```
+run_gxks_multi.py            外层：读账号表 → 额度预检 → 端口探活 → 逐账号/逐课 起子进程
+  └─ run_gxks.py              内层：一个账号 —— 挑节 → 守播 → 达标 → 记账 → 歇 → 下一节
+       └─ adapters/gxks/driver.py   页面操作（列表/翻页/课程/播放）
+            ├─ accounts.py            账号表（读数 + 校验 + 回落老单账号）
+            └─ ledger.py              运行账本（当日节数/分钟，日额度唯一依据）
+```
+
+#### 账号表 `data/accounts.local.json`（gitignore）
+
+```json
+{
+  "accounts": [
+    {"label": "jia", "display": "甲同学", "name": "<账号>", "pw": "<密码>",
+     "port": 9222, "profile": "D:/xxt-profiles/jia",
+     "courses": [32], "daily_sections": 10, "daily_minutes": 600, "enabled": true},
+    {"label": "yi", "display": "乙同学", "port": 9223, "profile": "D:/xxt-profiles/yi"}
+  ]
+}
+```
+
+规则：
+
+- `label` 只能 `[a-z0-9_-]`（代号制，进日志/文件名）；**真名只放 `display`**，不得进文件名。
+- **一账号 = 一端口 = 一 user-data-dir**（§7.3.1）：保证 cookie/会话互不覆盖。
+- `courses` 空 = 跑该账号能看到的全部课程；写 `[32]` 只跑这一门。
+- `name`/`pw` 可空：空 = “无凭据”，掉登录就停（不自动重登），比乱试安全。
+- **没有这个文件时自动回落到老的 `data/account.local.json` 单账号**（`label=default`、端口 9222），已跑通的流程不受影响。
+
+#### 日额度与账本（为什么必须本地记账）
+
+站点只给**累计学时**，**查不到“今天学了几节”**（列表无日期、无接口）。所以：
+
+- `ledger.py` 每跑完一节追加一行到 `data/gxks_ledger.jsonl`（`date/account/section_id/minutes/result`）；
+- 只追加、不重写；`account + section_id + date` **去重计数**（重跑不重复扣额度）；坏行跳过；
+- 开跑前读当日合计：额度不够 → 直接 `[SKIP]`；够 → 把 `--max-sections` 收敛到剩余节数。
+
+⚠ **账本 2026-10-29 当天上线，历史未追溯**：今天已完成的 1.1~2.2（共 11 节）不在账本里，所以今天显示的“已 0 节”偏少；**次日零点起准确**。不补录是有意为之：补录 11 节会立刻把今天的额度判成“用完”，今晚反而跑不了。
+
+#### 失败隔离（多个人用时的关键）
+
+| 情形 | 处理 |
+|---|---|
+| 某账号 CDP 端口没开 | 打印起浏览器命令（`--remote-debugging-port` + `--user-data-dir`），**跳过该账号**，不拖整批 |
+| 某账号掉登录 / 读不到列表 / 学时不涨 | 子进程返回码 4 / 2 / 1，记录后**继续下一个账号** |
+| 某账号额度用完 | 跳过，汇总里注明 |
+| 课程切不过去 | 停该账号（不猜、不重试），报 `切不到课程 <value>` |
+
+#### 为什么是串行，不做并发
+
+沿用 **D12**：同一出口 IP 上多账号*同时*刷是最容易被关联的特征。先把串行跑稳；并发数留成配置项，需要时再按 Q7/C6 的零风险实验开启。
+
+#### 用法
+
+```
+# 只看计划（不跑）
+.venv\\Scripts\\python.exe scripts/run_gxks_multi.py --dry-run
+# 正式跑（所有启用账号、按额度自动算节数）
+.venv\\Scripts\\python.exe scripts/run_gxks_multi.py
+# 只跑一个账号 / 单账号直接跑
+.venv\\Scripts\\python.exe scripts/run_gxks_multi.py --only jia
+.venv\\Scripts\\python.exe scripts/run_gxks.py --account-label jia --course 32 --max-sections 5
+```
+
+#### 尚未做的事（下一轮）
+
+1. **第二门课的切换方式**（Q30）：要等有第二个样本账号；现在 `select_course()` 只做“最低假设 + 回读校验”。
+2. **多个 Chrome 的自动拉起**：现在只探活 + 给命令，不起浏览器（起进程属于面板/人 的职责，避免和沙箱/回收打架）。
+3. **面板里的账号管理**（增删改、看额度、看今日进度）：属于第四步 MVP，排在多账号跑稳之后。
+4. **账本可视化**：现在只能读 jsonl；面板/日志页后续接。
+
 
 
