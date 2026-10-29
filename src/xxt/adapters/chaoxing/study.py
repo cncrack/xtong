@@ -24,7 +24,7 @@ from ...core.quota import (remaining_minutes, sample_daily_budget, sum_done_seco
                            video_done_counted)
 from ...log import get_logger
 from .pagejs import (WATCHER_JS, build_watcher_js, match_chapter_id,  # noqa: F401  (兼容导出)
-                     pick_pending_after)
+                     no_pending_reason, pick_pending_after)
 from .pagesync import current_task_title, find_frame_with, open_chapter_frame
 
 log = get_logger("chaoxing.study")
@@ -210,7 +210,8 @@ class StudyRunner:
             (course_row["id"],),
         ).fetchone()
         if pending is None:
-            stats["stop_reason"] = "无待学章节"
+            # 成因分流的文案与异步引擎共用一处定义（pagejs.no_pending_reason）
+            stats["stop_reason"] = no_pending_reason(self.conn, course_row["id"])
             return stats
         kid, leaf_name = pending["platform_chapter_id"], pending["name"]
 

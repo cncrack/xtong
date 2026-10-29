@@ -6,6 +6,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -639,6 +641,101 @@ class TestPanel(unittest.TestCase):
             t.join(timeout=5)
             for k in keys:
                 appmod._JOBS.pop(k, None)
+
+
+class NoTreeGatingTest(unittest.TestCase):
+    """“有这门课” ≠ “抓过章节树”（2026-10-30 轻档）。
+
+    以前面板只问 courses，0/0 的课也给 ▶：一点就 spawn，子进程在引擎前置检查处
+    零访问退出，面板却弹“已开始刷”（假成功），守护还会把这轮记成“今日已触发”。
+    现在无树当场拒，并把“抓章节”（不消耗额度）作为显式入口交给人。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = Settings(root=Path(self.tmp.name))
+        conn = connect(self.settings.db_path)
+        conn.execute("INSERT INTO courses(account_id, platform_course_id, name, url) "
+                     "VALUES(1,'c1','有树课','http://x/1')")
+        conn.execute("INSERT INTO courses(account_id, platform_course_id, name, url) "
+                     "VALUES(1,'c2','无树课','http://x/2')")
+        conn.commit()
+        cid = conn.execute("SELECT id FROM courses WHERE platform_course_id='c1'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO chapters(course_id, platform_chapter_id, name, idx, status) "
+            "VALUES(?, 'k1', '1.1 有树节', 0, 'pending')", (cid,))
+        conn.commit()
+        conn.close()
+        self.client = TestClient(create_app(self.settings))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_study_start_refuses_course_without_tree(self):
+        with patch("xxt.panel.app._spawn") as sp:
+            d = self.client.post("/api/study/start", json={
+                "account_id": 1, "course": "无树课", "course_pid": "c2"}).json()
+        self.assertFalse(d["ok"])
+        self.assertTrue(d.get("no_tree"), d)   # 调用方靠这个区分“该抓树”与“真失败”
+        self.assertIn("抓章节", d["error"])
+        sp.assert_not_called()   # 关键：不能 spawn，否则当日机会被记成已触发
+
+    def test_study_start_still_runs_course_with_tree(self):
+        with patch("xxt.panel.app._spawn") as sp:
+            sp.return_value = SimpleNamespace(pid=4321)
+            d = self.client.post("/api/study/start", json={
+                "account_id": 1, "course": "有树课", "course_pid": "c1"}).json()
+        self.assertTrue(d["ok"], d)
+        sp.assert_called_once()
+
+    def test_chapters_fetch_spawns_cli_for_that_course(self):
+        """抓章节走现成 `xxt chapters` 子进程（面板不自建第二套入库/对账）。"""
+        with patch("xxt.panel.app._spawn") as sp:
+            sp.return_value = SimpleNamespace(pid=9001)
+            d = self.client.post("/api/chapters/fetch", json={
+                "account_id": 1, "course": "无树课", "course_pid": "c2"}).json()
+        self.assertTrue(d["ok"], d)
+        self.assertFalse(d["had_tree"])
+        # argv 必须用库里真实的课名（用户可能传模糊名），且带 --account
+        self.assertEqual(sp.call_args[0][1:], ("chapters", "无树课", "--account", "1"))
+
+    def test_chapters_fetch_rejects_unknown_course(self):
+        with patch("xxt.panel.app._spawn") as sp:
+            d = self.client.post("/api/chapters/fetch",
+                                 json={"account_id": 1, "course": "没这门课"}).json()
+        self.assertFalse(d["ok"])
+        sp.assert_not_called()
+
+    def test_overview_exposes_zero_total_for_no_tree_course(self):
+        """前端拿 total=0 判“未抓章节”，所以这个字段不能退成 None。"""
+        accs = self.client.get("/api/overview").json()["accounts"]
+        courses = {c["name"]: c for c in accs[0]["courses"]}
+        self.assertEqual(courses["无树课"]["total"], 0)
+        self.assertEqual(courses["有树课"]["total"], 1)
+
+    def test_no_pending_reason_distinguishes_no_tree_from_all_done(self):
+        """两引擎共用的收工文案必须能区分成因，且诊断归类跟着分流。"""
+        from xxt.adapters.chaoxing.pagejs import no_pending_reason
+        from xxt.core.diagnose import classify
+
+        conn = connect(self.settings.db_path)
+        try:
+            c2 = conn.execute(
+                "SELECT id FROM courses WHERE platform_course_id='c2'").fetchone()["id"]
+            r_no = no_pending_reason(conn, c2)
+            c1 = conn.execute(
+                "SELECT id FROM courses WHERE platform_course_id='c1'").fetchone()["id"]
+            conn.execute("UPDATE chapters SET status='done' WHERE course_id=?", (c1,))
+            conn.commit()
+            r_done = no_pending_reason(conn, c1)
+        finally:
+            conn.close()
+        self.assertIn("未抓章节", r_no)
+        self.assertIn("1/1 已全部完成", r_done)
+        self.assertNotIn("未抓章节", r_done)
+        # notree 不能误入 structure（可挂起 → 守护白重试）；done 不能落入 unknown
+        self.assertEqual(classify(r_no), "notree")
+        self.assertEqual(classify(r_done), "done")
 
 
 if __name__ == "__main__":

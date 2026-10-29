@@ -43,12 +43,43 @@ def cmd_login(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     state_path = account_state_path(s, account_id)
-    if adapter.login(state_path):
-        log.info("账号#%s 登录成功，会话已保存：%s", account_id, state_path)
-        print(f"[OK] 账号#{account_id} 会话已保存：{state_path}")
-        return 0
-    print(f"[FAIL] 账号#{account_id} 登录超时或未完成，请重试：xxt login --account {account_id}")
-    return 1
+    if not adapter.login(state_path):
+        print(f"[FAIL] 账号#{account_id} 登录超时或未完成，请重试：xxt login --account {account_id}")
+        return 1
+    log.info("账号#%s 登录成功，会话已保存：%s", account_id, state_path)
+    print(f"[OK] 账号#{account_id} 会话已保存：{state_path}")
+
+    # 登录后**顺带**同步课程列表（2026-10-30 轻档）。
+    # 省一次真实访问：`fetch_courses` 与 `xxt status` 的探测访问的是同一个学习空间页、
+    # 听的是同一批响应（前者还多截获 courselistdata），分开跑等于白导航一次。
+    # 只同步**课程名单**，不抓章节树——哪门课要刷由人决定，没点过的课一次都不碰
+    # （最小访问原则；体育课/免修课这类"不需要刷"的课零成本）。
+    conn = connect(s.db_path)
+    try:
+        try:
+            courses = adapter.fetch_courses(state_path)
+        except RuntimeError as exc:
+            # 会话已存住，同步失败不该把登录判成失败（退出码仍 0），给出手动补跑的命令即可
+            print(f"[!!] 会话已保存，但课程列表同步失败：{exc}"
+                  f"（可稍后重试：xxt courses --account {account_id}）")
+            return 0
+        for c in courses:
+            conn.execute(COURSES_UPSERT, (account_id, c["platform_course_id"],
+                                          c["clazz_id"], c["name"], c["url"]))
+        _save_username(conn, adapter, account_id)
+        conn.commit()
+        # 顺带告诉用户有几门还没章节树：新登录的号必然全是，刷之前要先点「⬇ 抓章节」
+        no_tree = conn.execute(
+            "SELECT COUNT(*) AS c FROM courses a LEFT JOIN chapters h ON h.course_id=a.id"
+            " WHERE a.account_id=? AND h.id IS NULL", (account_id,)).fetchone()["c"]
+        hint = ""
+        if no_tree:
+            hint = (f"（其中 {no_tree} 门还没有章节树：刷之前在该课程行点「⬇ 抓章节」，"
+                    "进课程页 1 次，不消耗当日额度）")
+        print(f"[OK] 课程列表已同步：{len(courses)} 门{hint}")
+    finally:
+        conn.close()
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -106,6 +137,19 @@ def _save_username(conn, adapter, account_id: int = 1) -> None:
         conn.commit()
 
 
+# 课程列表入库语句（模块级常量：cmd_login 顺带同步与 cmd_courses 共用同一份 SQL，
+# 避免两处各写一套 ON CONFLICT 口径）。课程名单只按平台事实覆盖，不做删除——
+# 删课会连带章节树与已学进度，属人工决定（面板「✎ 管理」里做）。
+COURSES_UPSERT = """
+    INSERT INTO courses(account_id, platform_course_id, clazz_id, name, url)
+    VALUES(?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, platform_course_id)
+    DO UPDATE SET clazz_id=excluded.clazz_id,
+                  name=excluded.name,
+                  url=excluded.url
+"""
+
+
 def cmd_courses(args: argparse.Namespace) -> int:
     from .adapters import get_adapter
     from .core.accounts import account_state_path
@@ -126,17 +170,8 @@ def cmd_courses(args: argparse.Namespace) -> int:
         return 1
     try:
         for c in courses:
-            conn.execute(
-                """
-                INSERT INTO courses(account_id, platform_course_id, clazz_id, name, url)
-                VALUES(?, ?, ?, ?, ?)
-                ON CONFLICT(account_id, platform_course_id)
-                DO UPDATE SET clazz_id=excluded.clazz_id,
-                              name=excluded.name,
-                              url=excluded.url
-                """,
-                (account_id, c["platform_course_id"], c["clazz_id"], c["name"], c["url"]),
-            )
+            conn.execute(COURSES_UPSERT, (account_id, c["platform_course_id"],
+                                          c["clazz_id"], c["name"], c["url"]))
         _save_username(conn, adapter, account_id)
         conn.commit()
         who = conn.execute(
@@ -238,6 +273,24 @@ def cmd_chapters(args: argparse.Namespace) -> int:
             print(f"[FAIL] {exc}")
             return 1
         _save_username(conn, adapter, account_id)
+
+        if not chapters:
+            # 抓到 0 个叶子必须显式留痕（2026-10-30 轻档）：不入库时，库里状态与"从没抓过"
+            # 完全同形（面板都是 0/0），用户与下个会话都无从判断这门课到底是真没任务点、
+            # 还是页面改版导致解析失效。写成 WARNING 事件进面板日志页。
+            import time as _t
+
+            with conn:
+                conn.execute(
+                    "INSERT INTO run_logs(ts, level, event, detail, account_id) VALUES(?,?,?,?,?)",
+                    (_t.strftime("%Y-%m-%dT%H:%M:%S"), "WARNING", "chapters-empty",
+                     f"《{course['name']}》章节树解析到 0 个知识点（未入库）"
+                     "——要么这门课确实没有任务点，要么页面改版令选择器失效"
+                     "（重跑 scripts/recon_course.py 核对）",
+                     account_id))
+            print(f"[WARN] 《{course['name']}》解析到 0 个知识点，未入库。"
+                  "若该课确有视频/作业，多半是页面改版，需重跑侦察脚本核对选择器")
+            return 1
 
         for ch in chapters:
             conn.execute(CHAPTERS_UPSERT, (course["id"], ch["platform_chapter_id"],

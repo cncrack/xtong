@@ -89,6 +89,8 @@ class PageSyncIsSyncOnlyTest(unittest.TestCase):
 
         2026-10-29 补两项：播放等待上限（B）与 video-done 去重（C）当天就是靠
         “两条路径不许一新一旧”同时下的，写进断言以免下次又只改异步版。
+        2026-10-30（轻档）再补收工文案：无树与已学完必须走同一个
+        `pagejs.no_pending_reason`，不得任一边写死回那句压平成因的老文案。
         """
         for rel in ("adapters/chaoxing/study.py", "adapters/chaoxing/astudy.py"):
             src = _text(rel)
@@ -97,6 +99,9 @@ class PageSyncIsSyncOnlyTest(unittest.TestCase):
             self.assertIn("next_wait_limit", src, rel)
             self.assertIn("video_done_counted", src, rel)
             self.assertIn("WATCHER_INJECT_TRIES", src, rel)
+            self.assertIn("no_pending_reason", src, rel)
+            self.assertNotIn('stop_reason"] = "无待学章节"', src,
+                             f"{rel} 又写死了不分成因的旧文案")
 
 
 if __name__ == "__main__":

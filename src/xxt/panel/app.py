@@ -75,6 +75,21 @@ def _who_level(who: str) -> str:
     return "WARNING" if "自称 UI" in who else "INFO"
 
 
+def _find_course_row(conn, account_id: int, pid: str, name: str):
+    """按“平台课程ID 优先、课名次之”定位该账号的课程行（纯本地查询，零平台访问）。
+
+    面板两处都要这个判断（刷课前的“有没有章节树”、抓章节的目标课），抽一处免得
+    两边各写一套匹配口径。pid 传空串时退到课名（真实 pid 不会为空，不会误命中）。
+    """
+    pid = str(pid or "").strip()
+    return conn.execute(
+        "SELECT id, name, platform_course_id FROM courses WHERE account_id=? "
+        "AND (platform_course_id=? OR name=?) "
+        "ORDER BY CASE WHEN platform_course_id=? THEN 0 ELSE 1 END LIMIT 1",
+        (account_id, pid, str(name or "").strip(), pid),
+    ).fetchone()
+
+
 def _spawn(root_str: str, *cmd: str):
     """拉起子进程（会话/自动调度）。子进程输出必须落盘，不许进 DEVNULL。
 
@@ -756,18 +771,29 @@ function renderAccounts(){
       const hit=hits.some(h=>h.name===c.name)?' hit':'';
       const run=RUNNING[a.id];
       const runningThis=run&&run.course===c.name;
+      // “没章节树”（库里 0 行）不等于“学完了”：以前两者都显示 0%·0/0 且都给 ▶，
+      // 点了会被引擎零访问退出、面板却弹“已开始刷”（假成功）。现在无树只给
+      // 「⬇ 抓章节」：抓树不产生 video-done、不动当日额度，看到节数后 ▶ 才出现（2026-10-30 轻档）
+      const noTree=!c.total;
       const ctl=runningThis
         ?`<button class="stopc" title="正在刷这门课（${run.since} 开始），点击停止；已看的进度全部保留"
             onclick="stopGrind(${a.id})">■ 停止刷课</button>`
+        :noTree
+        ?`<button class="minibtn" title="进该课程页抓一次章节树（约 10~20 秒，不播放视频、不消耗当日额度）；抓完才知道共几节、要不要刷"
+            data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
+            onclick="fetchChapters(${a.id},this.dataset.c,this.dataset.p)">⬇ 抓章节</button>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
             onclick="startGrind(${a.id},this.dataset.c,this.dataset.p)">▶ 刷这门课</button>`;
+      const nums=noTree
+        ?`<span class="nums" title="本地还没有章节树：先点「⬇ 抓章节」（1 次页面访问，不消耗当日额度）">未抓章节</span>`
+        :`<span class="nums">${Math.round(c.done/c.total*100)}% · <b>${c.done}/${c.total}</b></span>`;
       const q=document.getElementById('q').value.trim();
       const now=runningThis?` style="border-left:3px solid var(--ok);padding-left:.5rem"`:'';
       const nowTag=runningThis?` <span class="badge b-ok pulse" style="margin-left:.3rem">当前正在学</span>`:'';
       const bold=runningThis?'font-weight:800;':'';
     return `<div class="course${hit}"${now}><span class="nm" style="${bold}">${hl(c.name,q)}${nowTag}</span>
-      <div class="t2"><span class="nums">${c.total?Math.round(c.done/c.total*100):0}% · <b>${c.done}/${c.total}</b></span>${ctl}</div>
+      <div class="t2">${nums}${ctl}</div>
       <div class="spent">已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
@@ -891,6 +917,8 @@ const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-
   'auto-start':'守护启动','auto-stop':'守护停止',
   'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
   'auto-exit':'守护异常退出','diag-visited-fix':'数据修复',
+  // 2026-10-30（轻档）：抓章节树的两条新事件（发起 = 人工点击，解析为空 = 要看看是不是改版）
+  'chapters-fetch':'发起抓章节','chapters-empty':'章节解析为空',
   // 2026-10-28 Q44：配置热重载（守护每 30 秒重读）+ 终态重算（解除今日收工）
   'auto-reload':'配置已重载','auto-reopen':'解除今日收工',
   // 2026-10-28 Q42：面板操作现在也写日志（以前只有守护/会话的事件）
@@ -1531,6 +1559,19 @@ function startGrind(id,course,pid){
     body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
   .then(r=>r.json()).then(d=>{alert(d.ok?'已开始刷《'+course+'》（拟人节奏，额度内自动停）':'失败：'+d.error);
     syncRun();});}
+// 抓章节树（2026-10-30 轻档）：只进课程页 1 次，不播视频→不写 video-done→不动当日额度。
+// 所以它是“确定要刷哪门”之前的低成本确认动作：抓到树看到节数，你再决定刷不刷。
+// 结果不在本请求里等（子进程要十几秒），靠 15 秒自动刷新回显节数。
+function fetchChapters(id,course,pid){
+  if(!confirm('抓取《'+course+'》的章节树？\n\n· 进该课程页 1 次（约 10~20 秒）\n'
+              +'· 不播放视频，不写“看完一节”，因此不占用今日额度\n'
+              +'· 抓完课程行会显示共几节，你再决定刷不刷'))return;
+  fetch('/api/chapters/fetch',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('抓章节失败：'+d.error);return;}
+    toast('已发起抓《'+course+'》章节树（约 10~20 秒），完成后自动显示节数');
+    syncRun();});}
 // 警示条「看日志」：切到日志页并把账号筛好，不用用户再手输
 function gotoLogs(id){
   switchView('logs');
@@ -1991,8 +2032,8 @@ def create_app(settings: Settings) -> FastAPI:
             if ev in ("chapter-start", "video-done", "auto-done", "session-start"):
                 continue  # 又跑起来了 / 今日已达成 → 不示警
             if ev == "session-end":
-                if not any(w in detail for w in ("打不开", "异常", "失败", "中断")):
-                    continue  # 正常收工（达标/完成/无待学章节）
+                if not any(w in detail for w in ("打不开", "异常", "失败", "中断", "未抓章节")):
+                    continue  # 正常收工（达标/完成/本地全部已完成）；“未抓章节”要示警
                 code = raw_code or classify(detail)
             elif ev == "chapter-fail":
                 code = raw_code or "structure"
@@ -2917,6 +2958,44 @@ def create_app(settings: Settings) -> FastAPI:
         reason, hint = _LOGIN_REASON.get(outcome, (f"自动登录未成功（{outcome}）", "请改用手动登录"))
         return {"ok": False, "outcome": outcome, "error": reason, "hint": hint}
 
+    @app.post("/api/chapters/fetch")
+    def chapters_fetch(body: dict):
+        """为该账号抓一门课的章节树：spawn 现成的 `xxt chapters`（2026-10-30 轻档）。
+
+        为什么走子进程而不是在面板里直接抓：`adapter.fetch_chapters` 用同步
+        Playwright 且自己 launch 浏览器，面板（异步服务进程）里直接调就是
+        sync/async 混用（2026-10-25 账号#2 事故同源）；子进程是独立解释器，天然隔离，
+        而且 CLI 那条路径的入库/对账/两道护栏已经跑通，不在面板里重复实现一套。
+
+        额度关系（用户最关心的一点）：抓章节树不写 video-done，因此**不动当日额度**；
+        但它是一次真实页面访问，所以**只由人点击触发，绝不自动跑**——哪门课要刷是人的
+        业务决定（体育课/免修课这类不需要刷的课，不点就一次访问也不产生）。
+        """
+        account_id, course = body.get("account_id"), body.get("course")
+        if not (account_id and course):
+            return {"ok": False, "error": "缺少 account_id / course"}
+        # 同页双开防护：学习会话正在跑这一门时，它的浏览器已占着课程页，
+        # 再开一个去抓树等于同一账号同时两个活跃会话（风控暴露面翻倍）。
+        if account_id in _marker_jobs(settings):
+            return {"ok": False, "error": "该账号已有进行中的学习会话，先停掉再抓章节（避免同账号双开）"}
+        conn = db()
+        try:
+            crow = _find_course_row(conn, int(account_id), str(body.get("course_pid") or ""),
+                                    str(course))
+            if crow is None:
+                return {"ok": False,
+                        "error": f"该账号没有这门课（{course}），先为它抓取课程（顶部「⬇ 平台读取」或 xxt courses --account）"}
+            n_ch = conn.execute(
+                "SELECT COUNT(*) AS c FROM chapters WHERE course_id=?", (crow["id"],)
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        proc = _spawn(str(settings.root), "chapters", crow["name"], "--account", str(account_id))
+        _log_event(account_id, "chapters-fetch",
+                   f"已发起抓《{crow['name']}》章节树（子进程 pid={proc.pid}，不消耗当日额度）"
+                   + (f"；本地已有 {n_ch} 行，本次是重新对账" if n_ch else ""))
+        return {"ok": True, "pid": proc.pid, "had_tree": bool(n_ch)}
+
     @app.post("/api/study/start")
     def study_start(body: dict):
         """为账号启动一门课的学习会话（子进程 xxt mlearn --accounts <id>）。"""
@@ -2943,6 +3022,18 @@ def create_app(settings: Settings) -> FastAPI:
             if n and not planmod.account_has_course(conn, account_id, pid=cpid0, name=course):
                 return {"ok": False,
                         "error": f"该账号没有这门课（{('课程ID ' + cpid0) if cpid0 else '课名'}），已跳过"}
+            # 第二问（2026-10-30 轻档）：有这门课 ≠ 抓过章节树。没树就当场拒——
+            # spawn 了也会在引擎前置检查处零访问退出，而调用方（定时守护）收到 ok=True
+            # 会记“今日已触发”，当日机会白烧，面板还会弹“已开始刷”的假成功。
+            # 必须在 try 内查：conn 在 finally 就关了，出了块再碰它是已关闭连接。
+            if n:
+                crow = _find_course_row(conn, int(account_id), cpid0, str(course))
+                if crow is not None and not conn.execute(
+                    "SELECT COUNT(*) AS c FROM chapters WHERE course_id=?", (crow["id"],)
+                ).fetchone()["c"]:
+                    return {"ok": False, "no_tree": True,
+                            "error": f"《{crow['name']}》还没抓过章节树。先点该课程行的「⬇ 抓章节」"
+                                     "（进课程页 1 次，不消耗当日额度），看到共几节后再刷"}
         finally:
             conn.close()
         if not n:

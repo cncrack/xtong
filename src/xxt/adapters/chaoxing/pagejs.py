@@ -34,6 +34,31 @@ def match_chapter_id(conn, course_id: int, title: str) -> int | None:
     return row["id"] if row else None
 
 
+def no_pending_reason(conn, course_id: int) -> str:
+    """本地无待学节时，给出一条**能区分成因**的收工原因（只查库，零平台访问）。
+
+    2026-10-30（轻档）：以前两个引擎都写死一句“无待学章节”，把两种完全不同的情形
+    压成同一句话——「本地 70/70 真的学完了」与「这门课从没抓过章节树（库里 0 行）」，
+    用户与面板诊断（`core.diagnose`）都无从判断该等明天还是先去抓章节。
+
+    放本模块而不是各引擎各写一份：两引擎同源是硬要求（否则一边改了另一边没改，
+    面板看到的文案就取决于这次走的是同步还是异步路径）。文案关键词需与
+    `diagnose._RULES` 的 notree / done 保持一致。
+    """
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM chapters WHERE course_id=?", (course_id,)
+    ).fetchone()["c"]
+    if not total:
+        return ("未抓章节树，本地无待学章节"
+                "（刷之前在面板该课程行点「⬇ 抓章节」，1 次访问不消耗当日额度）")
+    done = conn.execute(
+        "SELECT COUNT(*) AS c FROM chapters WHERE course_id=? AND status='done'",
+        (course_id,),
+    ).fetchone()["c"]
+    return (f"本地 {done}/{total} 已全部完成（本次未与平台核对；"
+            "要核对在面板该课程行点「↻ 与平台核对」）")
+
+
 def pick_pending_after(conn, course_id: int, after_pid: str | None,
                        tried: list[str] | set[str]) -> tuple[str, str] | None:
     """按 idx 顺序挑下一个待学节：先取 after_pid 之后的，到尾部再从头绕回。
