@@ -19,6 +19,24 @@ LOGIN_PAGE = f"{BASE}/Login.aspx"              # 【实测】1920 宽也落这�
 # 两个都要认：只认一个就会把“掉登录”误当成“页面变慢”。
 LOGIN_PAGES = (LOGIN_PAGE, f"{BASE}/Loginb.aspx")
 LOGIN_POST = f"{BASE}/HidLogin.aspx"           # 【实测】表单 POST，明文
+
+# 【实测 §7.2/§7.4】登录表单结构：`<form id="frmLogin">`，字段名 = `name`/`pw`/`verifyCode`，
+# `screenType` 是服务端渲染的 hidden（值随视口档位变）→ **不得硬编码、不得改它**。
+LOGIN_FORM_ID = "frmLogin"
+LOGIN_FIELD_NAME = "name"
+LOGIN_FIELD_PW = "pw"
+LOGIN_FIELD_VERIFY = "verifyCode"
+LOGIN_VERIFY_ROW = "trVerify"                  # 默认 `display:none`，仅 needVerify=1 时显示
+NEED_VERIFY_HINT = "needVerify=1"             # 出现即**转人工**，绝不试错验证码
+LOGIN_SUBMIT_SELECTOR = "input[name='btnSubmit'], #btnSubmit, input[type='submit']"
+
+# 【实测 2026-10-29 13:58】真正的凭据票 = **`.ASPXAUTH`**（ASP.NET Forms 认证票）。
+# 证据：① 12:49 被踢到登录页时导出的 10 条 cookie 里 **没有它**；
+#       ② 12:52 重登后它出现，随后连播 47 分钟不断；
+#       ③ 它是**会话级**（`expires=-1`，关浏览器即失）。
+# ⇒ “掉登录”的直接成因不是 cookie 被清空，而是**这张票没了**；
+#   而它是否还在可以**本地零请求读到** → 每节开播前自检，不必等到页面掉登录。
+AUTH_COOKIE = ".ASPXAUTH"
 MAIN_PAGE = f"{BASE}/Homew/MainPage.aspx?menu=3&subMenu=4"   # 【实测】学习入口
 
 LIST_PATH = "/Study/LibraryStudyList.aspx"     # 【实测】课程/节列表（在 iframe 里）

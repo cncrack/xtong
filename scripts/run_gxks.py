@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import watch_gxks as wg  # noqa: E402  复用连浏览器 / 事件打印
 
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
+from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
 
 
@@ -74,6 +75,8 @@ def main() -> int:
     ap.add_argument("--gap-max", type=float, default=60.0, help="节间最长歇息秒")
     ap.add_argument("--port", type=int, default=9222, help="Chrome 调试端口")
     ap.add_argument("--label", default="", help="日志标签（如 甲）；不得写真实姓名")
+    ap.add_argument("--no-relogin", action="store_true",
+                    help="禁用自动重登（即使 data/account.local.json 已配好）")
     args = ap.parse_args()
 
     started = time.monotonic()
@@ -87,6 +90,30 @@ def main() -> int:
     tag = f"{args.label}_" if args.label else ""
     finished: list[dict] = []
 
+    # 自动重登：只读本地凭据文件（gitignore），占位符/缺失 → None = 不启用（掉线即停）
+    cred = None if args.no_relogin else glogin.load_credentials()
+    print(f"自动重登：{'已启用（凭据来自本地文件，不回显）' if cred else '未启用（掉线即停，等人工）'}")
+
+    def do_relogin(why: str) -> bool:
+        """**只试一次**。验证码闸门与会失败一律停，不循环试（连试 = 撞库特征）。"""
+        if cred is None:
+            print(f"{why} → 凭据未配置，停")
+            return False
+        print(f"{why} → 尝试自动重登（只此一次）")
+        if not gdriver.at_login_page(page.url):
+            try:
+                page.goto(selectors.LOGIN_PAGE, wait_until="commit", timeout=60000)
+                page.wait_for_timeout(2000)
+            except Exception:                              # noqa: BLE001
+                print("  打不开登录页 → 停")
+                return False
+        out = glogin.login(page, cred)
+        extra = f"（{out.get('reason')}）" if out.get("reason") else ""
+        print(f"  重登结果：{out['result']}{extra}")
+        if out["result"] == "need_verify":
+            print("  ⚠ 服务端要验证码 → 必须人工登录，脚本不再尝试")
+        return out["result"] == "ok"
+
     print(f"=== 连续播放开始 {datetime.now():%H:%M:%S}"
           f"（最多 {args.max_sections} 节 / {args.max_total_hours:.1f} 小时）===")
 
@@ -99,7 +126,10 @@ def main() -> int:
 
         state = ensure_list(page, drv)
         if state == "login":
-            print("\n[DYING] 页面已落到登录页 → 停。请在该 Chrome 窗口重新登录后重跑本命令")
+            if do_relogin("页面已落到登录页"):
+                state = ensure_list(page, drv)
+        if state == "login":
+            print("\n[DYING] 仍未登录 → 停。请在该 Chrome 窗口人工登录后重跑本命令")
             code = 4
             break
         if not state:
@@ -149,7 +179,11 @@ def main() -> int:
               f"{final.get('done_minutes')}/{final.get('required_minutes')} {final.get('state')}")
 
         if out["result"] == "session_lost":
-            print("⚠ 会话失效（Q20）→ 停。重登后重跑本命令即从下一节续播")
+            # 掉登录：重登一次成功后**重新挑节**（本节未完成，下一轮会重新挑到它）
+            if do_relogin("守播中掉登录"):
+                print("重登成功 → 本节未达标，下一轮重新挑它继续播")
+                continue
+            print("⚠ 会话失效且未能重登 → 停")
             code = 4
             break
 
