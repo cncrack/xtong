@@ -40,7 +40,8 @@ from xxt.adapters.gxks import selectors
 
 CDP = "http://127.0.0.1:9222"
 LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached",
-              "session_lost", "report_bad", "ended_reached"}
+              "session_lost", "report_bad", "ended_reached",
+              "replay_short", "replay_filled", "replay_failed", "ended_short"}
 QUIET_STATES = {"ok"}
 
 
@@ -88,6 +89,20 @@ def make_printer(log_path: Path):
             elif kind == "margin_reached":
                 extra = (f" 已 {ev.get('done')}/{ev.get('need')} 分钟 ≥ 要求+{ev.get('margin')}"
                          f" → 达标收工（不卡“刚刚好”）")
+            elif kind == "ended_short":
+                r = ev.get("row") or {}
+                extra = (f" 视频播完但列表只 {r.get('done_minutes')}/{r.get('required_minutes')}"
+                         f"（快照可能过期）→ 立即 fresh 回读，仍差再等 {ev.get('settle')}s")
+            elif kind == "replay_short":
+                r = ev.get("row") or {}
+                extra = (f" 视频播完但只 {r.get('done_minutes')}/{r.get('required_minutes')}"
+                         f" → 第 {ev.get('replay')}/{ev.get('limit')} 次补播（重播是增量记账，Q12）")
+            elif kind == "replay_filled":
+                r = ev.get("row") or {}
+                extra = (f" 补播后 {r.get('done_minutes')}/{r.get('required_minutes')}"
+                         f" → 已够要求，收工（不再追余量）")
+            elif kind == "replay_failed":
+                extra = " 补播重载失败 → 转人工"
             print(f"[{stamp}] {kind}{extra}", flush=True)
         last["state"] = kind
 

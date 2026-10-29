@@ -177,6 +177,25 @@ def test_meets_required_ignores_margin():
     assert driver.enough_with_margin(row, 2) is False
 
 
+def test_should_replay_only_when_short_and_budget_left():
+    """视频播完却连“要求”都没到 → 补播一次（Q26）。
+
+    2026-10-29 1.7 实测：要求 20 分钟的视频播到 `ended`（m_time 1295），列表只 19/20——
+    最后一分钟的 `updateTime` 没发出去。重播是增量记账（Q12），补上那一分钟即可。
+    但**缺数据不补**：判不了就不动，免得在异常页上瞎转。
+    """
+    short = {"done_minutes": 19, "required_minutes": 20}
+    assert driver.should_replay(short, 0) is True
+    assert driver.should_replay(short, 1) is False             # 默认只补一次
+    assert driver.should_replay(short, 0, max_replays=0) is False   # 显式关掉
+
+    assert driver.should_replay({"done_minutes": 20, "required_minutes": 20}, 0) is False
+    assert driver.should_replay({"done_minutes": 21, "required_minutes": 20}, 0) is False
+    assert driver.should_replay({"done_minutes": None, "required_minutes": 20}, 0) is False
+    assert driver.should_replay({}, 0) is False
+    assert driver.should_replay(None, 0) is False
+
+
 # ---------------------------------------------------------------- 上报状态（Q20 取证）
 
 
@@ -222,7 +241,9 @@ def test_cache_busted_appends_when_absent():
     assert "?Id=1&rnd=" in out
 
 
-@pytest.mark.parametrize("name", ["watch", "read_row", "open_section", "reload_player",
+@pytest.mark.parametrize("name", ["watch", "read_row", "read_page", "refresh_here", "current_pager",
+                                  "next_page", "prev_page", "goto_page", "find_section",
+                                  "open_section", "reload_player",
                                   "sample_player", "mute", "pause", "leave_player"])
 def test_driver_exposes_thin_io_methods(name):
     assert callable(getattr(driver.GxksDriver, name, None))

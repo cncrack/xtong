@@ -136,19 +136,17 @@ def main() -> int:
             print("\n[FAIL] 列表读不到行 → 停")
             code = 2
             break
-        rows = state
-
-        if wanted:
-            row = next((r for r in rows if str(r["platform_chapter_id"]) in wanted), None)
-            if row is None:
+        # **逐页找节**（Q27）：列表 1/4 共 36 节，只在当前页挑会误报“没有未完成的节”。
+        # 找到后 find_section 会停在该节所在页——`read_row` 的回读靠当前页。
+        row = drv.find_section(wanted)
+        if row is None:
+            if wanted:
                 print("[DONE] 指定节都不在列表里了")
-                break
+            else:
+                print("\n[DONE] 列表里没有未完成的节了（已翻完所有页）")
+            break
+        if wanted:
             wanted.remove(str(row["platform_chapter_id"]))
-        else:
-            row = gdriver.pick_next_section(rows)
-            if row is None:
-                print("\n[DONE] 列表里没有未完成的节了")
-                break
         if gdriver.section_status(row) == "done":
             print(f"[SKIP] {row['platform_chapter_id']} 已达标，跳过")
             continue
@@ -180,7 +178,7 @@ def main() -> int:
 
         final = out.get("last_row") or {}
         print(f"结果 {out['result']}；用时 {out['seconds'] / 60:.1f} 分钟；"
-              f"重载 {out['reloads']} / 重建 {out['rebuilds']}；列表 "
+              f"重载 {out['reloads']} / 重建 {out['rebuilds']} / 补播 {out.get('replays', 0)}；列表 "
               f"{final.get('done_minutes')}/{final.get('required_minutes')} {final.get('state')}")
 
         if out["result"] == "session_lost":

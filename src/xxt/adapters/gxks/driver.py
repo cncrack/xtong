@@ -36,6 +36,9 @@ MAX_RECOVERIES_PER_SECTION = 6    # 单节重载上限，超了转人工
 MAX_PAUSE_RECOVERIES = 3          # 同一节反复被判 paused 时最多拉回几次（C2：不能无限 play）
 NO_REPORT_AFTER_SECONDS = 75      # 上报是 60 秒一拍；超过 75 秒没新增上报 = 网络/上报断了
 OVERRUN_MARGIN_MINUTES = 2        # 达标不能“刚刚好”：学时 ≥ 要求 + 本余量 才停（C11）
+MAX_REPLAYS_PER_SECTION = 1         # 视频播完还差学时 → 重播补足，最多补播几次（Q26）
+ENDED_SETTLE_SECONDS = 240        # `ended` 后兜底等待期：fresh 回读仍差时再等一会儿（1.8 实测通常是 0s）
+REPLAY_WINDOW_SECONDS = 300       # 补播只盯 5 分钟：够了立刻收工，不再白播整段
 
 # 浏览器侧采样脚本：只读 DOM，不做任何操作
 _PROBE_JS = """() => {
@@ -121,6 +124,26 @@ def plan_action(state: str, *, reloads: int = 0,
             return "wait"
         return "reload"
     return "wait"                      # unknown：不猜，等下一次采样
+
+
+def should_replay(row: dict[str, Any] | None, replays: int,
+                  max_replays: int = MAX_REPLAYS_PER_SECTION) -> bool:
+    """视频播完、**fresh 回读且等过等待期**后学时仍差 → 是否值得重播补足（Q26）。
+
+    2026-10-29 1.7 实测：ended 时列表 19/20（用的是 1 分钟前的回读快照），旧代码直接判“学时不涨”
+    并停了整批；事后回读已是 20/20 `done`。1.8 复验把因果钉死：ended 瞬间 **fresh 回读**就到 20/20
+    （`settled=0`）⇒ 1.7 那次是**快照过期**，不是丢分钟。
+
+    等过 `ENDED_SETTLE_SECONDS` 仍差才是真差：重播补上（重播是增量记账，Q12：1.1 实测 46→54，不清零）。
+    缺数据（None）一律不补：判不了就不动，交给人工看。
+    """
+    if replays >= max_replays:
+        return False
+    done_n = (row or {}).get("done_minutes")
+    need_n = (row or {}).get("required_minutes")
+    if not isinstance(done_n, int) or not isinstance(need_n, int):
+        return False
+    return done_n < need_n
 
 
 def quota_gap(row: dict[str, Any]) -> int | None:
@@ -266,19 +289,11 @@ class GxksDriver:
             return re.sub(r"([?&]rnd=)\d+", lambda m: m.group(1) + stamp, url)
         return url + ("&" if "?" in url else "?") + f"rnd={stamp}"
 
-    def read_page(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
-        """读当前页 → `{rows, pager}`。
+    def _parse_settled(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
+        """等行数稳定再解析当前 DOM（不自己导航）。
 
-        ⚠ 必须等行数稳定再解析：实测读早了只出 6 行且分页为 None（Q9），
-        静默少读几节比报错更危险。
+        ⚠ 实测读早了只出 6 行且分页为 None（Q9），静默少读几节比报错更危险。
         """
-        frame = self.list_frame()
-        if frame is None:
-            return {"rows": [], "pager": {}}
-        try:
-            frame.goto(self.cache_busted(frame.url), wait_until="commit", timeout=self.page_timeout_ms)
-        except Exception:                                  # noqa: BLE001  网络抖动不该直接失败
-            pass
         last: list[dict[str, Any]] = []
         budget = int(self.settle_seconds * 1000 * 3 / max(1, tries))
         for _ in range(tries):
@@ -291,13 +306,135 @@ class GxksDriver:
             if len(rows) >= min_rows and len(rows) == len(last):
                 return parsed
             last = rows
+        frame = self.list_frame()
         return listparse.parse_course_page(frame.content()) if frame else {"rows": last, "pager": {}}
+
+    def read_page(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
+        """读**第 1 页** → `{rows, pager}`（GET 重载 + cache-bust）。
+
+        ⚠ GET 重载会把手动翻到的页号**丢掉**（实测 2026-10-29 17:52：goto_page(2) 后
+        `read_page()` 回到 `1/4`）——翻页是 `__doPostBack` 回发，页号只在 viewstate 里。
+        所以第 2 页及之后的刷新一律用 `refresh_here()`，不要用本方法。
+        """
+        frame = self.list_frame()
+        if frame is None:
+            return {"rows": [], "pager": {}}
+        try:
+            frame.goto(self.cache_busted(frame.url), wait_until="commit", timeout=self.page_timeout_ms)
+        except Exception:                                  # noqa: BLE001  网络抖动不该直接失败
+            pass
+        return self._parse_settled(min_rows=min_rows, tries=tries)
+
+    def prev_page(self) -> bool:
+        """点「上一页」（同样是 ASP.NET 回发）。"""
+        frame = self.list_frame()
+        if frame is None:
+            return False
+        try:
+            btn = frame.query_selector(selectors.PAGER_PREV)
+            if btn is None:
+                return False
+            btn.click(timeout=self.page_timeout_ms)
+        except Exception:                                  # noqa: BLE001
+            return False
+        self.page.wait_for_timeout(self.settle_seconds * 1000)
+        return True
+
+    def refresh_here(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
+        """刷新**当前页**并解析（第 2 页及之后靠回发绕缓存，GET 会跳回第 1 页）。
+
+        第 1 页直接用 GET cache-bust（便宜且不变页号）；其余页用「下一页→上一页」
+        或「上一页→下一页」来回一次取得新响应（Q8 已用同法绕过服务端缓存）。
+        """
+        pager = self.current_pager()
+        cur = pager.get("current")
+        if not isinstance(cur, int) or cur <= 1:
+            return self.read_page(min_rows=min_rows, tries=tries)
+        if pager.get("has_next"):
+            self.next_page()
+            self.prev_page()
+        elif pager.get("has_prev"):
+            self.prev_page()
+            self.next_page()
+        return self._parse_settled(min_rows=min_rows, tries=tries)
 
     def read_row(self, section_id: str | int) -> dict[str, Any] | None:
         """回读某一节的列表行——**这是唯一的达标判据来源**。"""
-        for row in self.read_page()["rows"]:
+        for row in self.refresh_here()["rows"]:
             if str(row.get("platform_chapter_id")) == str(section_id):
                 return row
+        return None
+
+    # ---------------------------------------------------------- 翻页
+
+    def current_pager(self) -> dict[str, Any]:
+        """从当前 DOM 读分页状态（**不重载页面**）：`{current, total, has_next, has_prev}`。"""
+        frame = self.list_frame()
+        if frame is None:
+            return {}
+        try:
+            return listparse.parse_pager(frame.content())
+        except Exception:                                  # noqa: BLE001
+            return {}
+
+    def next_page(self) -> bool:
+        """点「下一页」。分页是 ASP.NET 回发（`__doPostBack`），**不能用 URL 参数翻页**。"""
+        frame = self.list_frame()
+        if frame is None:
+            return False
+        try:
+            btn = frame.query_selector(selectors.PAGER_NEXT)
+            if btn is None:
+                return False
+            btn.click(timeout=self.page_timeout_ms)
+        except Exception:                                  # noqa: BLE001
+            return False
+        self.page.wait_for_timeout(self.settle_seconds * 1000)
+        return True
+
+    def goto_page(self, target: int, *, max_steps: int = 12) -> bool:
+        """翻到第 `target` 页（1 基）。已在目标页直接返回 True；失败返回 False。"""
+        target = max(1, int(target))
+        for _ in range(max_steps):
+            pager = self.current_pager()
+            cur = pager.get("current")
+            if not isinstance(cur, int):
+                return False
+            if cur == target:
+                return True
+            if cur < target and not pager.get("has_next"):
+                return False
+            if not self.next_page():
+                return False
+            if self.current_pager().get("current") == cur:   # 点了没动：不硬转
+                return False
+        return False
+
+    def find_section(self, section_ids: list[str] | None = None,
+                     *, max_pages: int = 12) -> dict[str, Any] | None:
+        """逐页找目标节，**找到后停在该页**（后续 `read_row` 靠当前页）。
+
+        `section_ids` 为空 → 找第一个未完成（`state != done`）的节；给了就找 id 命中的。
+        2026-10-29 实测：列表 `1/4` 共 **36 节**，而调度器原只在当前页挑节 ⇒ 第 1 页 9 节
+        跑完后会误报“没有未完成的节”而收工。
+        """
+        if not self.goto_page(1):
+            return None
+        page_no = 1
+        while page_no <= max_pages:
+            # 第 1 页用 GET（顺带拿新数据）；翻过的页只能解析当前 DOM，再 GET 就回第 1 页了
+            parsed = self.read_page() if page_no == 1 else self._parse_settled()
+            for row in parsed["rows"]:
+                if section_ids:
+                    if str(row.get("platform_chapter_id")) in section_ids:
+                        return row
+                elif section_status(row) != "done":
+                    return row
+            if not (parsed.get("pager") or {}).get("has_next"):
+                return None
+            if not self.next_page():
+                return None
+            page_no += 1
         return None
 
     # ---------------------------------------------------------- 进入节
@@ -421,6 +558,7 @@ class GxksDriver:
     def watch(self, section_id: str | int, *, interval: float = 30.0,
               max_seconds: float = 6 * 3600, read_progress_every: float = 600.0,
               margin_minutes: int = OVERRUN_MARGIN_MINUTES,
+              max_replays: int = MAX_REPLAYS_PER_SECTION,
               on_event: Any = None) -> dict[str, Any]:
         """守一节：保活 + 重建恢复 + 定期回读达标。
 
@@ -428,10 +566,16 @@ class GxksDriver:
         `updateTime` 碰上 503/断网就不会入账，列表会卡在 `要求-1`，变成“视频播完了却还显示学习中”。
         所以判定线是 `已完成学时 ≥ 要求 + 余量`，而不是 `≥ 要求`。
 
+        `max_replays`：视频播完但学时**连要求都没到**时，重播补足（Q26）。重播是增量记账（Q12），
+        不会清零已得学时；补播阶段只盯 `REPLAY_WINDOW_SECONDS`，一旦够要求立即收工。
+
         返回 `{result, seconds, reloads, rebuilds, last_row}`，
         `result` ∈ `done|pending|timeout|escalate`（由调用方决定要不要切下一节）。
         """
         started = time.monotonic()
+        watch_until = started + max_seconds
+        replays = 0
+        ended_at: float | None = None
         prev: dict[str, Any] | None = None
         prev_at = started
         rebuilds = 0
@@ -465,7 +609,7 @@ class GxksDriver:
         except Exception:                                  # noqa: BLE001
             pass
 
-        while time.monotonic() - started < max_seconds:
+        while time.monotonic() < watch_until:
             now = time.monotonic()
 
             # 会话失效必须先认出来（Q20）：掉登录时整页被踢到 Login.aspx/Loginb.aspx，
@@ -500,12 +644,45 @@ class GxksDriver:
             elif action == "escalate":
                 # 视频播完是**正常边界**，不是异常：`ended` 后站点 `stopLoop()`（实测 m_time 冻在 2816）。
                 # 只要列表已达“要求”（即便够不着余量线），就按达标收工——没东西可再播了。
-                if state == "ended" and meets_required(last_row):
-                    emit("ended_reached", row=last_row)
-                    return {"result": "done", "seconds": now - started, "reloads": self._reloads,
-                            "rebuilds": rebuilds, "last_row": last_row, "reason": "ended_at_required"}
+                if state == "ended":
+                    # 1.7 的“19/20”其实是**快照过期**：ended 时用的是 1 分钟前的回读值。
+                    # 1.8 复验：ended 瞬间 fresh 回读就到 20/20 done（`settled=0`）⇒ 必须立即回读。
+                    # 若仍差，进 `ENDED_SETTLE_SECONDS` 等待期（果真有落库延迟也兜得住），再考虑补播。
+                    if ended_at is None:
+                        ended_at = now
+                        emit("ended_short", row=last_row, settle=ENDED_SETTLE_SECONDS)
+                    if now >= next_read:
+                        fresh = self.read_row(section_id)
+                        next_read = now + 60.0
+                        # 读不到行（列表帧消失等）时不拿旧值下结论，继续等下一拍
+                        if fresh is not None:
+                            last_row = fresh
+                            emit("progress", status=section_status(last_row), row=last_row, fresh=True)
+                            if meets_required(last_row):
+                                emit("ended_reached", row=last_row, settled=round(now - ended_at))
+                                return {"result": "done", "seconds": now - started,
+                                        "reloads": self._reloads, "rebuilds": rebuilds,
+                                        "last_row": last_row, "reason": "ended_at_required",
+                                        "replays": replays}
+                    if now - ended_at < ENDED_SETTLE_SECONDS:
+                        continue
+                    # 等过了仍不够（1.7 的 19/20 真差）：重播补上（Q12 证明是增量记账），
+                    # 在补播窗口内一旦达标立即收工。
+                    if should_replay(last_row, replays, max_replays):
+                        replays += 1
+                        emit("replay_short", row=last_row, replay=replays, limit=max_replays)
+                        if self.reload_player():
+                            self.play()
+                            prev, prev_at = None, now          # t 归零，不清基线会被判 rebuild
+                            last_updates, last_update_at = None, now
+                            ended_at = None
+                            next_read = now + 10.0
+                            watch_until = min(watch_until, now + REPLAY_WINDOW_SECONDS)
+                            continue
+                        emit("replay_failed", replay=replays)
                 return {"result": "escalate", "seconds": now - started,
-                        "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
+                        "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row,
+                        "replays": replays}
 
             if state == "ok":
                 pause_recoveries = 0        # 真正在走就把计数清零，避免历史上偶发暂停把配额吃掉
@@ -535,11 +712,16 @@ class GxksDriver:
                 done_n = (last_row or {}).get("done_minutes")
                 need_n = (last_row or {}).get("required_minutes")
                 enough = enough_with_margin(last_row or {}, margin_minutes)
-                if enough or (status == "done" and margin_minutes <= 0):
+                # 补播阶段放宽到“要求”：重播只为补回丢掉的那一分钟，不该再追余量（1.7 就 20 分时长）。
+                if enough or (status == "done" and margin_minutes <= 0) \
+                        or (replays > 0 and meets_required(last_row or {})):
                     if status != "done" and enough:
                         emit("margin_reached", done=done_n, need=need_n, margin=margin_minutes)
+                    if replays > 0 and not enough:
+                        emit("replay_filled", row=last_row, replays=replays)
                     return {"result": "done", "seconds": now - started,
-                            "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row}
+                            "reloads": self._reloads, "rebuilds": rebuilds, "last_row": last_row,
+                            "replays": replays}
                 # 收尾阶段加密回读：距目标不足 10 分钟时改每 60 秒读一次，
                 # 否则 5 分钟一回读会把超跑余量拖成“多跑 5~7 分钟”（36 节就是白跑 4 小时）。
                 read_every = read_progress_every
