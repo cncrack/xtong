@@ -10,6 +10,48 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
+_SHOWFRAME_RE = re.compile(r"showframe\(\s*'([^']*)'\s*,\s*(\d+)\s*\)")
+_SHOWEXAM_RE = re.compile(r"showExam\((\d+)\)")
+
+
+def section_index(course_doc: dict | None) -> dict[str, dict]:
+    """从课程列表页快照按**练习 ID** 反查节 ID / 节名 / 课程名。
+
+    为什么要它：练习页 URL 只有 `Tk_Cl_Id`（练习 ID），**没有节 ID**；而归类导出需要节 ID。
+    列表行结构（实测 2026-10-29）：
+
+        [节名, 课程分类, 学时要求, 已完成学时, 状态,
+         {links: showframe('节名', 节ID)}, {links: showExam(练习ID)}]
+
+    找不到就是 `{}`（列表快照可能只含当前页，不为缺项报错）。
+    """
+    out: dict[str, dict] = {}
+    course = (course_doc or {}).get("course") or {}
+    for table in course.get("tables") or []:
+        for row in table.get("rows") or []:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            section_name = str(row[0]).strip()
+            course_name = str(row[1]).strip()
+            chapter_id = ""
+            exercise_ids: list[str] = []
+            for cell in row[2:]:
+                if not isinstance(cell, dict):
+                    continue
+                for link in cell.get("links") or []:
+                    onclick = link.get("onclick") or ""
+                    frame_hit = _SHOWFRAME_RE.search(onclick)
+                    if frame_hit:
+                        chapter_id = frame_hit.group(2)
+                        section_name = section_name or frame_hit.group(1).strip()
+                    exam_hit = _SHOWEXAM_RE.search(onclick)
+                    if exam_hit:
+                        exercise_ids.append(exam_hit.group(1))
+            for exercise_id in exercise_ids:
+                out[exercise_id] = {"section_id": chapter_id, "section_name": section_name,
+                                    "course_name": course_name}
+    return out
+
 
 def _text(fragment: str) -> str:
     return " ".join(BeautifulSoup(fragment, "html.parser").get_text(" ", strip=True).split())
@@ -39,8 +81,13 @@ def _choice(value: Tag | None, keys: list[str]) -> dict | None:
 
 
 def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
-                  stage2: dict, review_meta: dict, review_html: str) -> dict:
-    """以题号＋完整题干＋选项顺序交叉核对，避免按颜色或列表位置盲配答案。"""
+                  stage2: dict, review_meta: dict, review_html: str,
+                  course_doc: dict | None = None) -> dict:
+    """以题号＋完整题干＋选项顺序交叉核对，避免按颜色或列表位置盲配答案。
+
+    `course_doc` 是可选的课程列表页快照（`practice_meta.json`）：有它才能把节 ID 与
+    课程名填进答卷（练习页 URL 只有练习 ID）。缺省时这两项留空，不影响题目与答案。
+    """
     start = _params(stage1["url"])
     if start.get("examstartid") != questions_doc.get("exam_start_id"):
         raise ValueError("提交前快照与题目清单不是同一次练习")
@@ -123,10 +170,16 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
         raise ValueError("逐题得分合计不等于答卷总得分")
     if abs(sum(q["max_score"] for q in questions) - total_score) > 0.001:
         raise ValueError("逐题满分合计不等于试卷总分")
+    hit = section_index(course_doc).get(start["tk_cl_id"], {})
+    if hit and questions_doc.get("section_name") and hit["section_name"] != questions_doc["section_name"]:
+        raise ValueError("课程列表快照与题目清单的节名不一致")
     return {
         "format_version": 1, "account_label": account_label,
         "exam_start_id": start["examstartid"], "exercise_id": start["tk_cl_id"],
-        "course_id": "", "section_id": "", "section_name": questions_doc.get("section_name", ""),
+        # course_id 存平台课程名（如“军事理论（字幕版）”）：`ddlClass` 的 value 尚未采集，
+        # 存名字既稳定又可直接用于分组；节 ID 才是真正的节粒度主键。
+        "course_id": hit.get("course_name", ""), "section_id": hit.get("section_id", ""),
+        "section_name": hit.get("section_name") or questions_doc.get("section_name", ""),
         "paper_label": questions_doc.get("paper_label", ""), "start_time": start.get("starttime", ""),
         "result_id": result_id, "total_score": total_score, "got_score": got_score,
         "type_map": questions_doc.get("type_map", {}), "questions": questions,

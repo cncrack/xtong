@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**题库三处缺陷修复 + 路径统一**，代码审查后当场修）：① **分类字段恒为空**——练习页 URL 只带 `Tk_Cl_Id`（练习 ID），**没有节 ID**，原 `parse_capture` 把 `course_id`/`section_id` 硬写 `""`；现新增 `section_index(course_doc)`，从课程列表快照按 `showExam(练习ID)` 反查到 `showframe('节名', 节ID)`（实测 `15263 → 1289 / 1.1 国防概述`），并校验两侧节名一致，不一致直接 raise；`import_gxks_practice.py` 相应可选读 `practice_meta.json`。② **幂等语义错误**——原 `digest` 把 `course_id`/`section_id` 算进去且 enrich UPDATE 在幂等 return **之后**，导致“只补分类”会多出一条快照与一份重复答案；现 `_content_digest` 只取 `exam_start_id`/`exercise_id`/`questions`，enrich 提到幂等判定之前（补分类不算新作答）。③ **跨节同题无处归并**——保留 `UNIQUE(platform_qid, fingerprint)` 存证，新增 `gx_q_items.fingerprint` 索引（`GXKS_SCHEMA_VERSION` 1→2，建表全 `IF NOT EXISTS`，旧库可原地升）与新函数 `bank_items()`（按指纹归并，带 `occurrences`/`platform_qids`），导出不必全表扫。④ **路径跟随项目根**——`ledger.py`/`accounts.py` 原用相对 cwd 的 `data/...`，从别的目录启动会写出第二份账本、额度判定直接失效；改为 `find_project_root()`（`XXT_ROOT` > exe 目录 > 仓库根），新增 `backfill_classification()` 供历史数据补分类（**只填空值**，幂等）。验收：对库里唯一一条答卷补成 `course_id='军事理论（字幕版）'`/`section_id='1289'`，快照数保持 1；`pytest` **398 passed**。
 - 2026-10-30（**课后练习题库打通：离线回收 → 结构化累加入库**）：用户要求“题目 / 题型 / 选项 / 答案都要记录，表结构要有足够扩展性，后期按题目归类导出 Excel”。落地四件：① `store/schema_gxks.py` 独立迁移（独立版本键 `meta.gxks_schema_version`，**不动共享 `SCHEMA_VERSION`**，超星库零新增表列；`open_question_bank()` 拒绝已有 `accounts` 表的业务库，防路径选错污染旧库）② `store/gxks_questions.py` 幂等累加导入（同卷同 `digest` 二次导入返回 `inserted=false`；题号集合或分值变化整体回滚；题目版本共享、作答证据按 `import_id` 追加，**不覆盖旧答案**）③ `adapters/gxks/practice.py` 交叉校验解析（AttemptId / 练习 ID / 结果 ID、题数与题 ID、选项数 == `tm_arr[4]`、题干与选项顺序、开始时间、逐题得分合计 == 答卷总得分、逐题满分合计 == 试卷总分；**只接受已实测的 `type_code=2`**，其余题型直接拒绝而不是猜）④ `scripts/import_gxks_practice.py`（`--dry-run`；只存来源文件 sha256）。**关键决策**：表结构按“题目版本 + 部件表 + 作答证据”三层拆分，新题型只加部件、**不改表结构**（对应 §11.4）；答案按 `account_label` 隔离，绝不跨账号复用。验收：首批真实答卷 `1 卷 / 3 题 / 100 分`，三条作答 `c/c/a` 与标准答案逐题对齐；重复导入计数不变；`PRAGMA integrity_check=ok`、`foreign_key_check=[]`；`pytest` **396 passed**。
 - 2026-10-29（**Q32 补：选项分隔符是分号，不是竖线**）：用户拿截图逐字对原题时发现“选项像被省略了字”。复查 `tm_arr[5]` 原文：`《中华人民共和国国家安全法》;《中华人民共和国宪法》;《中华人民共和国国防法》;《中华人民共和国国防教育法》` —— **四个选项用分号 `;` 拼接**，而我之前的脚本用 `split("|")`（竖线）拆，整串被当成**1 个选项**，所以输出看起来“只有一个选项、字都在但没拆开”。已同步修 `data/debug/probe_exam_live.py` 与 `capture_stage1.py`（改 `split(";")`），并把本文件 Q28 里“竖线分隔”的表述改成分号。**教训**：把“一眼看出结构”和“脚本实际拆出来”当同一件事，就会把拆错的输出当结论；以后分隔符类结论必须用“拆完的项数 == `tm_arr[4]` 选项数”自校验。
 - 2026-10-29（**Q32：练习“点一次就新建一份”，但不交卷＝不留成绩**）：读课程页自带的 `showExam()` 源码（`data/debug/showexam_src.json`）：`IsContinue=0` **写死**、函数体**没有任何次数检查或上限判断**（唯一分支是 `p_ExamId==0 → alert("没有课后练习！")`）⇒ 每点一次「参加练习」服务端就新建一份 `ExamStartId`（1.1 今天已有 2 条：`23547173`@19:13:38、`23548425`@20:20:18）。同时把“留痕”查清（`probe_exam_records.py`/`probe_practice_meta.py`）：**「我的考试」`ExamList.aspx` 空表**（课后练习不在那页）、**「成绩分析」切到课后练习分类仍空表 `1/0`** ⇒ 两次进入**成绩侧零痕迹**；「我的课程」的课后练习列只显示「参加练习」，**没有次数/成绩/做过标记**。⇒ “不答会怎样”的准确表述：**不提交＝不判分＝不留成绩（已证实）**；页面开着到 0 分会自动交卷（`startclock → btnSumbit_onclick`，源码已看）；**关窗后服务端是否按 `StartTime` 判废——未证实**。另：试卷名「1.01（新）」在 `ExamHeader`/`ExamDo` 两帧 **0 命中**，在**顶层 `ExamMain`**（本轮未读），`（新）`含义待下次进入确认；`showframe()` 用 `ddlClass.value` 当 `PlanId`，佐证 Q30“切课就是切这个值”。
@@ -455,7 +456,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 | `gx_q_types` | 新增表 | 题型字典（14 种，`code` + 中文名），取自平台 `tx_arr` 实测 |
 | `gx_q_items` | 新增表 | **题目版本**：`UNIQUE(platform_qid, fingerprint)`；`fingerprint` = sha256(题型 + 题干 + 题干 HTML + 部件 + extra)。题 ID 相同但内容或选项顺序变了即算**新版本**，避免答案字母错配 |
 | `gx_q_parts` | 新增表 | **部件表** `(item_id, ordinal, kind, part_key, content_json)`：题干 / 选项 / 材料 / 子问由部件承接，**新题型不改表结构** |
-| `gx_q_papers` | 新增表 | 一次答卷：`account_label`、`exam_start_id`、`exercise_id`、`course_id`、`section_id`、`section_name`、`paper_label`、`start_time`，`UNIQUE(account_label, exam_start_id)` |
+| `gx_q_papers` | 新增表 | 一次答卷：`account_label`、`exam_start_id`、`exercise_id`、`course_id`、`section_id`、`section_name`、`paper_label`、`start_time`，`UNIQUE(account_label, exam_start_id)`。**字段口径（2026-10-30 定）**：`section_id` = 课程列表行里 `showframe('节名', 节ID)` 的数字（真正的节粒度主键）；`course_id` 暂存**平台课程名**（如“军事理论（字幕版）”）——`ddlClass` 的 value 尚未采集，存名字既稳定又可直接分组 |
 | `gx_q_paper_items` | 新增表 | 卷面题序：`(paper_id, ordinal, item_id, max_score)` |
 | `gx_q_imports` | 新增表 | 导入批次：`digest`（幂等键） + `raw_json`，同一答卷可多次追加证据 |
 | `gx_q_answers` | 新增表 | 逐题作答证据：`picked_json` / `standard_json` 及各自 `*_source`（`human`/`site`/`ai`）、`score_got`、`is_correct`、`explanation_html`；主键 `(import_id, ordinal)` ⇒ **新判分追加、不覆盖旧答案** |
@@ -463,7 +464,15 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 
 题干可共用、答案不可共用——沿用超星 2026-10-26 定案。用户要求“碰到的题自动收库供后期检索”，只放宽**题干**，不放宽**答案**。
 
-**已落地实现**：`store/schema_gxks.py`（`GXKS_SCHEMA_VERSION=1`，7 张表 + 2 索引；拒绝降级打开、拒绝带未提交事务、`open_question_bank()` 见到 `accounts` 表即拒）+ `store/gxks_questions.py`（`import_bundle` 幂等、`read_attempt`、`bank_counts`）+ `adapters/gxks/practice.py`（`parse_capture` 交叉校验）+ `scripts/import_gxks_practice.py`（离线导入，`--dry-run`）。导入只存**来源文件 sha256**，姓名 / 学号 / ViewState 不入正式题库。
+**已落地实现**：`store/schema_gxks.py`（`GXKS_SCHEMA_VERSION=2`，7 张表 + 3 索引；拒绝降级打开、拒绝带未提交事务、`open_question_bank()` 见到 `accounts` 表即拒）+ `store/gxks_questions.py`（`import_bundle` 幂等、`read_attempt`、`bank_counts`、`backfill_classification`、`bank_items`）+ `adapters/gxks/practice.py`（`parse_capture` 交叉校验 + `section_index` 反查节 ID）+ `scripts/import_gxks_practice.py`（离线导入，`--dry-run`）。导入只存**来源文件 sha256**，姓名 / 学号 / ViewState 不入正式题库。
+
+**2026-10-30 三处修正**（对应 `docs/devlog/2026-10-30-02-gxks-bank-defect-fixes.md`）：
+
+1. **分类字段不再为空**：练习页 URL 只带 `Tk_Cl_Id`（练习 ID），**没有节 ID**；原实现把 `course_id` / `section_id` 硬写成 `""`。现由 `section_index(course_doc)` 从课程列表快照按 `showExam(练习ID)` 反查 `showframe('节名', 节ID)`，同时校验两侧节名一致。
+2. **幂等键只含内容**：`_content_digest` 只取 `exam_start_id` / `exercise_id` / `questions`；`course_id`、`section_id` 一类元信息变更**不再产生新快照与重复答案**（enrich UPDATE 提前到幂等判定之前）。
+3. **跨节同题可归并**：`gx_q_items` 仍按 `UNIQUE(platform_qid, fingerprint)` 保留证据，新增 `fingerprint` 索引；导出/检索走 `bank_items()`，同一指纹只出一条并带 `occurrences` 与 `platform_qids`。
+
+历史数据用 `backfill_classification()` 补（只填 `NULL`/空串，不覆盖已有值，幂等）：2026-10-30 已对库里唯一一条答卷补成 `course_id='军事理论（字幕版）'`、`section_id='1289'`，快照数保持 1。
 
 ### 11.5 控制协议与启停语义
 

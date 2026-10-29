@@ -20,14 +20,27 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
-DEFAULT_PATH = Path("data") / "gxks_ledger.jsonl"
+from xxt.config import find_project_root
+
+
+def default_path() -> Path:
+    """账本默认位置：跟着**项目根**（`XXT_ROOT` / exe 目录 / 仓库根），不跟当前工作目录。
+
+    早先写成相对路径 `data/gxks_ledger.jsonl`，从别的目录启动就会写出第二份账本，
+    同一账号的当日额度被拆到两处，额度判定直接失效（2026-10-30 修正）。
+    """
+    return find_project_root() / "data" / "gxks_ledger.jsonl"
+
+
+def _resolve(path: str | Path | None) -> Path:
+    return Path(path) if path is not None else default_path()
 
 
 def _today() -> str:
     return date.today().isoformat()
 
 
-def record(path: str | Path = DEFAULT_PATH, *, account: str, section_id: str,
+def record(path: str | Path | None = None, *, account: str, section_id: str,
            name: str = "", minutes: float = 0.0, result: str = "done",
            at: datetime | None = None) -> dict:
     """追加一条账；返回写入的记录（便于调用方打日志）。"""
@@ -41,7 +54,7 @@ def record(path: str | Path = DEFAULT_PATH, *, account: str, section_id: str,
         "minutes": round(float(minutes), 1),
         "result": result,
     }
-    p = Path(path)
+    p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -50,9 +63,9 @@ def record(path: str | Path = DEFAULT_PATH, *, account: str, section_id: str,
     return row
 
 
-def read_rows(path: str | Path = DEFAULT_PATH) -> list[dict]:
+def read_rows(path: str | Path | None = None) -> list[dict]:
     """读全部账；坏行跳过。文件不存在 → 空列表。"""
-    p = Path(path)
+    p = _resolve(path)
     if not p.exists():
         return []
     rows: list[dict] = []
@@ -69,7 +82,7 @@ def read_rows(path: str | Path = DEFAULT_PATH) -> list[dict]:
     return rows
 
 
-def today_totals(path: str | Path = DEFAULT_PATH, account: str = "",
+def today_totals(path: str | Path | None = None, account: str = "",
                  day: str | None = None) -> dict:
     """当日合计：`sections`（去重后的节数）/ `minutes` / `section_ids`。"""
     day = day or _today()
@@ -91,7 +104,7 @@ def today_totals(path: str | Path = DEFAULT_PATH, account: str = "",
 
 
 def quota_left(account: str, *, sections_limit: int, minutes_limit: int,
-               path: str | Path = DEFAULT_PATH, day: str | None = None) -> dict:
+               path: str | Path | None = None, day: str | None = None) -> dict:
     """还剩多少额度（可为 0，不会为负）。调度器据此决定“跳过 / 还能跑几节”。"""
     t = today_totals(path, account, day)
     left_sections = max(0, int(sections_limit) - int(t["sections"]))

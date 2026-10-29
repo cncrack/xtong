@@ -9,7 +9,8 @@ import pytest
 
 from xxt.store.db import connect
 from xxt.store.schema_gxks import migrate, open_question_bank
-from xxt.store.gxks_questions import bank_counts, import_bundle, read_attempt
+from xxt.store.gxks_questions import (backfill_classification, bank_counts, bank_items,
+                                     import_bundle, read_attempt)
 
 
 @pytest.fixture
@@ -140,7 +141,7 @@ def test_migration_separate_version_and_no_chaoxing_change(tmp_path):
         version = old.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
     with closing(open_question_bank(tmp_path / "new.db")) as new:
         migrate(new)
-        assert new.execute("SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()[0] == "1"
+        assert new.execute("SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()[0] == "2"
         assert new.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() is None
     with pytest.raises(ValueError, match="业务库"):
         open_question_bank(tmp_path / "old.db")
@@ -157,12 +158,38 @@ def test_enrich_classification_without_losing_history(conn, bundle):
     row = conn.execute("SELECT course_id,section_id FROM gx_q_papers").fetchone()
     assert tuple(row) == ("course-1", "section-1")
     assert bank_counts(conn)["question_versions"] == 1
-    assert bank_counts(conn)["snapshots"] == 2
+    # 补分类不是新作答：不能多出快照与重复答案（2026-10-30 修正后的语义）。
+    assert bank_counts(conn)["snapshots"] == 1
     changed = deepcopy(enriched)
     changed["section_id"] = "section-wrong"
     with pytest.raises(ValueError, match="归属"):
         import_bundle(conn, changed)
-    assert bank_counts(conn)["snapshots"] == 2
+    assert bank_counts(conn)["snapshots"] == 1
+
+
+def test_backfill_fills_only_empty_classification(conn, bundle):
+    import_bundle(conn, bundle)
+    assert backfill_classification(conn, account_label="jia", exam_start_id="attempt-1",
+                                   course_id="示例课程", section_id="1289",
+                                   section_name="别的名字") is True
+    row = conn.execute("SELECT course_id,section_id,section_name FROM gx_q_papers").fetchone()
+    # 节名已有值 → 不被补写；课程与节 ID 是空的 → 被填上
+    assert tuple(row) == ("示例课程", "1289", "示例节")
+    assert bank_counts(conn) == dict(papers=1, question_versions=1,
+                                     attempt_questions=1, snapshots=1)
+
+
+def test_bank_items_merges_same_question_across_sections(conn, bundle):
+    import_bundle(conn, bundle)
+    same = deepcopy(bundle)
+    same.update(exam_start_id="attempt-2", exercise_id="exercise-2")
+    same["questions"][0]["qid"] = "q-2"          # 同一道题在另一节里的题号不同
+    import_bundle(conn, same)
+    assert bank_counts(conn)["question_versions"] == 2      # 库里留两条痕迹
+    merged = bank_items(conn)
+    assert len(merged) == 1                                 # 导出时归并成一道题
+    assert merged[0]["occurrences"] == 2
+    assert sorted(merged[0]["platform_qids"].split(",")) == ["q-1", "q-2"]
 
 
 def test_future_schema_rejected(conn):

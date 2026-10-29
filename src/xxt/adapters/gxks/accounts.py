@@ -19,8 +19,24 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_PATH = Path("data") / "accounts.local.json"
-LEGACY_PATH = Path("data") / "account.local.json"
+from xxt.config import find_project_root
+
+_ACCOUNTS_FILE = "accounts.local.json"
+_LEGACY_FILE = "account.local.json"
+
+
+def default_path() -> Path:
+    """账号表默认位置：跟着**项目根**（`XXT_ROOT` / exe 目录 / 仓库根），不跟当前工作目录。
+
+    相对路径 `data/...` 在换目录启动时会指向另一个文件，表现出来就是“账号表突然空了”（2026-10-30 修正）。
+    """
+    return find_project_root() / "data" / _ACCOUNTS_FILE
+
+
+def default_legacy_path() -> Path:
+    """旧单账号文件（回落用），同样跟项目根。"""
+    return find_project_root() / "data" / _LEGACY_FILE
+
 
 _LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 _PLACEHOLDER_HINTS = ("在这里填", "填学号", "填密码", "TODO", "your_")
@@ -131,10 +147,10 @@ def parse_accounts(data: object) -> list[Account]:
     return out
 
 
-def load_accounts(path: str | Path = DEFAULT_PATH,
-                  legacy_path: str | Path = LEGACY_PATH) -> list[Account]:
+def load_accounts(path: str | Path | None = None,
+                  legacy_path: str | Path | None = None) -> list[Account]:
     """读账号表。新表缺失/为空时回落到旧单账号文件（兼容已在跑的环境）。"""
-    p = Path(path)
+    p = Path(path) if path is not None else default_path()
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -144,7 +160,7 @@ def load_accounts(path: str | Path = DEFAULT_PATH,
         if accounts:
             return accounts
 
-    legacy = Path(legacy_path)
+    legacy = Path(legacy_path) if legacy_path is not None else default_legacy_path()
     if legacy.exists():
         try:
             old = json.loads(legacy.read_text(encoding="utf-8"))

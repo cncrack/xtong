@@ -5,7 +5,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-GXKS_SCHEMA_VERSION = 1
+GXKS_SCHEMA_VERSION = 2
+# 1 → 2（2026-10-30）：仅新增 `gx_q_items.fingerprint` 索引。
+#   跨节同题（题 ID 不同、内容相同）靠 fingerprint 归并，导出时不必全表扫。
+#   建表语句全部 IF NOT EXISTS，旧库（版本 1）可原地升到 2，不重建数据。
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -73,6 +76,7 @@ CREATE TABLE IF NOT EXISTS gx_q_answers (
 CREATE INDEX IF NOT EXISTS gx_q_papers_classify
     ON gx_q_papers(account_label, course_id, section_id, exercise_id);
 CREATE INDEX IF NOT EXISTS gx_q_items_classify ON gx_q_items(type_code);
+CREATE INDEX IF NOT EXISTS gx_q_items_fingerprint ON gx_q_items(fingerprint);
 """
 
 

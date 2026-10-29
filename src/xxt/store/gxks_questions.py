@@ -18,6 +18,17 @@ def _digest(value: object) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+def _content_digest(bundle: dict) -> str:
+    """只对“本次作答内容”取摘要。
+
+    不能把 `course_id` / `section_id` / `section_name` 一类元信息算进来：补全分类信息
+    不是新作答，算进去就会多出一条快照与一份重复答案（2026-10-30 修正）。
+    """
+    return _digest({"exam_start_id": bundle.get("exam_start_id"),
+                    "exercise_id": bundle.get("exercise_id"),
+                    "questions": bundle.get("questions")})
+
+
 def _score(value: object) -> None:
     if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
                               or not math.isfinite(value) or value < 0):
@@ -70,7 +81,7 @@ def import_bundle(conn: sqlite3.Connection, bundle: dict) -> dict:
     _validate(bundle)
     if conn.in_transaction:
         raise ValueError("导入前连接不能有未提交事务")
-    digest = _digest(bundle)
+    digest = _content_digest(bundle)
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         metadata = tuple(bundle.get(k, "") for k in (
@@ -86,18 +97,19 @@ def import_bundle(conn: sqlite3.Connection, bundle: dict) -> dict:
         for k in ("exercise_id", "course_id", "section_id", "section_name", "paper_label", "start_time"):
             if paper[k] and bundle.get(k) and paper[k] != bundle[k]:
                 raise ValueError("同一答卷的归属或元信息不一致，拒绝混入")
-        existing = conn.execute(
-            "SELECT id FROM gx_q_imports WHERE paper_id=? AND digest=?", (paper_id, digest)
-        ).fetchone()
-        if existing:
-            return {"paper_id": paper_id, "import_id": existing[0], "inserted": False,
-                    "questions": len(bundle["questions"])}
+        # 先补分类信息再做幂等判定：补 course_id/section_id 不算新快照。
         conn.execute(
             "UPDATE gx_q_papers SET course_id=COALESCE(NULLIF(course_id,''),?), "
             "section_id=COALESCE(NULLIF(section_id,''),?), section_name=COALESCE(NULLIF(section_name,''),?), "
             "paper_label=COALESCE(NULLIF(paper_label,''),?), start_time=COALESCE(NULLIF(start_time,''),?) "
             "WHERE id=?", tuple(bundle.get(k, "") for k in (
                 "course_id", "section_id", "section_name", "paper_label", "start_time")) + (paper_id,))
+        existing = conn.execute(
+            "SELECT id FROM gx_q_imports WHERE paper_id=? AND digest=?", (paper_id, digest)
+        ).fetchone()
+        if existing:
+            return {"paper_id": paper_id, "import_id": existing[0], "inserted": False,
+                    "questions": len(bundle["questions"])}
         for code, name in bundle.get("type_map", {}).items():
             conn.execute("INSERT OR IGNORE INTO gx_q_types(code,name) VALUES(?,?)", (code, name))
         cur = conn.execute(
@@ -152,6 +164,38 @@ def read_attempt(conn: sqlite3.Connection, *, account_label: str, exam_start_id:
         "WHERE p.account_label=? AND p.exam_start_id=? ORDER BY i.id DESC LIMIT 1",
         (account_label, exam_start_id)).fetchone()
     return json.loads(row[0]) if row else None
+
+
+def backfill_classification(conn: sqlite3.Connection, *, account_label: str,
+                           exam_start_id: str, course_id: str = "",
+                           section_id: str = "", section_name: str = "") -> bool:
+    """给已入库的答卷补分类信息（只填空值，不覆盖已有值）；返回是否改了行。
+
+    用于 2026-10-30 之前的快照——那时解析器还没采集 `course_id` / `section_id`。
+    与重新导入的区别：不动 `gx_q_imports` / `gx_q_answers`，不会多出重复证据。
+    """
+    with conn:
+        cur = conn.execute(
+            "UPDATE gx_q_papers SET course_id=COALESCE(NULLIF(course_id,''),?), "
+            "section_id=COALESCE(NULLIF(section_id,''),?), "
+            "section_name=COALESCE(NULLIF(section_name,''),?) "
+            "WHERE account_label=? AND exam_start_id=?",
+            (course_id, section_id, section_name, account_label, exam_start_id))
+    return cur.rowcount > 0
+
+
+def bank_items(conn: sqlite3.Connection, *, limit: int = 0) -> list[dict]:
+    """按指纹归并题目：同一道题在不同节、不同题号下只出现一次（检索与导出用）。
+
+    归并键必须是 `fingerprint` 而不是题号：同一道题在不同节里的 `platform_qid` 会不同，
+    按题号去重会把同一题导出成多行（2026-10-30 发现的设计缺口）。
+    """
+    sql = ("SELECT fingerprint, MIN(id) AS item_id, type_code, stem, COUNT(*) AS occurrences, "
+           "GROUP_CONCAT(DISTINCT platform_qid) AS platform_qids "
+           "FROM gx_q_items GROUP BY fingerprint ORDER BY item_id")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [dict(r) for r in conn.execute(sql)]
 
 
 def bank_counts(conn: sqlite3.Connection) -> dict:

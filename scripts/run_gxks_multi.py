@@ -74,7 +74,7 @@ def run_one(acc: gaccounts.Account, *, course: int | None, max_sections: int,
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--accounts", default=str(gaccounts.DEFAULT_PATH), help="账号表路径")
+    ap.add_argument("--accounts", default=str(gaccounts.default_path()), help="账号表路径")
     ap.add_argument("--only", default="", help="只跑指定代号")
     ap.add_argument("--max-sections", type=int, default=0,
                     help="每账号本次最多几节（0=按日额度自动算）")

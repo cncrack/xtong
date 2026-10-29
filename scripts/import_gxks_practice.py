@@ -23,8 +23,14 @@ def main() -> int:
     names = {"questions_doc": "exam_questions.json", "stage1": "practice_stage1.json",
              "stage2": "practice_stage2.json", "review_meta": "view_exam.json",
              "review_html": "exam_html/viewExam.html"}
+    # 可选：课程列表页快照。有它才能把节 ID 与课程名填进答卷（练习页 URL 里没有节 ID）。
+    optional = {"course_doc": "practice_meta.json"}
     try:
         source = {k: (args.capture_dir / v).read_bytes() for k, v in names.items()}
+        for key, filename in optional.items():
+            extra = args.capture_dir / filename
+            if extra.exists():
+                source[key] = extra.read_bytes()
         parsed = {k: json.loads(v.decode("utf-8")) if k != "review_html" else v.decode("utf-8")
                   for k, v in source.items()}
         bundle = parse_capture(account_label=args.account_label, **parsed)
