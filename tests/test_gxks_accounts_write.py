@@ -284,6 +284,117 @@ def test_broken_file_is_treated_as_empty_and_overwritten(tmp_path) -> None:
     assert [r["label"] for r in _read(p)] == ["jia"]
 
 
+# ---------------------------------------------------------------- 预置描述字段（第一批）
+
+def test_preset_fields_saved_and_returned(tmp_path) -> None:
+    """学校/专业/年级/学号存进去，读回来还在。"""
+    p = _seed(tmp_path, [])
+    got = acc.save_account({
+        "label": "jia", "port": 9222, "display": "甲同学",
+        "school": "示范学院", "major": "计算机科学与技术",
+        "grade": "2024 级", "student_id": "2602220131",
+    }, path=p)
+    assert got.extra["school"] == "示范学院"
+    assert got.extra["major"] == "计算机科学与技术"
+    assert got.extra["grade"] == "2024 级"
+    assert got.extra["student_id"] == "2602220131"
+
+
+def test_seq_auto_generated_incrementing(tmp_path) -> None:
+    """新增账号序号自动递增：1、2、3…"""
+    p = _seed(tmp_path, [])
+    assert acc.save_account({"label": "a", "port": 9222}, path=p).extra["seq"] == 1
+    assert acc.save_account({"label": "b", "port": 9223}, path=p).extra["seq"] == 2
+    assert acc.save_account({"label": "c", "port": 9224}, path=p).extra["seq"] == 3
+
+
+def test_seq_can_be_edited(tmp_path) -> None:
+    """序号可手改；编辑时没给 seq 就保留原值。"""
+    p = _seed(tmp_path, [{"label": "jia", "port": 9222, "seq": 5}])
+    got = acc.save_account({"label": "jia", "port": 9222, "seq": 9},
+                           path=p, original_label="jia")
+    assert got.extra["seq"] == 9
+    # 没给 seq → 保留
+    got2 = acc.save_account({"label": "jia", "port": 9222, "display": "改个名"},
+                            path=p, original_label="jia")
+    assert got2.extra["seq"] == 9
+
+
+def test_seq_bad_value_rejected(tmp_path) -> None:
+    p = _seed(tmp_path, [])
+    with pytest.raises(acc.AccountError):
+        acc.save_account({"label": "jia", "port": 9222, "seq": 0}, path=p)
+    with pytest.raises(acc.AccountError):
+        acc.save_account({"label": "jia", "port": 9222, "seq": "abc"}, path=p)
+
+
+def test_custom_fields_saved(tmp_path) -> None:
+    """用户自定义字段：任意 key-value 都能存。"""
+    p = _seed(tmp_path, [])
+    got = acc.save_account({
+        "label": "jia", "port": 9222,
+        "custom": {"班级": "一班", "备注": "测试账号", "等级": "普通"},
+    }, path=p)
+    assert got.extra["班级"] == "一班"
+    assert got.extra["备注"] == "测试账号"
+    assert got.extra["等级"] == "普通"
+
+
+def test_custom_fields_merge_on_edit(tmp_path) -> None:
+    """编辑时只给部分自定义字段 → 其它保留（不是整体替换）。"""
+    p = _seed(tmp_path, [{"label": "jia", "port": 9222, "班级": "一班", "备注": "旧"}])
+    got = acc.save_account({"label": "jia", "port": 9222,
+                            "custom": {"班级": "二班"}},
+                           path=p, original_label="jia")
+    assert got.extra["班级"] == "二班"
+    assert got.extra["备注"] == "旧"          # 没给的保留
+
+
+def test_preset_fields_empty_string_clears(tmp_path) -> None:
+    """显式传空字符串 = 清空该字段（与"没给就保留"区分）。"""
+    p = _seed(tmp_path, [{"label": "jia", "port": 9222, "school": "示范学院"}])
+    got = acc.save_account({"label": "jia", "port": 9222, "school": ""},
+                           path=p, original_label="jia")
+    assert got.extra.get("school", "") == ""
+
+
+# ---------------------------------------------------------------- 随机端口（第一批）
+
+def test_next_free_port_skips_used(tmp_path) -> None:
+    """随机分配的端口不能与已有账号重复。"""
+    p = _seed(tmp_path, [{"label": "a", "port": 9222},
+                         {"label": "b", "port": 9223},
+                         {"label": "c", "port": 9224}])
+    accs = acc.parse_accounts({"accounts": _read(p)})
+    port = acc.next_free_port(accs, lo=9222, hi=9226)
+    assert port not in {9222, 9223, 9224}
+
+
+def test_next_free_port_range_respected(tmp_path) -> None:
+    p = _seed(tmp_path, [])
+    accs = acc.parse_accounts({"accounts": _read(p)})
+    for _ in range(20):
+        port = acc.next_free_port(accs, lo=9300, hi=9310)
+        assert 9300 <= port <= 9310
+
+
+def test_next_free_port_raises_when_full(tmp_path) -> None:
+    """区间被占满时必须报错，不能返回一个重复端口。"""
+    p = _seed(tmp_path, [{"label": f"a{i}", "port": 9300 + i} for i in range(3)])
+    accs = acc.parse_accounts({"accounts": _read(p)})
+    with pytest.raises(acc.AccountError):
+        acc.next_free_port(accs, lo=9300, hi=9302)
+
+
+def test_next_free_port_varied(tmp_path) -> None:
+    """多次调用应该产生不同端口（不是每次都同一个）。"""
+    p = _seed(tmp_path, [])
+    accs = acc.parse_accounts({"accounts": _read(p)})
+    ports = {acc.next_free_port(accs, lo=9400, hi=9420) for _ in range(10)}
+    assert len(ports) > 1          # 随机性：10 次至少出现 2 个不同端口
+
+
+
 # ---------------------------------------------------------------- legacy 迁移（实测踩过的坑）
 # 2026-10-30 真实故障：`data/accounts.local.json` 不存在 → 面板靠 legacy 回落显示 default 账号。
 # 在面板上「新增账号」时以空表为底建新文件 → **legacy 里那个真实账号从面板消失**，

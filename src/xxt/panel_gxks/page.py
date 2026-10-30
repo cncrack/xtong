@@ -25,12 +25,18 @@ h2{font-size:15px;margin:0 0 12px;color:var(--txt);font-weight:700;letter-spacin
    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 h2::before{content:"";width:4px;height:15px;border-radius:2px;background:var(--accent);
            flex:0 0 auto}
-/* 12 栏网格：宽屏下只让"账号/浏览器"两张短信息卡并排；节进度/作答/记录三张表都吃宽度，
-   并排会把「详情」列挤到只剩 45px（实测折行），所以一律独占整行。窄屏自动堆叠。 */
+/* 12 栏网格：宽屏下「账号与任务」+「浏览器与会话」两张短信息卡各占 6 栏并排；
+   节进度/作答/记录三张表一律独占整行（并排会把「详情」列挤到 45px 折行）。
+   窄屏（<1000px）自动堆叠成单列。 */
 main{max-width:1280px;margin:0 auto;padding:16px 18px 60px;
      display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;align-items:start}
 section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
         border-radius:12px;padding:16px 20px;box-shadow:var(--shadow)}
+/* 宽屏：账号区与浏览器区各占一半 */
+@media (min-width:1000px){
+  #sec-accounts{grid-column:span 6}
+  #sec-browser{grid-column:span 6}
+}
 /* 账号卡片：每账号一张，点卡片切换下面四个区块。
    用 auto-fit 而不是 auto-fill：账号少时卡片撑满整行，不会只占左边一小块、右边空一片。 */
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
@@ -222,9 +228,37 @@ button.mini{padding:3px 9px;font-size:13px}
         <div class="hint">只用于界面展示，不会写进文件名</div>
       </div>
       <div class="fld">
+        <label for="f-seq">序号</label>
+        <input id="f-seq" type="number" min="1" placeholder="自动生成">
+        <div class="hint">自动生成（1/2/3…），可改；只作展示与排序</div>
+      </div>
+      <div class="fld">
+        <label for="f-school">学校</label>
+        <input id="f-school" type="text" placeholder="示范学院" autocomplete="off">
+        <div class="hint">非必填；真名一律用代号，见 AGENTS</div>
+      </div>
+      <div class="fld">
+        <label for="f-major">专业</label>
+        <input id="f-major" type="text" placeholder="计算机科学与技术" autocomplete="off">
+        <div class="hint">非必填</div>
+      </div>
+      <div class="fld">
+        <label for="f-grade">年级</label>
+        <input id="f-grade" type="text" placeholder="2024 级" autocomplete="off">
+        <div class="hint">非必填</div>
+      </div>
+      <div class="fld">
+        <label for="f-student">学号</label>
+        <input id="f-student" type="text" placeholder="2602220131" autocomplete="off">
+        <div class="hint">非必填；只存本地，不入库</div>
+      </div>
+      <div class="fld">
         <label for="f-port">调试端口</label>
-        <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
-        <div class="hint">一账号一端口，不能重复（9222 / 9223 / 9224…）</div>
+        <div class="row" style="gap:6px">
+          <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
+          <button class="mini" type="button" onclick="genPort()">随机</button>
+        </div>
+        <div class="hint">一账号一端口，不能重复。点「随机」自动分配一个未占用的</div>
       </div>
       <div class="fld">
         <label for="f-sections">日节数上限</label>
@@ -249,6 +283,10 @@ button.mini{padding:3px 9px;font-size:13px}
       <div class="fld">
         <label for="f-enabled">启用</label>
         <span><input id="f-enabled" type="checkbox" checked> 参与调度</span>
+      </div>
+      <div class="fld">
+        <label>自定义字段</label>
+        <div id="f-custom-box" class="custom-box"></div>
       </div>
       <div class="muted" id="dlg-err" style="color:var(--bad)"></div>
     </div>
@@ -327,8 +365,24 @@ function acctCard(c, cur) {
     '" onclick="pick(\'' + esc(c.label) + '\')">';
   html += '<div class="acct-head"><b>' + esc(c.display || c.label) + "</b>" + tag +
     (active ? '<span class="tag t-ai">当前</span>' : "") +
+    (c.profile_fields && c.profile_fields.seq ?
+      '<span class="muted">#' + esc(c.profile_fields.seq) + "</span>" : "") +
     '<span class="muted">' + esc(c.label) + "@" + esc(c.port) + "</span></div>";
   html += '<div class="kv">';
+  // 学校/专业/年级/学号：只显示填了的，全空就不占一行（避免一张卡全是「—」）
+  const pf = c.profile_fields || {};
+  const profileParts = [pf.school, pf.major, pf.grade, pf.student_id]
+    .map((v) => String(v || "").trim()).filter(Boolean);
+  if (profileParts.length) {
+    html += acctRow("学校/专业", esc(profileParts.join(" · ")));
+  }
+  // 自定义字段：原样显示（用户自己加的键值）
+  const cf = c.custom_fields || {};
+  const cfParts = Object.keys(cf).filter((k) => String(cf[k] || "").trim() !== "")
+    .map((k) => esc(k) + "=" + esc(cf[k]));
+  if (cfParts.length) {
+    html += acctRow("自定义", esc(cfParts.join(" · ")));
+  }
   const secLim = Number(lim.sections) || 0;
   html += acctRow("今日", "<b>" + esc(t.sections || 0) + "</b> / " +
     (secLim > 0 ? esc(secLim) : "不限") + " 节 · " + esc(t.minutes || 0) + " / " +
@@ -446,12 +500,21 @@ let EDITING = "";
 function openAccount(label) {
   EDITING = label || "";
   const c = (STATE && (STATE.cards || []).find(x => x.label === label)) || null;
+  // 从 /api/state 的 accounts 里取 profile_fields / custom_fields
+  const accRow = (STATE && (STATE.accounts || []).find(x => x.label === label)) || null;
+  const pf = (accRow && accRow.profile_fields) || {};
+  const cf = (accRow && accRow.custom_fields) || {};
   el("dlg-title").textContent = label ? ("编辑账号 · " + (c ? (c.display || label) : label))
     : "新增账号";
   el("dlg-err").textContent = "";
   el("f-label").value = label || "";
   el("f-label").disabled = !!label;          // 改代号 = 重命名，会让登录态快照对不上，先不让改
   el("f-display").value = c ? (c.display || "") : "";
+  el("f-seq").value = pf.seq || (label ? "" : "");
+  el("f-school").value = pf.school || "";
+  el("f-major").value = pf.major || "";
+  el("f-grade").value = pf.grade || "";
+  el("f-student").value = pf.student_id || "";
   el("f-port").value = c ? c.port : "";
   const lim = (c && c.limits) || {};
   // 用 `=== undefined` 判断而不是 `??`：`0`（不限）必须原样回填，不能被 `||` 吃掉
@@ -463,7 +526,60 @@ function openAccount(label) {
   el("hint-name").textContent = c && c.credentials
     ? "这个账号已有凭据；留空 = 保持原样（面板不回显密码）"
     : "留空 = 不自动重登，掉线即停（比乱试安全）";
+  // 自定义字段：渲染成 key-value 行（可删）
+  renderCustomFields(cf);
+  if (!label) {
+    // 新增时自动请求一个随机端口
+    el("f-port").value = "";
+    genPort();
+  }
   el("dlg").showModal();
+}
+
+function renderCustomFields(cf) {
+  const box = el("f-custom-box");
+  if (!box) return;
+  const keys = Object.keys(cf || {});
+  let html = "";
+  for (const k of keys) {
+    html += '<div class="fld"><label>自定义</label>' +
+      '<div class="row" style="gap:6px;flex:1">' +
+      '<input type="text" class="cf-key" value="' + esc(k) + '" placeholder="字段名">' +
+      '<input type="text" class="cf-val" value="' + esc(cf[k]) + '" placeholder="值">' +
+      '<button class="mini danger" type="button" onclick="this.closest(\'.fld\').remove()">删</button>' +
+      '</div></div>';
+  }
+  html += '<div class="fld"><label>自定义</label>' +
+    '<div class="row" style="gap:6px;flex:1">' +
+    '<input type="text" class="cf-key" placeholder="字段名">' +
+    '<input type="text" class="cf-val" placeholder="值">' +
+    '<button class="mini" type="button" onclick="addCustomRow()">加</button>' +
+    '</div><div class="hint">自定义字段随账号保存，不参与业务判定</div></div>';
+  box.innerHTML = html;
+}
+
+function addCustomRow() {
+  const box = el("f-custom-box");
+  if (!box) return;
+  const row = document.createElement("div");
+  row.className = "fld";
+  row.innerHTML = '<label>自定义</label>' +
+    '<div class="row" style="gap:6px;flex:1">' +
+    '<input type="text" class="cf-key" placeholder="字段名">' +
+    '<input type="text" class="cf-val" placeholder="值">' +
+    '<button class="mini danger" type="button" onclick="this.closest(\'.fld\').remove()">删</button>' +
+    '</div>';
+  box.appendChild(row);
+}
+
+async function genPort() {
+  const r = await fetch("/api/accounts/next-port", { method: "POST" });
+  const d = await r.json();
+  if (d.ok) {
+    el("f-port").value = d.port;
+  } else {
+    el("f-port").value = "";
+  }
 }
 
 function closeAccount() {
@@ -494,12 +610,28 @@ async function saveAccount() {
     daily_sections: Number(el("f-sections").value),
     daily_minutes: Number(el("f-minutes").value),
     enabled: el("f-enabled").checked,
+    // 预置描述字段（全部非必填，只作展示/筛选）
+    seq: el("f-seq").value.trim() ? Number(el("f-seq").value) : undefined,
+    school: el("f-school").value.trim(),
+    major: el("f-major").value.trim(),
+    grade: el("f-grade").value.trim(),
+    student_id: el("f-student").value.trim(),
   };
   if (EDITING) body.original_label = EDITING;
   const name = el("f-name").value.trim();
   const pw = el("f-pw").value;
   if (name) body.name = name;                // 空 = 不改（后端只认显式给值）
   if (pw) body.pw = pw;
+  // 自定义字段：收集所有 cf-key / cf-val 对
+  const custom = {};
+  document.querySelectorAll("#f-custom-box .cf-key").forEach((k) => {
+    const key = k.value.trim();
+    if (key) {
+      const v = k.parentElement.querySelector(".cf-val");
+      custom[key] = v ? v.value : "";
+    }
+  });
+  if (Object.keys(custom).length) body.custom = custom;
   if (!body.label) { el("dlg-err").textContent = "代号不能为空"; return; }
   // 空输入框 `Number("")` 是 0，会被当成“不限”悄悄存进去 —— 必须当成非法
   for (const [id, cn] of [["f-port", "端口"], ["f-sections", "日节数上限"],

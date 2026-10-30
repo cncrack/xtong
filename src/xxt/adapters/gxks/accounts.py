@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -211,6 +212,39 @@ LIMITS = {
 #: 报错里给人看的中文名（面板直接把 `AccountError` 原文显示给用户）
 _CN = {"daily_sections": "日节数上限", "daily_minutes": "日时长上限（分钟）",
        "port": "调试端口"}
+
+#: 端口随机分配的默认区间（避开常见服务端口，够用 78 个账号）
+PORT_RANGE = (9222, 9299)
+
+#: 账号的**预置描述字段**：学校 / 专业 / 年级 / 学号 + 序号。
+#: 全部**非必填**，只用于面板展示与筛选，不参与任何业务判定。
+#: 存进账号行（`extra` 机制），不改表结构；用户还能自己加任意键值。
+ACCOUNT_FIELDS = {
+    "seq":        {"cn": "序号",     "type": "int", "required": False,
+                   "desc": "自动生成（1/2/3…），可改；只作展示与排序"},
+    "school":     {"cn": "学校",     "type": "text", "required": False,
+                   "desc": "如「示范学院」；真名一律用代号，见 AGENTS"},
+    "major":      {"cn": "专业",     "type": "text", "required": False,
+                   "desc": "如「计算机科学与技术」"},
+    "grade":      {"cn": "年级",     "type": "text", "required": False,
+                   "desc": "如「2024 级」"},
+    "student_id": {"cn": "学号",     "type": "text", "required": False,
+                   "desc": "如「2602220131」；只存本地，不入库"},
+}
+
+
+def next_free_port(existing: list[Account] | None = None,
+                   *, lo: int = PORT_RANGE[0], hi: int = PORT_RANGE[1]) -> int:
+    """随机分配一个**未被占用**的调试端口。
+
+    "不合适可手填保存起作用"——所以这里只负责"默认填一个能用的"，
+    用户保存前改端口，走的是 `save_account` 的正常校验路径。
+    """
+    used = {a.port for a in (existing if existing is not None else load_accounts())}
+    candidates = [p for p in range(lo, hi + 1) if p not in used]
+    if not candidates:
+        raise AccountError(f"{lo}~{hi} 的端口已全部占用，请扩大区间或手填一个")
+    return random.choice(candidates)
 
 
 class AccountError(ValueError):
@@ -418,6 +452,45 @@ def save_account(
     if fields.get("clear_credentials"):
         row.pop("name", None)
         row.pop("pw", None)
+
+    # ---- 预置描述字段（学校/专业/年级/学号/序号）----
+    # 全部**非必填**，只用于面板展示与筛选，不参与任何业务判定。
+    # 存进 extra（parse_accounts 会自动收），不改表结构。
+    # 序号对新账号自动生成：max(已有序号)+1，没有就 count+1。
+    # ⚠ 判空要用 `is None` 而不是 `not`：`seq=0` 是用户显式给的（虽然不该允许），
+    #    用 `not` 会把它当成"没给"而悄悄替换掉，用户以为改了却没生效。
+    if idx < 0:
+        seqs = []
+        for r in rows:
+            try:
+                seqs.append(int(r.get("seq") or 0))
+            except (TypeError, ValueError):
+                continue
+        if fields.get("seq") is None or fields.get("seq") == "":
+            fields = dict(fields,
+                          seq=(max(seqs, default=0) + 1 if seqs else len(rows) + 1))
+    for key in ACCOUNT_FIELDS:
+        if key not in fields:
+            continue                       # 没给就保留旧值（编辑时）或不写（新增时）
+        val = fields[key]
+        if key == "seq":
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                raise AccountError("序号必须是数字") from None
+            if val < 1:
+                raise AccountError("序号必须是正整数")
+        row[key] = val
+
+    # ---- 自定义字段：用户自己加的 key-value ----
+    # 存进 extra，面板可以增/删/改。键名去空白；值原样存。
+    custom = fields.get("custom")
+    if isinstance(custom, dict):
+        for k, v in custom.items():
+            key_name = str(k or "").strip()
+            if not key_name:
+                continue
+            row[key_name] = v
 
     if idx >= 0:
         rows[idx] = row

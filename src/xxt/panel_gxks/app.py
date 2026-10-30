@@ -151,13 +151,26 @@ def _account_rows() -> list[dict[str, Any]]:
     for acc in gaccounts.load_accounts():
         # 单账号回落时 label 是 `default`，直接显示给人看等于没名字
         display = acc.display or ("主账号" if acc.label == "default" else acc.label)
-        rows.append({"label": acc.label, "display": display,
-                     "port": acc.port, "profile": Path(acc.profile).name if acc.profile else "",
-                     "daily_sections": acc.daily_sections,
-                     "daily_minutes": acc.daily_minutes, "enabled": acc.enabled,
-                     "courses": list(acc.courses),
-                     # 凭据只回布尔：面板不回显密码，回显即泄露
-                     "has_credentials": acc.configured})
+        rows.append({
+            "label": acc.label,
+            "display": display,
+            "port": acc.port,
+            "profile": Path(acc.profile).name if acc.profile else "",
+            "daily_sections": acc.daily_sections,
+            "daily_minutes": acc.daily_minutes,
+            "enabled": acc.enabled,
+            "courses": list(acc.courses),
+            # 凭据只回布尔：面板不回显密码，回显即泄露
+            "has_credentials": acc.configured,
+            # 预置描述字段（序号/学校/专业/年级/学号）+ 用户自定义字段
+            "profile_fields": {
+                k: acc.extra.get(k, "") for k in gaccounts.ACCOUNT_FIELDS
+            },
+            "custom_fields": {
+                k: v for k, v in acc.extra.items()
+                if k not in gaccounts.ACCOUNT_FIELDS
+            },
+        })
     return rows
 
 
@@ -647,6 +660,16 @@ def create_app(settings: Settings) -> FastAPI:
                             "daily_minutes": acc.daily_minutes,
                             "enabled": acc.enabled,
                             "has_credentials": acc.configured}}
+
+    @app.post("/api/accounts/next-port")
+    def accounts_next_port() -> dict:
+        """给新账号随机分配一个未占用的调试端口。"""
+        try:
+            port = gaccounts.next_free_port(gaccounts.load_accounts())
+        except gaccounts.AccountError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "port": port,
+                "message": f"已分配端口 {port}（可手动修改）"}
 
     @app.post("/api/accounts/toggle")
     def accounts_toggle(body: dict) -> dict:
