@@ -153,7 +153,10 @@ def _account_rows() -> list[dict[str, Any]]:
         rows.append({"label": acc.label, "display": display,
                      "port": acc.port, "profile": Path(acc.profile).name if acc.profile else "",
                      "daily_sections": acc.daily_sections,
-                     "daily_minutes": acc.daily_minutes, "enabled": acc.enabled})
+                     "daily_minutes": acc.daily_minutes, "enabled": acc.enabled,
+                     "courses": list(acc.courses),
+                     # 凭据只回布尔：面板不回显密码，回显即泄露
+                     "has_credentials": acc.configured})
     return rows
 
 
@@ -180,7 +183,8 @@ def _account_cards(settings: Settings) -> list[dict[str, Any]]:
         course = next((r.get("category") for r in cached.get("rows") or []
                        if r.get("category")), "")
         snap = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
-        left = max(0, acc.daily_sections - today["sections"])
+        # `left = None` = 该账号把日节数设成 0（不限），卡片要显示“不限”而不是“0 剩”
+        left = None if acc.daily_sections <= 0 else max(0, acc.daily_sections - today["sections"])
         out.append({
             "label": acc.label,
             "display": acc.display or ("主账号" if acc.label == "default" else acc.label),
@@ -191,7 +195,9 @@ def _account_cards(settings: Settings) -> list[dict[str, Any]]:
             "credentials": bool(acc.configured),
             "limits": {"sections": acc.daily_sections, "minutes": acc.daily_minutes},
             "today": {"sections": today["sections"], "minutes": today["minutes"],
-                      "left_sections": left},
+                      "left_sections": left,
+                      # 按课程拆分只作展示（A1：额度按账号合计，不按课程分池）
+                      "by_course": today.get("courses") or {}},
             "snapshot": snap,
             "course": course,
             "sections": {"done": summary.get("done", 0),
@@ -541,6 +547,89 @@ def create_app(settings: Settings) -> FastAPI:
                 db, account_label=label or None, limit=limit)}
         finally:
             db.close()
+
+    # ---------------------------------------------------------------- 账号管理（增删改）
+    #
+    # 三条硬约束（写进 accounts.save_account 的 docstring）：
+    # ① 端口重复一律拒（一账号一端口）；② 越界报错不静默钳制；③ 原子写，不覆盖别人改动。
+    # 所有会改真实状态的动作都写 `gx_ops`（用户 2026-10-30 要求“日志也要记录操作记录”）。
+
+    @app.post("/api/accounts/save")
+    def accounts_save(body: dict) -> dict:
+        original = str(body.get("original_label") or "").strip().lower()
+        label = str(body.get("label") or "").strip().lower()
+        # 改一个正在跑任务的账号：端口/代号会当场改掉子进程的归属，风险太大
+        target = original or label
+        if target and any(j["label"] == target for j in _jobs_snapshot()):
+            return {"ok": False, "error": "该账号有任务在跑：先「停止」再改账号信息"}
+        # 旧值必须在**写之前**取：写完再读到的就是新值，旧值→新值会永远显示“没变”
+        before = (gaccounts.find_by_label(gaccounts.load_accounts(), original)
+                  if original else None)
+        try:
+            acc = gaccounts.save_account(body, original_label=original)
+        except gaccounts.AccountError as exc:
+            return {"ok": False, "error": str(exc)}
+        except OSError as exc:
+            return {"ok": False, "error": f"写账号表失败：{exc}"}
+        action = "account-edit" if original else "account-add"
+        # 旧值 → 新值：事后能回答“谁把额度改了”（与超星 Q41/Q42 的留痕要求一致）
+        change = ""
+        if before is not None:
+            diffs = []
+            if before.daily_sections != acc.daily_sections:
+                diffs.append(f"日节数 {before.daily_sections} → {acc.daily_sections}")
+            if before.daily_minutes != acc.daily_minutes:
+                diffs.append(f"日时长 {before.daily_minutes} → {acc.daily_minutes}")
+            if before.port != acc.port:
+                diffs.append(f"端口 {before.port} → {acc.port}")
+            if before.enabled != acc.enabled:
+                diffs.append(f"启用 {before.enabled} → {acc.enabled}")
+            if before.display != acc.display:
+                diffs.append("显示名已改")
+            if diffs:
+                change = "｜" + "，".join(diffs)
+        _record(settings, acc.label, action,
+                f"{'修改' if original else '新增'}账号 {acc.label}@:{acc.port}"
+                f"（日额度 {acc.daily_sections} 节 / {acc.daily_minutes} 分钟）{change}")
+        return {"ok": True,
+                "message": f"已保存 {acc.display or acc.label}（端口 {acc.port}）",
+                "account": {"label": acc.label,
+                            "display": acc.display or acc.label,
+                            "port": acc.port,
+                            "daily_sections": acc.daily_sections,
+                            "daily_minutes": acc.daily_minutes,
+                            "enabled": acc.enabled,
+                            "has_credentials": acc.configured}}
+
+    @app.post("/api/accounts/toggle")
+    def accounts_toggle(body: dict) -> dict:
+        label = _safe_label(settings, str(body.get("label") or ""))
+        enabled = bool(body.get("enabled", True))
+        if not enabled and any(j["label"] == label for j in _jobs_snapshot()):
+            return {"ok": False, "error": "该账号有任务在跑：先「停止」再停用"}
+        if not gaccounts.set_enabled(label, enabled):
+            return {"ok": False, "error": f"账号表里没有 {label}"}
+        _record(settings, label, "account-toggle",
+                f"{'启用' if enabled else '停用'}账号 {label}")
+        return {"ok": True, "message": f"已{'启用' if enabled else '停用'} {label}"}
+
+    @app.post("/api/accounts/delete")
+    def accounts_delete(body: dict) -> dict:
+        label = _safe_label(settings, str(body.get("label") or ""))
+        if any(j["label"] == label for j in _jobs_snapshot()):
+            return {"ok": False, "error": "该账号有任务在跑：先「停止」再删除"}
+        # 二次确认：前端要先弹框，后端再要一次 `confirm` 字样，防误点
+        if not body.get("confirm"):
+            return {"ok": False, "error": "删除需要二次确认（前端会先问一次）"}
+        remaining = [a for a in gaccounts.load_accounts() if a.label != label]
+        if not remaining:
+            return {"ok": False,
+                    "error": "这是最后一个账号，删了就什么都不剩；请先加一个新账号再删"}
+        if not gaccounts.delete_account(label):
+            return {"ok": False, "error": f"账号表里没有 {label}"}
+        _record(settings, label, "account-del",
+                f"删除账号 {label}（profile 目录与登录态快照保留，没删）")
+        return {"ok": True, "message": f"已删除 {label}（登录态快照保留在磁盘上）"}
 
     return app
 

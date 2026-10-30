@@ -124,6 +124,23 @@ pre{background:#0f1115;color:#c9d1d9;padding:10px 12px;border-radius:6px;overflo
        max-width:420px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
 .toast.bad{background:var(--bad)}
 .empty{color:var(--dim);font-size:14px;padding:10px 0}
+/* 账号编辑对话框：原生 <dialog>，不引任何 UI 库（单文件 exe 不能带静态资源） */
+dialog{border:1px solid var(--line);border-radius:12px;padding:0;max-width:520px;width:92%;
+       box-shadow:0 12px 40px rgba(16,24,40,.18)}
+dialog::backdrop{background:rgba(16,24,40,.32)}
+.dlg-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+          padding:14px 18px;border-bottom:1px solid var(--line)}
+.dlg-head b{font-size:16px}
+.dlg-body{padding:14px 18px}
+.dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;
+          border-top:1px solid var(--line);background:#fafbfc}
+.fld{display:grid;grid-template-columns:96px 1fr;gap:6px 12px;align-items:center;
+     margin-bottom:10px;font-size:14px}
+.fld>label{color:var(--dim);text-align:right;white-space:nowrap}
+.fld input[type=text],.fld input[type=number],.fld input[type=password]{
+  font:inherit;border:1px solid var(--line);border-radius:6px;padding:6px 10px;width:100%}
+.fld .hint{grid-column:2;color:var(--dim);font-size:12.5px;line-height:1.45}
+button.mini{padding:3px 9px;font-size:13px}
 </style>
 </head>
 <body>
@@ -139,7 +156,11 @@ pre{background:#0f1115;color:#c9d1d9;padding:10px 12px;border-radius:6px;overflo
   <section id="sec-accounts">
     <div class="card-head">
       <h2>账号与任务 <span class="muted" id="accounts-meta"></span></h2>
-      <div class="toolbar"><span class="muted">点卡片切换下方「浏览器/节进度/作答/记录」</span></div>
+      <div class="toolbar">
+        <span class="muted">点卡片切换下方「浏览器/节进度/作答/记录」</span>
+        <button class="primary" onclick="openAccount()"
+          title="新增一个账号：代号 + 端口 + 日额度（凭据可留空，之后再填）">＋ 新增账号</button>
+      </div>
     </div>
     <div id="accounts"></div>
   </section>
@@ -181,9 +202,66 @@ pre{background:#0f1115;color:#c9d1d9;padding:10px 12px;border-radius:6px;overflo
   <section id="sec-ops"><h2>操作记录</h2><div id="ops"></div></section>
 </main>
 <div id="toast"></div>
+
+<!-- 账号编辑对话框：一个表单同时用于新增与修改（修改时回填，密码框永远留空） -->
+<dialog id="dlg">
+  <form method="dialog" onsubmit="return false">
+    <div class="dlg-head">
+      <b id="dlg-title">新增账号</b>
+      <button class="mini" onclick="closeAccount()" type="button">关闭</button>
+    </div>
+    <div class="dlg-body">
+      <div class="fld">
+        <label for="f-label">代号</label>
+        <input id="f-label" type="text" placeholder="jia" autocomplete="off">
+        <div class="hint">只允许 a-z 0-9 _ -，用作文件名与日志标签；真名请填「显示名」</div>
+      </div>
+      <div class="fld">
+        <label for="f-display">显示名</label>
+        <input id="f-display" type="text" placeholder="甲同学" autocomplete="off">
+        <div class="hint">只用于界面展示，不会写进文件名</div>
+      </div>
+      <div class="fld">
+        <label for="f-port">调试端口</label>
+        <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
+        <div class="hint">一账号一端口，不能重复（9222 / 9223 / 9224…）</div>
+      </div>
+      <div class="fld">
+        <label for="f-sections">日节数上限</label>
+        <input id="f-sections" type="number" min="0" max="40" placeholder="10">
+        <div class="hint">0 = 不限。<b>按账号合计</b>：多门课共用这一个池子</div>
+      </div>
+      <div class="fld">
+        <label for="f-minutes">日时长上限</label>
+        <input id="f-minutes" type="number" min="0" max="1440" placeholder="600">
+        <div class="hint">分钟；0 = 不限。建议 ≥ 日节数 × 60，否则时长先卡住</div>
+      </div>
+      <div class="fld">
+        <label for="f-name">账号</label>
+        <input id="f-name" type="text" autocomplete="off" placeholder="留空 = 不自动重登">
+        <div class="hint" id="hint-name">留空则不写入；已有凭据时留空 = 保持原样</div>
+      </div>
+      <div class="fld">
+        <label for="f-pw">密码</label>
+        <input id="f-pw" type="password" autocomplete="new-password" placeholder="留空 = 不改">
+        <div class="hint">密码只写进 data/accounts.local.json（不入库），面板永不回显</div>
+      </div>
+      <div class="fld">
+        <label for="f-enabled">启用</label>
+        <span><input id="f-enabled" type="checkbox" checked> 参与调度</span>
+      </div>
+      <div class="muted" id="dlg-err" style="color:var(--bad)"></div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" onclick="closeAccount()">取消</button>
+      <button class="primary" type="button" onclick="saveAccount()">保存</button>
+    </div>
+  </form>
+</dialog>
 <script>
 let LABEL = "";
 let BUSY = false;
+let STATE = null;              // 最近一次 /api/state 的回包（编辑对话框回填用）
 
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
@@ -238,7 +316,9 @@ function acctCard(c, cur) {
   const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
   const snap = c.snapshot || {};
   const active = c.label === cur;
-  const left = Number(t.left_sections) || 0;
+  // `left_sections === null` = 日节数设成 0（不限），不能显示成“还剩 0 节”
+  const left = t.left_sections === null || t.left_sections === undefined
+    ? Infinity : Number(t.left_sections) || 0;
   const tag = !c.enabled ? '<span class="tag t-none">已停用</span>'
     : c.job ? '<span class="tag t-learn">运行中 · ' + esc(c.job.kind) + " · " +
               esc(c.job.since) + "</span>"
@@ -249,8 +329,10 @@ function acctCard(c, cur) {
     (active ? '<span class="tag t-ai">当前</span>' : "") +
     '<span class="muted">' + esc(c.label) + "@" + esc(c.port) + "</span></div>";
   html += '<div class="kv">';
-  html += acctRow("今日", "<b>" + esc(t.sections || 0) + "</b> / " + esc(lim.sections || 0) +
-    " 节 · " + esc(t.minutes || 0) + " / " + esc(lim.minutes || 0) + " 分");
+  const secLim = Number(lim.sections) || 0;
+  html += acctRow("今日", "<b>" + esc(t.sections || 0) + "</b> / " +
+    (secLim > 0 ? esc(secLim) : "不限") + " 节 · " + esc(t.minutes || 0) + " / " +
+    (Number(lim.minutes) > 0 ? esc(lim.minutes) : "不限") + " 分");
   html += acctRow("端口", c.port_alive ? '<span class="tag t-done">活着</span>'
     : '<span class="tag t-none">未监听</span>');
   html += acctRow("登录", snap.saved
@@ -267,19 +349,32 @@ function acctCard(c, cur) {
     html += '<button class="danger" onclick="stopJob(\'' + esc(c.label) +
       '\')">停止</button>';
   } else if (!c.enabled) {
-    html += '<button disabled title="账号表里 enabled=false">已停用</button>';
+    html += '<button disabled title="账号表里 enabled=false（不参与调度）；要跑就先点「启用」">已停用</button>';
   } else if (!c.port_alive) {
     html += '<button disabled title="先点下面「启动浏览器」，按钮才会亮">浏览器没开</button>';
   } else if (left <= 0) {
     html += '<button disabled title="今日额度已用完（账本按账号统计）">额度已用完</button>';
   } else {
-    const n = Math.min(3, left);
+    const n = left === Infinity ? 3 : Math.min(3, left);
     html += '<button class="primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
-      ')" title="今日还剩 ' + left + ' 节，本次先跑 ' + n + ' 节">开始学习（' + n + " 节）</button>";
+      ')" title="今日还剩 ' + (left === Infinity ? "不限" : left) + ' 节，本次先跑 ' + n +
+      ' 节">开始学习（' + n + " 节）</button>";
   }
   if (!active) {
     html += '<button onclick="pick(\'' + esc(c.label) + '\')">详情</button>';
   }
+  // 刷新节列表放到卡上（台账 B8）：以前只有节进度区块头有，多账号时要先切账号再点
+  html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) +
+    '\')" title="重新读这个账号的整个课程（含翻页），约 1 分钟">刷新节列表</button>';
+  // 管理：编辑 / 启停 / 删除（都不切账号）
+  html += '<button class="mini" onclick="openAccount(\'' + esc(c.label) +
+    '\')" title="改端口 / 日额度 / 显示名 / 凭据">✎ 编辑</button>';
+  html += '<button class="mini" onclick="toggleAccount(\'' + esc(c.label) + "'," +
+    (c.enabled ? "false" : "true") + ')" title="' +
+    (c.enabled ? "停用后不参与调度（手动仍可跑）" : "重新启用") + '">' +
+    (c.enabled ? "停用" : "启用") + "</button>";
+  html += '<button class="mini danger" onclick="deleteAccount(\'' + esc(c.label) +
+    '\')" title="只删账号表里这一条，登录态快照与 profile 目录保留">删除</button>';
   html += "</div></div>";
   return html;
 }
@@ -287,14 +382,35 @@ function acctCard(c, cur) {
 function renderAccounts(state) {
   const cards = state.cards || [];
   el("accounts-meta").textContent = cards.length > 1 ? cards.length + " 个账号" : "";
-  let html = cards.length
+  let html = "";
+  // 多账号时先给一行「合计」：单看每张卡无法回答“今天总共学了多少”
+  if (cards.length > 1) {
+    const tot = cards.reduce((a, c) => {
+      const t = c.today || {}, lim = c.limits || {};
+      a.sections += Number(t.sections) || 0;
+      a.minutes += Number(t.minutes) || 0;
+      if (!c.enabled) a.off += 1;
+      else if (c.job) a.running += 1;
+      else if (Number(lim.sections) > 0 && t.left_sections === 0) a.full += 1;
+      return a;
+    }, { sections: 0, minutes: 0, off: 0, running: 0, full: 0 });
+    html += '<div class="row" style="margin-bottom:10px">' +
+      '<span class="tag t-ai">合计 ' + tot.sections + " 节 · " +
+      Math.round(tot.minutes) + " 分钟</span>" +
+      '<span class="tag t-learn">运行中 ' + tot.running + "</span>" +
+      '<span class="tag t-none">空闲 ' + (cards.length - tot.running - tot.off) + "</span>" +
+      (tot.full ? '<span class="tag t-low">额度用完 ' + tot.full + "</span>" : "") +
+      (tot.off ? '<span class="tag t-none">停用 ' + tot.off + "</span>" : "") +
+      '<span class="muted">额度按账号合计；多门课共用一个池子</span></div>';
+  }
+  html += cards.length
     ? '<div class="cards">' + cards.map(c => acctCard(c, state.label)).join("") + "</div>"
-    : '<div class="empty">没有可用账号——检查 data/accounts.local.json 或 ' +
-      "data/account.local.json。</div>";
+    : '<div class="empty">还没有账号——点右上角「＋ 新增账号」，或检查 ' +
+      "data/accounts.local.json / data/account.local.json。</div>";
   if (!state.accounts_file) {
     html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
-      "（data/account.local.json）。要跑多账号，新建 data/accounts.local.json，" +
-      "一条账号一个 port / profile，刷新本页即可。</div>";
+      "（data/account.local.json）。点「＋ 新增账号」会自动建 data/accounts.local.json，" +
+      "一条账号一个 port / profile。</div>";
   }
   const mine = (state.jobs || []).find(j => j.label === state.label);
   if (mine && mine.tail && mine.tail.length) {
@@ -317,6 +433,111 @@ function startStudy(label, n) {
 
 function stopJob(label) {
   post("/api/stop", { label: label });
+}
+
+// ---------------------------------------------------------------- 账号管理
+// 新增与修改共用一个对话框：`EDITING` 为空 = 新增，否则是被改的那个代号。
+// 密码框永远不回填——面板拿不到密码（后端只回布尔），回填等于自欺。
+let EDITING = "";
+
+function openAccount(label) {
+  EDITING = label || "";
+  const c = (STATE && (STATE.cards || []).find(x => x.label === label)) || null;
+  el("dlg-title").textContent = label ? ("编辑账号 · " + (c ? (c.display || label) : label))
+    : "新增账号";
+  el("dlg-err").textContent = "";
+  el("f-label").value = label || "";
+  el("f-label").disabled = !!label;          // 改代号 = 重命名，会让登录态快照对不上，先不让改
+  el("f-display").value = c ? (c.display || "") : "";
+  el("f-port").value = c ? c.port : "";
+  const lim = (c && c.limits) || {};
+  // 用 `=== undefined` 判断而不是 `??`：`0`（不限）必须原样回填，不能被 `||` 吃掉
+  el("f-sections").value = c ? (lim.sections === undefined ? 10 : lim.sections) : 10;
+  el("f-minutes").value = c ? (lim.minutes === undefined ? 600 : lim.minutes) : 600;
+  el("f-name").value = "";
+  el("f-pw").value = "";
+  el("f-enabled").checked = c ? !!c.enabled : true;
+  el("hint-name").textContent = c && c.credentials
+    ? "这个账号已有凭据；留空 = 保持原样（面板不回显密码）"
+    : "留空 = 不自动重登，掉线即停（比乱试安全）";
+  el("dlg").showModal();
+}
+
+function closeAccount() {
+  if (el("dlg").open) el("dlg").close();
+  EDITING = "";
+}
+
+// 统一读回包：后端 400 走 FastAPI 的 `{"detail": "..."}`，不是 `{"ok": false}`。
+// 不处理的话前端会把失败当成功（`data.ok` 是 undefined → falsy → 显示“已提交”）。
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await r.json(); } catch (e) { data = {}; }
+  if (!r.ok) {
+    return { ok: false, error: data.detail || data.error || ("HTTP " + r.status) };
+  }
+  return data;
+}
+
+async function saveAccount() {
+  const body = {
+    label: el("f-label").value.trim().toLowerCase(),
+    display: el("f-display").value.trim(),
+    port: Number(el("f-port").value),
+    daily_sections: Number(el("f-sections").value),
+    daily_minutes: Number(el("f-minutes").value),
+    enabled: el("f-enabled").checked,
+  };
+  if (EDITING) body.original_label = EDITING;
+  const name = el("f-name").value.trim();
+  const pw = el("f-pw").value;
+  if (name) body.name = name;                // 空 = 不改（后端只认显式给值）
+  if (pw) body.pw = pw;
+  if (!body.label) { el("dlg-err").textContent = "代号不能为空"; return; }
+  // 空输入框 `Number("")` 是 0，会被当成“不限”悄悄存进去 —— 必须当成非法
+  for (const [id, cn] of [["f-port", "端口"], ["f-sections", "日节数上限"],
+                          ["f-minutes", "日时长上限"]]) {
+    if (el(id).value.trim() === "") {
+      el("dlg-err").textContent = cn + "不能为空（要“不限”请显式填 0）";
+      return;
+    }
+  }
+  for (const [key, cn] of [["port", "端口"], ["daily_sections", "日节数上限"],
+                           ["daily_minutes", "日时长上限"]]) {
+    if (!Number.isFinite(body[key])) {
+      el("dlg-err").textContent = cn + "必须是数字";
+      return;
+    }
+  }
+  el("dlg-err").textContent = "";
+  const data = await apiPost("/api/accounts/save", body);
+  if (!data.ok) { el("dlg-err").textContent = data.error || "保存失败"; return; }
+  const wasNew = !EDITING;                   // closeAccount 会清空 EDITING，先记下来
+  closeAccount();
+  toast(data.message || "已保存");
+  if (wasNew && data.account) LABEL = data.account.label;
+  load();
+}
+
+// 统一读回包：后端 400 走 FastAPI 的 `{"detail": "..."}`，不是 `{"ok": false}`。
+// 不处理的话前端会把失败当成功（`data.ok` 是 undefined → falsy → 显示“已提交”）。
+async function toggleAccount(label, enabled) {
+  const data = await apiPost("/api/accounts/toggle",
+    { label: label, enabled: enabled });
+  toast(data.message || data.error || "已提交", !data.ok);
+  load();
+}
+
+async function deleteAccount(label) {
+  if (!confirm("删除账号「" + label + "」？\n\n只删账号表里这一条；"
+    + "登录态快照与 profile 目录会保留在磁盘上。")) return;
+  const data = await apiPost("/api/accounts/delete", { label: label, confirm: true });
+  toast(data.message || data.error || "已提交", !data.ok);
+  load();
 }
 
 function renderBrowser(state) {
@@ -506,6 +727,10 @@ function refreshSections() {
   post("/api/sections/refresh");
 }
 
+function refreshSectionsFor(label) {
+  post("/api/sections/refresh", { label: label });
+}
+
 function doWork(btn) {
   post("/api/work", { exercise_id: btn.dataset.id, section_id: btn.dataset.sec,
     section_name: btn.dataset.name });
@@ -558,7 +783,9 @@ const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
   "work-submit": "交卷", "sections-read": "刷新节列表", "stop": "停止",
   "browser-start": "启动浏览器", "browser-stop": "停止浏览器",
   "session-check": "检查会话", "session-restore": "恢复登录",
-  "session-relogin": "重新登录", "error": "出错" };
+  "session-relogin": "重新登录", "account-add": "新增账号",
+  "account-edit": "修改账号", "account-toggle": "启停账号",
+  "account-del": "删除账号", "error": "出错" };
 
 function renderOps(state) {
   const rows = state.ops || [];
@@ -591,8 +818,15 @@ function renderAccountsSelect(state) {
 
 async function load() {
   try {
-    const r = await fetch("/api/state?label=" + encodeURIComponent(LABEL));
+    let r = await fetch("/api/state?label=" + encodeURIComponent(LABEL));
+    // 选中的账号被删掉 / 改了代号：后端会 400。此时回落到第一个账号，
+    // 不能一直报“连接中断”——那看起来像面板坏了。
+    if (!r.ok && LABEL) {
+      LABEL = "";
+      r = await fetch("/api/state");
+    }
     const state = await r.json();
+    STATE = state;
     LABEL = state.label || "";
     renderAccountsSelect(state);
     renderAccounts(state);

@@ -25,6 +25,10 @@ storage_state*.json
 .vscode/
 Thumbs.db
 
+# pytest 临时目录（`tmp_path` 的基目录偶尔会落到项目根，尤其 TMP 不可写时）
+pytest-of-*/
+tmp*/
+
 # P3 构建产物
 build/
 dist/

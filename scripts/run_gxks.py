@@ -117,19 +117,27 @@ def main() -> int:
 
     # ---- 当日额度（本地账本）----
     # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
+    # 口径（A1）：额度按**账号合计**，多门课共用一个池子；`0` = 该项不限。
     acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
     secs_limit = acc.daily_sections if acc else gaccounts.DEFAULT_SECTIONS_PER_DAY
     mins_limit = acc.daily_minutes if acc else gaccounts.DEFAULT_MINUTES_PER_DAY
     if not args.ignore_quota:
         q = gledger.quota_left(acc_label, sections_limit=secs_limit, minutes_limit=mins_limit)
+
+        def _fmt(v: int | None) -> str:
+            return "不限" if v is None else str(int(v))
+
         print(f"账号 {acc_label} 今日：已 {q['sections']} 节 / {q['minutes']:.0f} 分钟；"
-              f"额度 {secs_limit} 节 / {mins_limit} 分钟 → 还剩 {q['left_sections']} 节 / "
-              f"{q['left_minutes']:.0f} 分钟")
+              f"额度 {_fmt(secs_limit if secs_limit > 0 else None)} 节 / "
+              f"{_fmt(mins_limit if mins_limit > 0 else None)} 分钟 → 还剩 "
+              f"{_fmt(q['left_sections'])} 节 / "
+              f"{_fmt(q['left_minutes'])} 分钟")
         if q["exhausted"]:
             print("[SKIP] 今日额度已用完 → 不跑（明天再继续，或 --ignore-quota 调试）")
             session.close()
             return 0
-        if args.max_sections > q["left_sections"]:
+        # 节数不限（0）时不收敛；限了就收敛到剩余节数
+        if q["left_sections"] is not None and args.max_sections > q["left_sections"]:
             print(f"额度限制：本次最多播 {q['left_sections']} 节（原定 {args.max_sections}）")
             args.max_sections = int(q["left_sections"])
 
@@ -263,10 +271,12 @@ def main() -> int:
             break
 
         finished.append({"section": section, "name": row["name"], "done": final.get("done_minutes")})
-        # 记账：日额度与“今天学了哪几节”的唯一依据（写失败不打断连播）
+        # 记账：日额度与“今天学了哪几节”的唯一依据（写失败不打断连播）。
+        # `course` 只做统计与去重（A1：额度按账号合计，见 ledger 模块 docstring）。
         try:
             gledger.record(account=acc_label, section_id=section, name=row["name"],
-                           minutes=out["seconds"] / 60.0, result="done")
+                           minutes=out["seconds"] / 60.0, result="done",
+                           course=str(args.course or ""))
         except Exception as exc:                            # noqa: BLE001
             print(f"⚠ 记账失败（不影响播放）：{exc}")
 
@@ -289,8 +299,10 @@ def main() -> int:
     print(f"总耗时 {(time.monotonic() - started) / 60:.1f} 分钟")
     if not args.ignore_quota:
         q = gledger.quota_left(acc_label, sections_limit=secs_limit, minutes_limit=mins_limit)
+        lim = ("不限" if secs_limit <= 0 else secs_limit,
+               "不限" if mins_limit <= 0 else mins_limit)
         print(f"今日累计：{q['sections']} 节 / {q['minutes']:.0f} 分钟"
-              f"（额度 {secs_limit} 节 / {mins_limit} 分钟）")
+              f"（额度 {lim[0]} 节 / {lim[1]} 分钟）")
     session.close()
     return code
 

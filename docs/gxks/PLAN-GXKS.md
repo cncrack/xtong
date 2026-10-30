@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**A1 定案：额度按账号合计 + 面板账号增删改 + 卡片合计行**）：用户「按你建议处理，处理完应该再优化一下面板」→ ① **A1 定案**：日额度**按账号合计**，多门课共用一个池子；账本加 `course` 但**只做统计与去重**（去重键改 `course + section_id`，防不同计划复用同一节 ID 导致少记额度）；`quota_left()` 对“不限”的一侧返回 `None` 而非 0。② **顺带修两个真隐患**：`parse_accounts` 把 `daily_sections=0` 悄悄改回 10（“不限”从未生效）、`quota_left` 的 0 会被读成“已用完”。③ **面板账号增删改**（用户问“多账号管理怎么规划、能不能先落地看效果”）：`accounts.save_account/delete_account/set_enabled`（原子写 + 端口唯一 + 越界报错不钳制 + 只改目标那一条 + 凭据空值=不改）+ `POST /api/accounts/save|toggle|delete`（在跑的账号一律拒改）+ 前端 `＋ 新增账号` 按钮与 `<dialog>` 表单 + 卡片上「✎ 编辑 / 停用 / 删除 / 刷新节列表」+ 操作记录新增 4 个动作词（`account-add/edit/toggle/del`，修改带“旧值 → 新值”）。④ **面板优化**：多账号时顶部一行**合计**（节数/分钟/运行中/空闲/额度用完/停用）；卡片「刷新节列表」不再需要先切账号（台账 B8）；`0 = 不限` 在卡片上显示成“不限”而不是“0 节”。⑤ 修 `load()` 在选中账号被删后一直报“连接中断”（现在回落第一个账号）。**未实机验证**：本次会话 `pwsh` 全程 `0xC0000142` 起不来，`pytest` 与面板重启都没跑（见 devlog 14 §五，验收清单交用户执行）。详见 `docs/devlog/2026-10-30-14-quota-by-account-and-account-admin.md`。
 - 2026-10-30（**P2 正向链实测通过 + 登录态持久化/恢复落地（P2.5）**）：① 真机跑通“面板起 Chrome → 人工登录 → 检查会话”，得 `logged_in=true / navigated=false`（**零新请求**），并用同一会话读节列表（9 节 / 4 页 / 543 min）；② **修判据缺口**：未登录时站点 302 到 **`Default.aspx?ReturnUrl=…`**（`Login.aspx` 自己也 302 到它），而 `LOGIN_PAGES` 只认 `Login.aspx`/`Loginb.aspx` → `at_login_page()` 会把未登录取当成已登录 ⇒ 补 `DEFAULT_PAGE` + 断言；③ **实测 4 条 cookie 全是会话级**（`.ASPXAUTH`/`ASP.NET_SessionId`/`Clerk`/`ZYLTheme`，`expires=-1`）⇒ “保会话”只能靠 json：新增 `browser.state_path/save_state/state_summary/restore_cookies/context_of`、面板 `POST /api/session/restore|relogin` + 「恢复登录」「重新登录」两按钮、`gxks_session_check.py` 加 `--restore/--relogin`（退出码 3 需人工、4 无凭据）、动作词 `session-restore`/`session-relogin`；④ **A 方案真机往返实证**：清 cookie → 落 `Loginb.aspx` 判未登录 → 注入 4 条 → 回 `MainPage.aspx` 判已登录；⑤ 顺带修 `login.credentials_path()`（原来走 CWD 相对路径，测试会读到真凭据）；⑥ **代理会把 503 伪装成站点故障**（v2rayN 开着得 `HTTP ERROR 503`，关掉直连 200）——已入 §13.7 第 6 条。验收：全量 **518 passed**、面板 JS 过 `node --check`、面板实机 15489 字符且新按钮在。⚠ B 方案（自动重登）未在真机跑（故意，防撞验证码）。
 - 2026-10-30（**P2 面板接管登录落地：一键起 Chrome + 检查会话，不用再手敲命令**）：① 新增 `adapters/gxks/chrome.py`（`find_chrome/launch_argv/port_alive/wait_alive/start`，只拉起与探活、不碰页面；子进程 `DETACHED`，面板退出不带走用户登录中的窗口）；② 新增 `scripts/gxks_session_check.py`：**判活只认“真去要一次页面看落在哪”**，`.ASPXAUTH` 仅作参考；已平台内页则**零新请求**；退出码 0/2/5；③ 面板新增 `GET /api/browser/state`、`POST /api/browser/start|stop`、`POST /api/session/check`（会访问平台，只在点按钮时跑，90s 超时），`/api/state` 多一块 `browser`，前端新增「浏览器与会话」卡片，动作词 `browser-start`/`browser-stop`/`session-check` 入 `gxks_ops.ACTIONS`；④ **三条安全边界**：managed 后端下拒起本机 Chrome、只杀面板自己拉起的 pid、账号有任务时不启动；⑤ **干跑查出真缺口并修**：单账号回落表无 `profile` 字段 → 按钮永远灰；新增 `browser.cdp_profile()`，没配则落 `data/profiles/<代号>`（与 managed 同目录，本机登一次容器直接用），**绝不**回落系统默认 Chrome 档案（被日常 Chrome 占着，端口起不来）。验收：新增 `test_gxks_chrome.py` 9 条 + `test_gxks_panel_browser.py` 18 条 + `cdp_profile` 3 条，全量 **491 passed**，面板 JS 过 `node --check`；当日 13:02~13:05 该链已在真实登录态下验通（见下条）。
 - 2026-10-30（**P1 浏览器后端落地：`cdp` / `managed` 一个入口**）：新增 `adapters/gxks/browser.py` —— `open_session(settings, label=, port=, start_url=, headless=)` 统一起法：`cdp`（缺省）连人已起好的 Chrome 且**不导航**（不打断人工操作）；`managed` 自己 `launch_persistent_context`（`persistent_launch_kwargs` + `stealth.context_kwargs` 组装 + `STEALTH_JS` 注入），profile 落 `data/profiles/<代号>`，无头缺省 true（`[gxks] managed_headless`）。**同日干跑查出硬伤并修复**：`persistent_launch` 不设 UA → 无头 UA 带 `HeadlessChrome/156…`，站点一眼看出自动化；改走 `persistent_launch_kwargs` + `context_kwargs`（`stealth.py` 新增公开别名）并注入 `STEALTH_JS`，实测导航后 `webdriver=False / plugins=5 / userAgentData=object / UA 无 HeadlessChrome`，未改 `persistent_launch` 本身。`SessionError(code, hint)` 覆盖 `connect`/`no_page`/`browser`/`label`/`navigate`，脚本退出码保持 2；**`cdp` 下“连上了没平台页面”也先断开再抛**（Q31）。`accounts.is_valid_label()` 公开复用，**代号非法一律拒**（不回落默认目录，防两账号共用登录态）。三处接入：`gxks_work.py`、`gxks_sections.py`（managed 传 `start_url=MAIN_PAGE`）、`run_gxks.py`（`acc_label` 前移决定 profile）。配置只进**本机覆盖层**，`Settings` 既有键零改动。验收：`test_gxks_browser.py` 15 条（替身，不真起浏览器）+ `py_compile` + 空端口真跑 exit 2 + 子集 **72 passed**。⚠ `managed` **未实跑**，“容器起得来 / 无头登得上”仍待验。
@@ -563,6 +564,20 @@ daily_minutes = 600            # 【每账号】日时长上限。0 = 不限。�
 | `daily_tasks` | **每个账号各自一份** | 同上 | 已如此（双额度，任一达标即停） |
 | `runtime.max_concurrency` | **全局** | 本机资源 + 出口 IP 并发特征 | 超星无此项，新站新增 |
 | `runtime.fleet_daily_minutes` | **全局合计** | 设备/IP 维度“一天总时长异常” | 无，**新站新增（建议不开，但要有）** |
+
+⭐⭐ **A1 定案（2026-10-30）：多门课**共用**一个账号额度，`course` 只做统计与去重**
+
+- **额度按「账号合计」**，不分课程。`accounts.daily_sections` / `daily_minutes` 是账号属性，
+  一个账号下报了几门课，都从**同一个池子**里扣。
+- **理由**：额度是刹车，而封号按**账号/IP 维度**发生。按课程分池 = 同一账号一天能干两倍量，
+  与设上限的初衷相反；而且“学够”本来就不靠额度（当日目标 = 平台剩余待学，自动算，见上文 D20）。
+- **账本加 `course` 字段，但只做两件事**：
+  ① 按课程统计（`today_totals(course=...)`，面板展示用）；
+  ② **防跨课程节 ID 撞车** —— 去重键是 `course + section_id`。不同学习计划复用同一 `section_id`
+     是常见做法，只按节 ID 去重会**少记额度、账号反而超刷**。
+- **`0` = 不限**在账本层也落实了：`quota_left()` 对不限的那一侧返回 **`None`** 而不是 0
+  —— 返回 0 会被调用方读成“额度用完”，这正是超星 `reached_locally()` 的老毛病。
+- **不做** `gxks.quota_scope` 开关：口径只有一种，加开关等于给未来的自己留一个“两套语义”的坑。
 
 推论：**总消耗 = 账号数 × 当天实际学时**（不是乘“上限”）。上限只是天花板，不消耗机器时间；实际消耗看当天学了多少：30 个账号 × 一轮 300 分钟 = 9000 分钟 = **150 机器小时**，并发 10 → 摊到 **15 小时**（§11.11）。
 
@@ -943,6 +958,8 @@ run_gxks_multi.py            外层：读账号表 → 额度预检 → 端口�
 1. **AI 回填尚未在真实环境跑过**：本次只完成代码 + 合成 fixture 测试（真实结构、合成题干）。首次实跑需要 Chrome 已登录 + 服务端真的建卷。
 2. **打包成 exe 后起不了任务**：`scripts/` 不在 exe 包内，`_start()` 会明确回“打包版面板暂不支持起脚本”，不会默默 500。
 3. **UI 是单账号视图**：右上角下拉切换账号，没有同屏多账号对照；账号增删改仍改 `accounts.local.json`。
+   → **2026-10-30 部分解除**：面板已能**增删改账号**（对话框 + 卡片按钮），多账号时有合计行；
+   仍缺「同屏逐账号对照的节进度」（现在点卡片切换，一次看一个账号的节进度）。
 4. **`gx_ops` 与超星 `run_logs` 不合并**：两边账号主键不同（`account_label` vs `accounts.id`），合并需维护映射，不值得。
 
 ## 十三、部署形态、提交确认与超星兼容边界（2026-10-30 设计定稿）

@@ -121,6 +121,66 @@ class TestTypography(unittest.TestCase):
         self.assertIn("grid-template-columns:64px 1fr", PAGE)
 
 
+class TestAccountAdminUI(unittest.TestCase):
+    """面板里的账号增删改（用户 2026-10-30：“多账号管理是怎么规划的，能不能先落地看效果”）。"""
+
+    def test_new_account_button_and_dialog_exist(self):
+        self.assertIn('onclick="openAccount()"', PAGE)
+        self.assertIn('<dialog id="dlg">', PAGE)
+        self.assertIn("function openAccount(", PAGE)
+        self.assertIn("function saveAccount(", PAGE)
+
+    def test_card_has_edit_toggle_delete_buttons(self):
+        for fn in ("openAccount(", "toggleAccount(", "deleteAccount("):
+            self.assertIn(fn, PAGE, f"卡片上缺 {fn} 入口")
+        self.assertIn("✎ 编辑", PAGE)
+        self.assertIn("✎ 编辑</button>", PAGE)
+
+    def test_password_is_never_prefilled(self):
+        # 面板拿不到密码（后端只回布尔），回填等于自欺；这里钉死“永远清空”
+        self.assertIn('el("f-pw").value = "";', PAGE)
+        self.assertIn('el("f-name").value = "";', PAGE)
+
+    def test_delete_asks_twice(self):
+        self.assertIn('confirm("删除账号「"', PAGE)      # 前端先问一次
+        self.assertIn("confirm: true", PAGE)             # 后端还要 confirm 标记
+
+    def test_label_is_readonly_when_editing(self):
+        # 改代号会让登录态快照 / profile 目录对不上，先不让改
+        self.assertIn('el("f-label").disabled = !!label;', PAGE)
+
+    def test_blank_number_input_is_rejected(self):
+        # 空输入框 `Number("")` 是 0，会被当成“不限”悄悄存进去 —— 必须当成非法
+        self.assertIn("不能为空（要“不限”请显式填 0）", PAGE)
+        self.assertIn('el(id).value.trim() === ""', PAGE)
+
+    def test_unlimited_quota_renders_as_text_not_zero(self):
+        # 日节数 0 = 不限：显示成“0 节”会让人以为额度用完了
+        self.assertIn("left_sections === null", PAGE)
+        self.assertIn('"不限"', PAGE)
+
+    def test_actions_use_actions_cn_dictionary(self):
+        for action in ("account-add", "account-edit", "account-toggle", "account-del"):
+            self.assertIn(f'"{action}"', PAGE, f"操作记录里 {action} 没有中文名")
+
+    def test_card_has_sections_refresh(self):
+        # 台账 B8：以前只有节进度区块头有「刷新节列表」，多账号时要先切账号再点
+        self.assertIn("function refreshSectionsFor(", PAGE)
+        self.assertIn("refreshSectionsFor(", PAGE)
+        self.assertIn("刷新节列表</button>", PAGE)
+
+    def test_backend_400_is_not_shown_as_success(self):
+        # FastAPI 的 400 回 `{"detail": ...}`，没有 `ok` 字段；不处理会把失败当成功
+        self.assertIn("async function apiPost(", PAGE)
+        self.assertIn('data.detail || data.error || ("HTTP " + r.status)', PAGE)
+        self.assertIn("await apiPost(", PAGE)
+
+    def test_multi_account_totals_row(self):
+        self.assertIn("合计 ' + tot.sections", PAGE)
+        self.assertIn("cards.length > 1", PAGE)
+        self.assertIn("function renderAccounts(", PAGE)
+
+
 class TestPageShell(unittest.TestCase):
     def test_grid_layout_targets_exist(self):
         self.assertIn("grid-template-columns:repeat(12", PAGE)

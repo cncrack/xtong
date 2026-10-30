@@ -113,12 +113,18 @@ def main() -> int:
             hint = CHROME_HINT.format(port=acc.port, profile=acc.profile or "<该账号专用目录>")
             print(f"- {acc.label}：: {acc.port} 无 CDP 响应 → 跳过\n    先这样起浏览器：{hint}")
             continue
-        want = min(args.max_sections or q["left_sections"], q["left_sections"])
+        # `left_sections=None` = 节数不限（账号表写 0）；此时用 --max-sections 或默认 3
+        left = q["left_sections"]
+        cap = args.max_sections or 3
+        want = cap if left is None else min(cap, left)
         if want <= 0:
             print(f"- {acc.label}：剩余额度不足一节，跳过")
             continue
         courses = list(acc.courses) if acc.courses else [None]
         for course in courses:
+            # ⚠ 额度按**账号合计**（A1）：多门课共用同一个池子。所以这里每门课都给 `want`，
+            # **但真正的节数在下面循环里每门课开跑前用 `quota_left` 重算**（`min(want, left)`）
+            # —— 上一门课用掉的额度会当场从下一门扣掉，不会跑成 N 倍。
             plan.append((acc, course, want))
             label = f"课程{course}" if course is not None else "当前课程"
             print(f"- {acc.label}（:{acc.port}）：{label}，计划 {want} 节"
@@ -135,10 +141,10 @@ def main() -> int:
     for i, (acc, course, want) in enumerate(plan, 1):
         print(f"\n===== [{i}/{len(plan)}] {acc.label} "
               f"{('课程' + str(course)) if course is not None else '当前课程'} =====")
-        # 每门课开跑前重算额度（上一门可能已消耗）
+        # 每门课开跑前重算额度（上一门可能已消耗）。额度按账号合计，多门课共用。
         q = gledger.quota_left(acc.label, sections_limit=acc.daily_sections,
                                minutes_limit=acc.daily_minutes)
-        n = min(want, q["left_sections"])
+        n = want if q["left_sections"] is None else min(want, q["left_sections"])
         if n <= 0 or q["exhausted"]:
             print(f"  {acc.label} 额度已用完，跳过这门课")
             continue

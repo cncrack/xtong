@@ -33,6 +33,10 @@ ACTIONS = (
     "session-check",  # 去看了一次页面判登录态（**会访问平台**）
     "session-restore",  # 把登录态快照的 cookie 注入回去（零密码，不导航）
     "session-relogin",  # 用账号密码走真浏览器重登一次（验证码立即转人工）
+    "account-add",   # 面板新增账号（accounts.local.json）
+    "account-edit",  # 面板修改账号（端口/额度/显示名/凭据）
+    "account-toggle",  # 面板启用 / 停用账号
+    "account-del",   # 面板删除账号（profile 与登录态快照保留）
     "stop",          # 通用停止（面板 ■ 按钮）
     "error",         # 任何失败；detail 写原因，code 带机器码
 )
