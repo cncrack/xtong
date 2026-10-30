@@ -69,6 +69,58 @@ class TestSectionsLayout(unittest.TestCase):
         self.assertIn("#ops td:nth-child(-n+3){white-space:nowrap}", PAGE)
 
 
+class TestAccountCards(unittest.TestCase):
+    """多账号总览卡片（点卡片 = 把下面四个区块切到该账号）。"""
+
+    def test_card_grid_and_current_highlight_styles(self):
+        self.assertIn(".cards{display:grid", PAGE)
+        self.assertIn(".acct.cur{", PAGE)          # 当前账号要能一眼看出来
+
+    def test_card_renders_into_accounts_slot(self):
+        self.assertIn("function acctCard(", PAGE)
+        self.assertIn('el("accounts").innerHTML', PAGE)
+        self.assertIn("state.cards || []", PAGE)
+
+    def test_card_actions_do_not_also_switch_account(self):
+        # 卡片整体 onclick 切账号；卡内按钮若冒泡就会“点停止→顺手切账号”
+        self.assertIn('class="acct-actions" onclick="event.stopPropagation()"', PAGE)
+
+    def test_switching_account_forces_sections_rebuild(self):
+        # 两个账号的数据签名可能撞车，靠 state.label 参与签名不可能完全区分
+        # （read_at/行数/完成数都一样时）→ 切账号时直接清签名强制重建
+        self.assertIn("SEC_SIG = \"\";", PAGE)
+        self.assertIn("function pick(", PAGE)
+
+    def test_card_buttons_present(self):
+        for fn in ("function startStudy(", "function stopJob("):
+            self.assertIn(fn, PAGE)
+
+
+class TestTypography(unittest.TestCase):
+    """字号梯度与重点信息突出（用户 2026-10-30：“字体调大、重点突出”）。"""
+
+    def test_base_and_heading_font_sizes(self):
+        self.assertIn("font:15px/1.6", PAGE)          # 基础字号从 14 提到 15
+        self.assertIn("h1{font-size:18px", PAGE)
+        self.assertIn("h2{font-size:15px", PAGE)
+
+    def test_table_font_larger_than_before(self):
+        self.assertIn("table{width:100%;border-collapse:collapse;font-size:14px}", PAGE)
+
+    def test_key_numbers_are_emphasized(self):
+        self.assertIn(".kv .v b{font-size:16px", PAGE)      # 卡片里的“今日 x 节”
+        self.assertIn(".bar .lab b{", PAGE)                # 进度条上的完成数
+        self.assertIn("'</span><span><b>'", PAGE)
+
+    def test_account_cards_fill_the_row_when_few(self):
+        # auto-fill 会在账号少时留下空轨道，卡片只占左边一小块（实测 1 个账号时只占 1/3 宽）
+        self.assertIn("repeat(auto-fit,minmax(300px,1fr))", PAGE)
+        self.assertNotIn("repeat(auto-fill,minmax(320px,1fr))", PAGE)
+
+    def test_kv_key_column_is_fixed_so_cards_align(self):
+        self.assertIn("grid-template-columns:64px 1fr", PAGE)
+
+
 class TestPageShell(unittest.TestCase):
     def test_grid_layout_targets_exist(self):
         self.assertIn("grid-template-columns:repeat(12", PAGE)

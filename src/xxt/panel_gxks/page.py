@@ -16,25 +16,41 @@ PAGE = r"""<!doctype html>
       --shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--txt);
-     font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--card);
-       border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
-h1{font-size:16px;margin:0;font-weight:600}
-h2{font-size:13px;margin:0 0 10px;color:var(--dim);font-weight:600;letter-spacing:.02em;
+     font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--card);
+       border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9;
+       box-shadow:0 1px 3px rgba(16,24,40,.05)}
+h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.01em}
+h2{font-size:15px;margin:0 0 12px;color:var(--txt);font-weight:700;letter-spacing:.02em;
    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-h2::before{content:"";width:3px;height:13px;border-radius:2px;background:var(--accent);
+h2::before{content:"";width:4px;height:15px;border-radius:2px;background:var(--accent);
            flex:0 0 auto}
 /* 12 栏网格：宽屏下只让"账号/浏览器"两张短信息卡并排；节进度/作答/记录三张表都吃宽度，
    并排会把「详情」列挤到只剩 45px（实测折行），所以一律独占整行。窄屏自动堆叠。 */
 main{max-width:1280px;margin:0 auto;padding:16px 18px 60px;
      display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;align-items:start}
 section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
-        border-radius:10px;padding:14px 16px;box-shadow:var(--shadow)}
-@media(min-width:1000px){
-  #sec-accounts,#sec-browser{grid-column:span 6}
-}
+        border-radius:12px;padding:16px 20px;box-shadow:var(--shadow)}
+/* 账号卡片：每账号一张，点卡片切换下面四个区块。
+   用 auto-fit 而不是 auto-fill：账号少时卡片撑满整行，不会只占左边一小块、右边空一片。 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.acct{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff;
+      cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.acct:hover{border-color:#c7d7ee;box-shadow:0 2px 8px rgba(16,24,40,.06)}
+.acct.cur{border-color:var(--accent);box-shadow:0 0 0 3px #e8f0fe,inset 4px 0 0 var(--accent)}
+.acct.off{opacity:.6}
+.acct-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+           padding-bottom:8px;border-bottom:1px solid var(--line)}
+.acct-head b{font-size:16px;font-weight:700}
+/* 键列定宽：不同卡片之间“今日/端口/登录/课程”的值列能对齐，不会各自错开 */
+.kv{display:grid;grid-template-columns:64px 1fr;gap:5px 12px;font-size:13px;margin:10px 0}
+.kv .k{color:var(--dim);white-space:nowrap}
+.kv .v{color:var(--txt);line-height:1.5}
+/* 重点数字（今日已完成节数）拉大加重，扫一眼就能看到 */
+.kv .v b{font-size:16px;color:var(--accent);font-variant-numeric:tabular-nums}
+.acct-actions{display:flex;gap:6px;flex-wrap:wrap}
 select,button{font:inherit;border:1px solid var(--line);border-radius:6px;
-              background:#fff;padding:4px 10px;cursor:pointer;
+              background:#fff;padding:5px 12px;cursor:pointer;
               transition:background .12s,border-color .12s}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent);background:#f5f9ff}
 /* 按钮三档：primary 主操作 / 默认 ghost / danger 弱化为白底红字 */
@@ -47,9 +63,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .card-head{display:flex;align-items:flex-start;justify-content:space-between;
            gap:10px;flex-wrap:wrap;margin-bottom:2px}
 .toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:13px;white-space:nowrap}
 th.num{text-align:right}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
 tr:last-child td{border-bottom:0}
@@ -69,23 +85,24 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 /* 两条进度条（节数 / 学时）：纯 div，不引图表库 */
 .bars{display:flex;flex-wrap:wrap;gap:16px;margin:0 0 12px}
 .bar{flex:1 1 240px;min-width:200px}
-.bar .lab{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--dim);
-          margin-bottom:4px}
-.bar .track{height:8px;background:#eef0f3;border-radius:99px;overflow:hidden}
+.bar .lab{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--dim);
+          margin-bottom:5px}
+.bar .lab b{color:var(--txt);font-size:15px;font-variant-numeric:tabular-nums}
+.bar .track{height:10px;background:#eef0f3;border-radius:99px;overflow:hidden}
 .bar .fill{height:100%;background:linear-gradient(90deg,#3fb27f,#12805c);border-radius:99px;
            transition:width .3s}
 .bar .fill.warn{background:linear-gradient(90deg,#f2b45c,#a86200)}
 /* 两个分区：待学（默认展开）/ 已完成（默认折叠）；折叠状态记在 JS 里，轮询重绘能还原 */
 details.blk{border:1px solid var(--line);border-radius:8px;margin-top:10px;overflow:hidden}
-details.blk>summary{cursor:pointer;padding:8px 10px;background:#fafbfc;font-size:13px;
+details.blk>summary{cursor:pointer;padding:10px 12px;background:#fafbfc;font-size:14px;
                     display:flex;align-items:center;gap:8px;list-style:none;user-select:none}
 details.blk>summary::-webkit-details-marker{display:none}
 details.blk>summary::before{content:"\25B8";color:var(--dim);font-size:11px}
 details.blk[open]>summary::before{content:"\25BE"}
 details.blk.todo>summary{background:#fffaf2;color:var(--warn)}
-details.blk>summary .sum{margin-left:auto;color:var(--dim);font-size:12px}
+details.blk>summary .sum{margin-left:auto;color:var(--dim);font-size:13px}
 details.blk>.body{padding:8px 10px 10px}
-.tag{display:inline-block;padding:1px 7px;border-radius:99px;font-size:12px;
+.tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12.5px;
      border:1px solid transparent;white-space:nowrap}
 .t-done{background:#e6f4ef;color:var(--ok);border-color:#c6e6da}
 .t-learn{background:#fff4e5;color:var(--warn);border-color:#f3ddbc}
@@ -96,17 +113,17 @@ details.blk>.body{padding:8px 10px 10px}
 .stem{color:var(--txt);max-width:420px;overflow:hidden;text-overflow:ellipsis;
       white-space:nowrap;display:block}
 .ans{font-weight:600}
-.muted{color:var(--dim);font-size:12px}
+.muted{color:var(--dim);font-size:12.5px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .job{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line)}
 .job:last-child{border-bottom:0}
-pre{background:#0f1115;color:#c9d1d9;padding:8px 10px;border-radius:6px;overflow:auto;
-    font-size:12px;margin:6px 0 0;max-height:150px}
+pre{background:#0f1115;color:#c9d1d9;padding:10px 12px;border-radius:6px;overflow:auto;
+    font-size:12.5px;margin:8px 0 0;max-height:150px}
 #toast{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
 .toast{background:#1f2328;color:#fff;padding:8px 14px;border-radius:6px;font-size:13px;
        max-width:420px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
 .toast.bad{background:var(--bad)}
-.empty{color:var(--dim);font-size:13px;padding:8px 0}
+.empty{color:var(--dim);font-size:14px;padding:10px 0}
 </style>
 </head>
 <body>
@@ -118,7 +135,14 @@ pre{background:#0f1115;color:#c9d1d9;padding:8px 10px;border-radius:6px;overflow
   <span class="muted" id="clock"></span>
 </header>
 <main>
-  <section id="sec-accounts"><h2>账号与任务</h2><div id="accounts"></div></section>
+  <!-- 账号卡片：每个账号一张卡，卡上是总览，点卡片 = 把下面四个区块切到该账号 -->
+  <section id="sec-accounts">
+    <div class="card-head">
+      <h2>账号与任务 <span class="muted" id="accounts-meta"></span></h2>
+      <div class="toolbar"><span class="muted">点卡片切换下方「浏览器/节进度/作答/记录」</span></div>
+    </div>
+    <div id="accounts"></div>
+  </section>
 
   <!-- 浏览器与会话：只做本机 cdp 形态（拉起/探活/检查登录），不碰平台以外的任何东西 -->
   <section id="sec-browser">
@@ -205,29 +229,94 @@ function practiceCell(row) {
   return '<span class="tag t-none">未解锁</span>';
 }
 
-function renderAccounts(state) {
-  const jobs = state.jobs || [];
-  const acc = (state.accounts || []).find(a => a.label === state.label) || {};
-  const mine = jobs.find(j => j.label === state.label);
-  const running = mine ? '<span class="tag t-learn">' + esc(mine.kind) +
-    " 运行中 · " + esc(mine.since) + "</span>" : '<span class="tag t-done">空闲</span>';
-  let html = '<div class="row" style="margin-bottom:8px">' +
-    "<b>" + esc(acc.display || state.label) + "</b>" + running +
-    '<span class="muted">端口 ' + esc(acc.port) + " · 日上限 " +
-    esc(acc.daily_sections) + " 节 / " + esc(acc.daily_minutes) + " 分钟</span></div>";
-  if (!state.accounts_file) {
-    html += '<div class="muted" style="margin-bottom:8px">当前是单账号回落' +
-      "（data/account.local.json）。要跑多账号，新建 data/accounts.local.json，" +
-      "一条账号一个 port / profile，再用右上角下拉切换。</div>";
+function acctRow(k, v) {
+  return '<span class="k">' + esc(k) + '</span><span class="v">' + v + "</span>";
+}
+
+// 一张账号卡 = 该账号的总览（今日额度 / 端口 / 登录态 / 课程进度）+ 它能做的动作
+function acctCard(c, cur) {
+  const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
+  const snap = c.snapshot || {};
+  const active = c.label === cur;
+  const left = Number(t.left_sections) || 0;
+  const tag = !c.enabled ? '<span class="tag t-none">已停用</span>'
+    : c.job ? '<span class="tag t-learn">运行中 · ' + esc(c.job.kind) + " · " +
+              esc(c.job.since) + "</span>"
+            : '<span class="tag t-done">空闲</span>';
+  let html = '<div class="acct' + (active ? " cur" : "") + (c.enabled ? "" : " off") +
+    '" onclick="pick(\'' + esc(c.label) + '\')">';
+  html += '<div class="acct-head"><b>' + esc(c.display || c.label) + "</b>" + tag +
+    (active ? '<span class="tag t-ai">当前</span>' : "") +
+    '<span class="muted">' + esc(c.label) + "@" + esc(c.port) + "</span></div>";
+  html += '<div class="kv">';
+  html += acctRow("今日", "<b>" + esc(t.sections || 0) + "</b> / " + esc(lim.sections || 0) +
+    " 节 · " + esc(t.minutes || 0) + " / " + esc(lim.minutes || 0) + " 分");
+  html += acctRow("端口", c.port_alive ? '<span class="tag t-done">活着</span>'
+    : '<span class="tag t-none">未监听</span>');
+  html += acctRow("登录", snap.saved
+    ? "快照 " + esc(snap.at || "") + " · " + esc(snap.cookies || 0) + " 条"
+    : '<span class="muted">无快照</span>' + (c.credentials ? " · 有凭据" : " · 无凭据"));
+  html += acctRow("课程", sec.total
+    ? esc(c.course || "（未命名课程）") + " · " + esc(sec.done) + "/" + esc(sec.total) +
+      " 节 · 读于 " + esc(sec.read_at || "?")
+    : '<span class="muted">还没读过节列表</span>');
+  html += "</div>";
+  // 卡内动作：点它们不能连带触发“切账号”，所以 stopPropagation
+  html += '<div class="acct-actions" onclick="event.stopPropagation()">';
+  if (c.job) {
+    html += '<button class="danger" onclick="stopJob(\'' + esc(c.label) +
+      '\')">停止</button>';
+  } else if (!c.enabled) {
+    html += '<button disabled title="账号表里 enabled=false">已停用</button>';
+  } else if (!c.port_alive) {
+    html += '<button disabled title="先点下面「启动浏览器」，按钮才会亮">浏览器没开</button>';
+  } else if (left <= 0) {
+    html += '<button disabled title="今日额度已用完（账本按账号统计）">额度已用完</button>';
+  } else {
+    const n = Math.min(3, left);
+    html += '<button class="primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
+      ')" title="今日还剩 ' + left + ' 节，本次先跑 ' + n + ' 节">开始学习（' + n + " 节）</button>";
   }
-  html += '<div class="row">' +
-    '<button class="primary" onclick="post(\'/api/study\',{max_sections:3})">开始学习（3 节）</button>' +
-    '<button class="danger" onclick="post(\'/api/stop\')">停止</button>' +
-    "</div>";
+  if (!active) {
+    html += '<button onclick="pick(\'' + esc(c.label) + '\')">详情</button>';
+  }
+  html += "</div></div>";
+  return html;
+}
+
+function renderAccounts(state) {
+  const cards = state.cards || [];
+  el("accounts-meta").textContent = cards.length > 1 ? cards.length + " 个账号" : "";
+  let html = cards.length
+    ? '<div class="cards">' + cards.map(c => acctCard(c, state.label)).join("") + "</div>"
+    : '<div class="empty">没有可用账号——检查 data/accounts.local.json 或 ' +
+      "data/account.local.json。</div>";
+  if (!state.accounts_file) {
+    html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
+      "（data/account.local.json）。要跑多账号，新建 data/accounts.local.json，" +
+      "一条账号一个 port / profile，刷新本页即可。</div>";
+  }
+  const mine = (state.jobs || []).find(j => j.label === state.label);
   if (mine && mine.tail && mine.tail.length) {
     html += "<pre>" + esc(mine.tail.join("\n")) + "</pre>";
   }
   el("accounts").innerHTML = html;
+}
+
+function pick(label) {
+  if (!label || label === LABEL) return;
+  LABEL = label;
+  el("account").value = label;
+  SEC_SIG = "";          // 换账号必须重建节进度（不同账号的签名可能撞车）
+  load();
+}
+
+function startStudy(label, n) {
+  post("/api/study", { label: label, max_sections: n });
+}
+
+function stopJob(label) {
+  post("/api/stop", { label: label });
 }
 
 function renderBrowser(state) {
@@ -302,8 +391,8 @@ const numv = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 function barHtml(label, done, total, note) {
   const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total)) : 0;
-  return '<div class="bar"><div class="lab"><span>' + esc(label) + '</span><span>' +
-    esc(done) + " / " + esc(total) + (note ? " · " + esc(note) : "") +
+  return '<div class="bar"><div class="lab"><span>' + esc(label) + '</span><span><b>' +
+    esc(done) + "</b> / " + esc(total) + (note ? " · " + esc(note) : "") +
     '</span></div><div class="track" role="progressbar" aria-valuemin="0" ' +
     'aria-valuemax="100" aria-valuenow="' + pct + '"><div class="fill' +
     (pct >= 100 || total === 0 ? "" : " warn") + '" style="width:' + pct +
@@ -359,9 +448,13 @@ function renderSections(state) {
   }
   const rows = data.rows || [];
   const s = data.summary || {};
-  el("sec-meta").textContent = "读于 " + (data.read_at || "?");
+  const card = (state.cards || []).find(c => c.label === state.label) || {};
+  const course = (rows[0] && rows[0].category) || "";
+  // 标题写清「谁的哪门课」：多账号多课程时不写就只剩一个日期，容易看错人
+  el("sec-meta").textContent = [card.display || state.label, course,
+    "读于 " + (data.read_at || "?")].filter(Boolean).join(" · ");
 
-  const sig = [data.read_at, rows.length, s.done, s.practice_ready].join("|");
+  const sig = [state.label, data.read_at, rows.length, s.done, s.practice_ready].join("|");
   if (sig === SEC_SIG) return;    // 数据没变就别重建，否则折叠区会每 4 秒弹回
   SEC_SIG = sig;
 

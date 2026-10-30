@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse
 from ..adapters.gxks import accounts as gaccounts
 from ..adapters.gxks import browser as gbrowser
 from ..adapters.gxks import chrome as gchrome
+from ..adapters.gxks import ledger as gledger
 from ..adapters.gxks import login as glogin
 from ..config import Settings
 from ..store import gxks_ops
@@ -156,6 +157,52 @@ def _account_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _ledger_path(settings: Settings) -> Path:
+    """当日额度账本。跟 `settings.data_dir` 走（测试用临时根目录时不会读到真实账本）。"""
+    return settings.data_dir / "gxks_ledger.jsonl"
+
+
+def _account_cards(settings: Settings) -> list[dict[str, Any]]:
+    """多账号总览：每个账号一张卡的数据。
+
+    只读**本地**东西——账本、`sections_*.json` 缓存、登录态快照、TCP 探活，
+    不发任何平台请求（最小访问原则）。凭据只回“有没有”，绝不回值。
+    """
+    accounts = gaccounts.load_accounts()
+    jobs = {j["label"]: j for j in _jobs_snapshot()}
+    debug_dir = settings.data_dir / "debug"
+    ledger_path = _ledger_path(settings)
+    out: list[dict[str, Any]] = []
+    for acc in accounts:
+        today = gledger.today_totals(ledger_path, acc.label)
+        cached = _read_json(_latest(f"sections_{acc.label}.json", debug_dir)) or {}
+        summary = cached.get("summary") or {}
+        course = next((r.get("category") for r in cached.get("rows") or []
+                       if r.get("category")), "")
+        snap = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
+        left = max(0, acc.daily_sections - today["sections"])
+        out.append({
+            "label": acc.label,
+            "display": acc.display or ("主账号" if acc.label == "default" else acc.label),
+            "enabled": acc.enabled,
+            "port": acc.port,
+            "port_alive": gchrome.port_alive(acc.port),
+            # 账号表里该账号自己的 name/pw；旧版全局 account.local.json 在多账号下会全部假 “已配”
+            "credentials": bool(acc.configured),
+            "limits": {"sections": acc.daily_sections, "minutes": acc.daily_minutes},
+            "today": {"sections": today["sections"], "minutes": today["minutes"],
+                      "left_sections": left},
+            "snapshot": snap,
+            "course": course,
+            "sections": {"done": summary.get("done", 0),
+                         "total": summary.get("sections", 0),
+                         "read_at": cached.get("read_at", "")},
+            "job": ({"kind": jobs[acc.label]["kind"], "since": jobs[acc.label]["since"]}
+                    if acc.label in jobs else None),
+        })
+    return out
+
+
 def _record(settings: Settings, label: str, action: str, detail: str,
             result: str = "ok", payload: dict | None = None) -> None:
     """写一条 `gx_ops`。**记日志失败不能把主流程打断**（面板只管展示，不影响干活）。"""
@@ -256,6 +303,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {
             "ok": True,
             "accounts": rows,
+            "cards": _account_cards(settings),
             "accounts_file": gaccounts.default_path().exists(),
             "label": label,
             "auto_submit": bool(settings.raw.get("gxks", {}).get("auto_submit", False)),
