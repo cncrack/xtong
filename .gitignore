@@ -7,6 +7,9 @@ dist/
 .venv/
 venv/
 
+# 本机配置覆盖层（不入库）：平台/本机差异写这里，模板见 config/settings.local.example.toml
+config/settings.local.toml
+
 # 运行数据（账号会话、数据库、日志）—— 绝不入库
 data/
 *.db

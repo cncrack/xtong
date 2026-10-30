@@ -1,4 +1,9 @@
-"""配置加载：config/settings.toml，缺失项用内置默认值补齐。"""
+"""配置加载：内置默认值 → `config/settings.toml` → 本机覆盖层 → DB 覆盖层 → 环境变量。
+
+本机覆盖层 = `config/settings.local.toml`（**不入库**）。
+它存在的理由（2026-10-30 P0）：`config/settings.toml` 被两个平台的工作树共用，
+平台差异写在被跟踪的文件里，合并回 main 时就会顶掉另一边的配置。
+"""
 
 from __future__ import annotations
 
@@ -109,6 +114,17 @@ class Settings:
         if path.exists():
             with open(path, "rb") as f:
                 _deep_merge(data, tomllib.load(f))
+        # 本机覆盖层（config/settings.local.toml，**不入库**）：平台差异写这里，
+        # 被跟踪的 settings.toml 就能保持另一平台原样（2026-10-30 P0）。
+        # 解析失败只告警、不静默吞：否则表现为"改了本地配置却不生效"，最难查。
+        local = self.root / "config" / "settings.local.toml"
+        if local.exists():
+            try:
+                with open(local, "rb") as f:
+                    _deep_merge(data, tomllib.load(f))
+            except Exception as exc:                       # noqa: BLE001  坏文件不该让整程序起不来
+                _log.warning("本机覆盖层 %s 解析失败，本次只用 settings.toml：%r",
+                             local.name, exc)
         # DB 全局覆盖层（app_config 表，面板"设置"写入，v0.6 三层配置的第 2 层）
         # 无库/无表时跳过——CLI 首次 init 前也能用。但**失败必须留痕**：
         # 静默 pass 曾让"面板改了额度、实际没生效"无任何线索（devlog 24 排查耗掉十分钟）。
@@ -139,6 +155,18 @@ class Settings:
         except Exception as exc:
             _log.warning("DB 覆盖层读取失败，本次回退到 config/settings.toml + 内置默认值：%r",
                          exc)
+        # 环境变量覆盖（最高优先级，容器部署用）：容器内的面板必须绑 0.0.0.0，
+        # 否则 `-p 8301:8301` 转不进来；宿主机上不设这两个变量时行为与以前完全一致。
+        panel = data.setdefault("panel", {})
+        for env_key, cfg_key, cast in (("XXT_PANEL_HOST", "host", str),
+                                       ("XXT_PANEL_PORT", "port", int)):
+            env_val = os.environ.get(env_key)
+            if env_val is None or not env_val.strip():
+                continue
+            try:
+                panel[cfg_key] = cast(env_val.strip())
+            except (TypeError, ValueError):
+                _log.warning("%s=%r 不是合法值，已忽略（沿用配置文件）", env_key, env_val)
         self.raw = data
         self.data_dir = (self.root / data["app"]["data_dir"]).resolve()
         self.db_path = self.data_dir / "xxt.db"

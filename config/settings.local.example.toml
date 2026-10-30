@@ -1,0 +1,41 @@
+# 本机配置覆盖层 —— **模板（入库）**，实际生效的是同目录下的 `settings.local.toml`（不入库）。
+#
+# 用法：
+#   copy config\settings.local.example.toml config\settings.local.toml
+#   然后按自己的部署改值（端口、profile、平台段）。
+#
+# 为什么要有这一层（2026-10-30 P0）：
+#   `config/settings.toml` 是被跟踪文件，超星与第二平台共用同一个 git 仓库的两个
+#   worktree。平台/本机差异写进被跟踪的那份，合并回 main 时会顶掉另一边的配置；
+#   所以差异统一放这里，被跟踪的 settings.toml 永远保持上游原样。
+#
+# 加载顺序（后者覆盖前者）：
+#   内置默认值 → settings.toml → 本文件 → 数据库 app_config → 环境变量 XXT_PANEL_HOST/PORT
+
+# ---------------------------------------------------------------- 第二平台（示例）
+# 只在「第二平台」的工作树里需要；超星工作树不要填这一段。
+[platform]
+name = "gxks"
+login_url = "http://www.gaoxiaokaoshi.com/Default.aspx"
+space_url = "http://www.gaoxiaokaoshi.com/MainPage.aspx"
+
+[panel]
+# 本机：127.0.0.1（只有本机能访问）
+# 容器：0.0.0.0（否则 `-p 8301:8301` 转不进容器）
+# 也可以不改文件，用环境变量 XXT_PANEL_HOST / XXT_PANEL_PORT 覆盖。
+host = "127.0.0.1"
+port = 8301
+
+[gxks]
+# ai / reference / owner，见 docs/gxks/PLAN-GXKS.md §12.4
+work_mode = "ai"
+# 自动交卷：默认关；只有人工核对流程跑熟后才由用户打开。
+auto_submit = false
+# 账号表里查不到该代号时的兜底 CDP 端口（端口是账号属性，以账号表为准）。
+port_base = 9300
+# 允许的题型代码：目前实测只有单选=2，未实测题型整卷停。
+allowed_types = "2"
+
+# ---------------------------------------------------------------- 可选：只改某一项
+# [quota]
+# daily_minutes = 120

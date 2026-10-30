@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**P0 配置隔离落地：第二平台配置搬出被跟踪文件**）：① 新增 `config/settings.local.toml`（**不入库**，`.gitignore` 已忽略）+ 入库模板 `settings.local.example.toml`；`config/settings.toml` **还原成 main（超星）原样**（`platform=chaoxing`、`[reconcile]` 段回来、`float_ratio=[0.85,1.0]`）—— 本分支从此**零 diff** 落在该文件上，合并回 main 不会再顶掉超星配置。② `Settings` 加载顺序改为：内置默认值 → `settings.toml` → **本机覆盖层** → DB `app_config` → 环境变量；覆盖层解析失败只告警不中断（静默吞掉会表现成“改了不生效”）。③ 新增 `XXT_PANEL_HOST` / `XXT_PANEL_PORT` 覆盖 `[panel]`（容器必须 `0.0.0.0`，否则 `-p 8301:8301` 转不进来）；不设时行为与以前完全一致。验收：新增 `tests/test_config_local_override.py` 7 条 + m0/panel/gxks_panel 共 **56 passed**；`serve()` 实测仍绑 `127.0.0.1:8301`；超星目录 `git status` 为空。
 - 2026-10-30（**部署形态与提交确认定稿：练习不拆环境、C 形态面板二次确认、容器对外同源面板、兼容矩阵**）：纯设计会话，零代码改动，结论落 §十三。① 用户实机指出「回填没有保存，要么提交要么退出」→ **作废“容器回填 + 本机交卷”**，练习只能单一环境闭环；新增 **形态 C**（回填断开 CDP → 面板展示整卷 → 人点“确认提交” → 脚本重连、自己 accept confirm、点交卷、读分入库）。② **刷课与练习分开部署**：刷课进容器（无人工中间态），练习按 A/B/C；容器还顺带消掉 U7（v2rayN 系统代理拖死 `updateTime.ashx`）。③ **容器可对外提供同一套面板**，但三个前置：`host` 必须 `0.0.0.0` 且可环境变量覆盖、浏览器切 `managed` 后端（`persistent_launch` 现成且全仓库零调用）、无头下交卷只能由脚本代点。④ **兼容矩阵 8 层**：代码层可零影响（硬规矩“只新增不改 `launch`/`hardened_context`/`Settings` 既有键语义”），真耦合点是**共享的 `config/settings.toml`**（本分支缺 `[reconcile]` 段、`float_ratio` 为旧值，合并回 main 必冲突）与**共享 git 历史**（落后 main 3 个提交 / 21 文件）→ **P0 配置隔离为一切前置**。⑤ 另查实：两目录是同一仓库的两个 worktree；全仓库无 Chrome 路径探测；`.ASPXAUTH` 语义在 `selectors.py:36` 与 `__init__.py:66` 互相矛盾（⇒ 会话判据只认探 `MAIN_PAGE`，不看 `expires`）；无 `.dockerignore`（构建上下文会带走 `data/` 凭据）。
 - 2026-10-30（**第二平台独立控制台 + 课后练习 AI 回填，代码级完成**）：用户三条硬要求（面板点做作业、逐题列出「第几节第几题答案是什么」、日志记操作）＋「**这个面板和超星的是不交叉的，各自独立吧**」。① **独立**：新包 `xxt/panel_gxks/`（不 import `xxt.panel`）、新命令 `xxt gxks-panel`、端口 **8301**（超星 8300）、日志表 **`gx_ops`**（`gxks_questions.db`，schema v2→v3 原地升）、账号读 `accounts.local.json`；**只共用 AI Provider 中心**（Key 配一次两边可用）。② **回填链路** `adapters/gxks/work.py`：开卷 → `tm_arr` 读题 → 题库优先（只认 `standard_source='site'`）→ LLM 兜底 → **真点击** radio（`onclick=check_index(N)`，只置 `checked` 平台算没答）→ 回读校验 → **默认不提交**。③ **端口归属修正**：端口是账号属性，新增 `accounts.resolve_port()`，面板一律显式 `--port`——此前面板不传端口、脚本按 `port_base` 猜 9300，而账号表写 9222，两边各猜一个必然“点了没反应”。④ **安全边界**：`auto_submit` 默认 false；`allowed_types="2"` 只放单选，未实测题型**整卷停**（退出码 4）。验收：`pytest` **442 passed**（新增 `test_gxks_panel.py` 11 条、`test_gxks_work.py`、`test_gxks_ops.py`），面板在 8301 实机起过、`/api/state` 与页面均 200、JS 过 `node --check`；**AI 回填尚未在真实环境跑过**（只完成代码与合成 fixture）。
 - 2026-10-30（**第 2 节练习全链路入库；三处“形态漂移”修复；监听不再靠 URL 名单**）：① **验收**：2.1 国家安全概述 3 题单选（33/34/33），用户作答 `b/a/d`、**100 分**，交卷 `ExamSave.aspx` **54 字段**，入库 `paper_id=2`/`import_id=2`；分类字段**自动填对**（`course_id=军事理论（字幕版）`/`section_id=1298`/`section_name=2.1 国家安全概述`/`paper_label=2.01`）—— 上一条“缺陷 1”修复的实证。② **平台形态已变**：练习落地页 `ExamMain.aspx` → **`ExamTmStepMain.aspx`**（帧 `ExamTmStepHeader`/`ExamTmStepDo`，新增 `PaperSuitInfoId`/`KsSavePaper=1`/`KsCycle=5`），建卷入回移到 **`ExamCreate.ashx`**，交卷后**直跳** `viewExam.aspx?ExamID=…&Clerk_kscj_ID=…`。③ **三处修复**：`_exercise_id()` 认 `ExamID` 别名（回顾页不再带 `Tk_Cl_Id`，否则真实答卷被判“不匹配”）；`_norm_time()` 归一化凌晨不补零的小时（`0:54:42` vs `00:54:42`）；**`_answer_rows()` 按“哪个帧有 `tm_arr`”定位答题帧**，不再硬编码 `frames["ExamDo"]`，命中 0 个或多个一律拒收。④ **方法结论**：前端 JS 只写第一跳（`showExam()` → `chkExam.aspx`），落地点由服务端建卷 302 决定、**代码里查不到** → 监听从 URL 白名单改为“任何新开 page 都抓 + 等建卷中间态跳完”，`_grab_now.py` 改按“帧最多的 page”选址。验收：`pytest` **402 passed**（`test_gxks_practice.py` 16 条）。
@@ -995,12 +996,22 @@ C 的两条硬约束：
 
 | 阶段 | 产出 | 工时 | 不做的后果 |
 |---|---|---|---|
-| **P0 配置隔离** | `config/settings.local.toml`（gitignored）+ `Settings` 在 toml 之后、DB 覆盖层之前加一层 `_deep_merge`（现成函数复用）+ `XXT_PANEL_HOST/PORT` | 1h | Docker 里面板直接访问不到；合并回 main 必改到超星 |
+| **P0 配置隔离** ✅ 已落地 | `config/settings.local.toml`（gitignored）+ `Settings` 本机覆盖层 + `XXT_PANEL_HOST/PORT` | 1h | Docker 里面板直接访问不到；合并回 main 必改到超星 |
 | **P1 浏览器后端** | `[gxks] browser_backend = "cdp" \| "managed"` 统一入口 | 2h | 容器里起不了浏览器 |
 | **P2 面板接管登录** | `/api/browser/start\|stop`、`/api/login`、账号卡“会话”列（探 `MAIN_PAGE`，**不看 cookie `expires`**） | 2h | 仍需手敲 `chrome.exe` |
 | **P3 Docker 交付** | `Dockerfile.gxks` + `docker-compose.gxks.yml`（8301）+ `.dockerignore` | 1.5h | 无法一步起容器 |
 
 部署当天 5 步：① 装 Docker ② 放 `data/accounts.local.json` 与 `settings.local.toml` ③ 首次登录（容器内 headless；**仅遇验证码需人工**：拷入本机已登录 profile）④ `docker compose -f deploy/docker-compose.gxks.yml up -d` ⑤ 开 `http://<IP>:8301`。
+
+#### P0 已落地（2026-10-30）
+
+- 新增 `config/settings.local.toml`（**不入库**，`.gitignore` 已忽略）与入库模板 `config/settings.local.example.toml`；
+- `Settings` 加载顺序：内置默认值 → `settings.toml` → **本机覆盖层** → DB `app_config` → 环境变量；覆盖层解析失败只告警、不中断；
+- `XXT_PANEL_HOST` / `XXT_PANEL_PORT` 可覆盖 `[panel]`；**不设时行为与以前完全一致**（不是改变既有语义，只是多一层最高优先级的覆盖）；
+- `config/settings.toml` **已还原成 main（超星）原样**：`platform=chaoxing`、`[reconcile]` 段回来了、`float_ratio=[0.85,1.0]`；
+- 验收：`tests/test_config_local_override.py` **7 条** + `test_m0` / `test_panel` / `test_gxks_panel` 共 **56 passed**；`serve()` 实测仍绑 `127.0.0.1:8301`；超星目录 `git status` 为空。
+
+⚠ **副作用（必须知道）**：本分支不再携带第二平台配置。**新克隆或换机器时必须先** `copy config\settings.local.example.toml config\settings.local.toml`，否则 `platform` 会是超星的 `chaoxing`（不影响 gxks 实际功能，但端口会退回各面板自己的缺省值、`[gxks]` 段缺失）。
 
 ### 13.7 未验证 / 风险（不假装做完）
 
