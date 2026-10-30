@@ -3533,11 +3533,8 @@ def create_app(settings: Settings) -> FastAPI:
             ch = conn.execute(
                 "SELECT * FROM chapters WHERE course_id=? AND name LIKE ? LIMIT 1",
                 (course["id"], f"%{chapter}%")).fetchone() if course else None
-        finally:
-            conn.close()
-        if course is None or ch is None:
-            return {"ok": False, "error": "未找到课程/章节"}
-        try:
+            if course is None or ch is None:
+                return {"ok": False, "error": "未找到课程/章节"}
             with sync_playwright() as p:
                 from ..core.browser import launch
                 from ..core.stealth import hardened_context
@@ -3557,6 +3554,8 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": True, "results": results}
         except Exception as exc:
             return {"ok": False, "error": repr(exc)}
+        finally:
+            conn.close()
 
     @app.get("/", response_class=HTMLResponse)
     def index():
