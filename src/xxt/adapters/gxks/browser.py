@@ -24,10 +24,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ...core.browser import persistent_launch_kwargs
 from ...core.stealth import STEALTH_JS, context_kwargs
@@ -38,6 +41,9 @@ _log = logging.getLogger(__name__)
 DEFAULT_BACKEND = "cdp"
 BACKENDS = ("cdp", "managed")
 PROFILE_ROOT = "profiles"          # 落在 data/profiles/<代号>
+# 登录态快照的文件名前缀：既要命中 .gitignore 的 `storage_state*.json`，
+# 也要命中 `scripts/push_check.py` 对同名文件的拦截 —— 这份文件等同登录态。
+STATE_PREFIX = "storage_state_gxks"
 
 
 class SessionError(RuntimeError):
@@ -143,6 +149,97 @@ def cdp_profile(settings: Any, label: str, acc: Any = None) -> Path:
     """
     explicit = str(getattr(acc, "profile", "") or "").strip()
     return Path(explicit) if explicit else profile_dir(settings, label)
+
+
+def context_of(session: Session) -> Any:
+    """session 背后的 `BrowserContext`（managed 直接在 session 上，cdp 取第一个）。"""
+    if session.context is not None:
+        return session.context
+    contexts = getattr(session.browser, "contexts", None) or []
+    return contexts[0] if contexts else None
+
+
+def state_path(settings: Any, label: str = "") -> Path:
+    """该账号的**登录态快照**文件（cookie + localStorage 的 json）。
+
+    为什么不靠 profile 目录：本站 4 条 cookie（`.ASPXAUTH` / `ASP.NET_SessionId` /
+    `Clerk` / `ZYLTheme`）**全是会话级**（2026-10-30 实测，`expires` 全为 -1），Chrome
+    一关就全没、profile 里留不下任何东西。所以“保存登录会话”只能落成这个 json，
+    被踢或重启后再靠 `restore_cookies()` 注入回来。
+    """
+    data = data_dir_of(settings)
+    key = str(label or "").strip().lower()
+    if not key:
+        return data / f"{STATE_PREFIX}.json"
+    if not accounts.is_valid_label(key):
+        raise SessionError("label",
+                           f"账号代号 {label!r} 非法：只允许 a-z0-9_- 且 ≤24 字符",
+                           "用账号表里的 label（data/accounts.local.json）")
+    return data / f"{STATE_PREFIX}_{key}.json"
+
+
+def state_summary(path: Path) -> dict[str, Any]:
+    """快照摘要：只给 cookie 的**名字与数量**，绝不返回或打印值。"""
+    p = Path(path)
+    if not p.exists():
+        return {"saved": False}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") or []
+        names = sorted({str(c.get("name")) for c in cookies if c.get("name")})
+        session_level = sorted({str(c.get("name")) for c in cookies
+                                if not c.get("expires") or float(c.get("expires") or 0) <= 0})
+    except Exception:                                   # noqa: BLE001  坏文件按“没存”算
+        return {"saved": False}
+    return {
+        "saved": True,
+        "at": datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "size": p.stat().st_size,
+        "cookies": len(names),
+        "names": names,
+        "session_level": session_level,
+    }
+
+
+def save_state(session: Session, path: Path) -> dict[str, Any]:
+    """把当前登录态落盘（cookie + localStorage），返回摘要。**零新请求**。
+
+    调页面前后都该调一次：登录成功后存一份（滚动刷新那张票），
+    被踢前的那份还能当“最后的可用快照”。
+    """
+    ctx = context_of(session)
+    if ctx is None:
+        raise SessionError("no_page", "没有可导出的浏览器上下文")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    ctx.storage_state(path=str(p))
+    return state_summary(p)
+
+
+def restore_cookies(session: Session, path: Path) -> int:
+    """把快照里的 cookie 注入当前浏览器，返回注入条数（**不导航、不发请求**）。
+
+    只取平台域下发的 cookie：快照里若混进别的域，注入过去既没用还可能被浏览器拒。
+    注入不等于生效 —— 服务端还认不认那张票，只有下一次请求才知道，所以调用方注入后
+    **必须再探一次会话**才算完。
+    """
+    ctx = context_of(session)
+    if ctx is None:
+        raise SessionError("no_page", "没有可注入的浏览器上下文")
+    p = Path(path)
+    if not p.exists():
+        return 0
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:                                   # noqa: BLE001  坏文件当空快照
+        return 0
+    host = (urlparse(selectors.MAIN_PAGE).hostname or "").lower()
+    cookies = [c for c in (data.get("cookies") or [])
+               if host and host in str(c.get("domain") or "").lower()]
+    if not cookies:
+        return 0
+    ctx.add_cookies(cookies)
+    return len(cookies)
 
 
 def _pick_list_page(browser: Any) -> Any:

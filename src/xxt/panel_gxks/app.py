@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse
 from ..adapters.gxks import accounts as gaccounts
 from ..adapters.gxks import browser as gbrowser
 from ..adapters.gxks import chrome as gchrome
+from ..adapters.gxks import login as glogin
 from ..config import Settings
 from ..store import gxks_ops
 from ..store.schema_gxks import open_question_bank
@@ -208,6 +209,9 @@ def _browser_state(settings: Settings, label: str) -> dict[str, Any]:
         "started_by_panel": bool(own),
         "since": own["since"] if own else "",
         "can_start": backend == "cdp" and chrome is not None and cdp_dir is not None,
+        # 登录态快照：本站 cookie 全是会话级，关浏览器就没了 → 只能靠这份文件兜底
+        "state": gbrowser.state_summary(gbrowser.state_path(settings, label)) if label else {},
+        "credentials": glogin.is_configured(glogin.credentials_path(settings)),
         "session": _read_json(_latest(f"session_{label}.json",
                                       settings.data_dir / "debug")) if label else None,
     }
@@ -382,19 +386,21 @@ def create_app(settings: Settings) -> FastAPI:
         _record(settings, label, "browser-stop", f"面板停止 Chrome（{result}）")
         return {"ok": True, "message": result}
 
-    @app.post("/api/session/check")
-    def session_check(body: dict) -> dict:
-        """真去看一次页面判登录态（唯一可靠判据）。**会访问平台**，所以只在点按钮时跑。"""
-        acc = _account(settings, str(body.get("label") or ""))
+    def _session_script(acc: Any, *flags: str, timeout: int = 90) -> dict:
+        """跑 `gxks_session_check.py`（check / --restore / --relogin 共用）。
+
+        子进程跑而不是在面板进程里调 Playwright：同步 API 不能和 FastAPI 的事件循环
+        同处一线程，而且脚本崩了不该把面板带走。只认**最后一行以 `{` 开头**的输出。
+        """
         if getattr(sys, "frozen", False):
             return {"ok": False, "error": "打包版面板不支持起脚本（scripts/ 不在 exe 内）"}
         argv = [sys.executable, "-u", str(SCRIPTS / "gxks_session_check.py"),
-                "--label", acc.label, "--port", str(acc.port)]
+                "--label", acc.label, "--port", str(acc.port), *flags]
         try:
             done = subprocess.run(argv, cwd=str(ROOT), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=90)
+                                  encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
-            return {"ok": False, "error": "会话检查超时（90 秒）"}
+            return {"ok": False, "error": f"会话脚本超时（{timeout} 秒）"}
         parsed: dict | None = None
         for line in reversed((done.stdout or "").strip().splitlines()):
             if line.startswith("{"):
@@ -405,12 +411,76 @@ def create_app(settings: Settings) -> FastAPI:
                 break
         if parsed is None:
             tail = ((done.stderr or "") + (done.stdout or "")).strip().splitlines()[-3:]
-            return {"ok": False, "error": "检查没拿到结果：" + " / ".join(tail)}
+            return {"ok": False, "error": "没拿到结果：" + " / ".join(tail),
+                    "exit_code": done.returncode}
+        parsed["exit_code"] = done.returncode
+        return {"ok": True, "parsed": parsed, "stderr": (done.stderr or "").strip()}
+
+    @app.post("/api/session/check")
+    def session_check(body: dict) -> dict:
+        """真去看一次页面判登录态（唯一可靠判据）。**会访问平台**，所以只在点按钮时跑。"""
+        acc = _account(settings, str(body.get("label") or ""))
+        out = _session_script(acc)
+        if not out["ok"]:
+            return out
+        parsed = out["parsed"]
         logged = bool(parsed.get("logged_in"))
         _record(settings, acc.label, "session-check",
                 f"会话检查：{'已登录' if logged else '未登录'}（{parsed.get('url', '')[:60]}）",
                 result="ok" if logged else "fail")
         return {"ok": True, "message": "已登录" if logged else "未登录（落到登录页）",
+                "session": parsed}
+
+    @app.post("/api/session/restore")
+    def session_restore(body: dict) -> dict:
+        """恢复登录：把快照里的 cookie 注入当前 Chrome，再探一次（零密码）。"""
+        acc = _account(settings, str(body.get("label") or ""))
+        state = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
+        if not state.get("saved"):
+            return {"ok": False, "error": "还没有登录态快照：先「检查会话」或「重新登录」存一份"}
+        out = _session_script(acc, "--restore")
+        if not out["ok"]:
+            return out
+        parsed = out["parsed"]
+        logged = bool(parsed.get("logged_in"))
+        restored = int(parsed.get("restored") or 0)
+        # 三种真实情形要分开说：恢复成功 / 本来就登着（没走注入）/ 注入了也没用
+        if logged and restored:
+            msg = f"已恢复登录（注入 {restored} 条 cookie）"
+        elif logged:
+            msg = "本来就登录着，没有注入（顺手刷新了快照）"
+        elif restored:
+            msg = (f"注入了 {restored} 条 cookie 但服务端不认（那张票已作废）"
+                   "——点「重新登录」")
+        else:
+            msg = "快照里没有可注入的平台 cookie——点「重新登录」"
+        _record(settings, acc.label, "session-restore",
+                f"恢复登录：注入 {restored} 条 cookie → {msg}",
+                result="ok" if logged else "fail")
+        return {"ok": True, "message": msg, "session": parsed}
+
+    @app.post("/api/session/relogin")
+    def session_relogin(body: dict) -> dict:
+        """重新登录：用账号密码走真浏览器填表**一次**；遇验证码立即停机转人工。"""
+        acc = _account(settings, str(body.get("label") or ""))
+        if not glogin.is_configured(glogin.credentials_path(settings)):
+            return {"ok": False, "error": "data/account.local.json 里没有可用的账号密码"}
+        out = _session_script(acc, "--relogin", timeout=150)
+        if not out["ok"]:
+            return out
+        parsed = out["parsed"]
+        logged = bool(parsed.get("logged_in"))
+        need_human = bool(parsed.get("need_human"))
+        why = str((parsed.get("relogin") or {}).get("result") or "")
+        detail = ("需人工输验证码" if need_human else
+                  ("已登录" if logged else f"未成功（{why or parsed.get('url', '')[:40]}）"))
+        _record(settings, acc.label, "session-relogin", f"重新登录：{detail}",
+                result="ok" if logged else "fail")
+        if need_human:
+            return {"ok": False, "need_human": True,
+                    "error": "被推到验证码闸门：请在那台浏览器窗口里手动输验证码并登录"
+                             "（脚本不会再试第二次）", "session": parsed}
+        return {"ok": True, "message": "已重新登录" if logged else f"没成功：{detail}",
                 "session": parsed}
 
     @app.get("/api/ops")

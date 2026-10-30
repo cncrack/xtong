@@ -15,9 +15,13 @@ from __future__ import annotations
 
 BASE = "http://www.gaoxiaokaoshi.com"          # 【实测】仅 HTTP，HTTPS 不可达
 LOGIN_PAGE = f"{BASE}/Login.aspx"              # 【实测】1920 宽也落这里，分流规则未证实
-# 【实测】2026-10-29 12:49 会话失效时整页被踢到 **Loginb.aspx**（带 b 的另一套登录页）。
-# 两个都要认：只认一个就会把“掉登录”误当成“页面变慢”。
-LOGIN_PAGES = (LOGIN_PAGE, f"{BASE}/Loginb.aspx")
+# 【实测 2026-10-29 12:49】会话失效时整页被踢到 **Loginb.aspx**（带 b 的另一套登录页）。
+# 【实测 2026-10-30】未登录访问学习入口会被 302 到 **Default.aspx?ReturnUrl=…**，
+# 而 `Login.aspx` 自己也会 302 到 `Default.aspx`（200 / 3717 字节，就是登录页本体）。
+# ⇒ 三个都要认。只认前两个时，`at_login_page()` 会把“停在 Default.aspx 的未登录态”
+#   误判成“已登录” —— P2 的「检查会话」首跑就撞上了这个假阳性。
+DEFAULT_PAGE = f"{BASE}/Default.aspx"         # 【实测】登录页实际落点（带 ReturnUrl）
+LOGIN_PAGES = (LOGIN_PAGE, f"{BASE}/Loginb.aspx", DEFAULT_PAGE)
 LOGIN_POST = f"{BASE}/HidLogin.aspx"           # 【实测】表单 POST，明文
 
 # 【实测 §7.2/§7.4】登录表单结构：`<form id="frmLogin">`，字段名 = `name`/`pw`/`verifyCode`，

@@ -136,16 +136,26 @@ def test_enough_with_margin_requires_overrun():
 # ---------------------------------------------------------------- 会话失效（Q20）
 
 
-def test_at_login_page_recognizes_both_login_pages():
+def test_at_login_page_recognizes_all_login_pages():
     """2026-10-29 12:49 实测：掉登录时整页落到 **Loginb.aspx**（不是 Login.aspx）。
 
-    只认 Login.aspx 会把“掉登录”当成“页面变慢”，守播于是静默转圈到超时。
+    2026-10-30 实测补充：未登录访问学习入口、以及 `Login.aspx` 自己，**都 302 到
+    `Default.aspx`**（200 / 3717 字节，就是登录页本体）→ 少于三个都认，
+    “停在 Default.aspx 的未登录态” 会被当成已登录（P2 的「检查会话」首跑就撞上）。
     """
     assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Login.aspx") is True
     assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Loginb.aspx") is True
     assert driver.at_login_page("http://www.gaoxiaokaoshi.com/loginb.aspx?x=1") is True
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Default.aspx") is True
+    # 未登录被踢时的真实形态：带 ReturnUrl 且保留原 query
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Default.aspx"
+                                "?ReturnUrl=%2fHomew%2fMainPage.aspx%3fmenu%3d3&menu=3") is True
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/default.aspx") is True   # 大小写
     assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Study/LibraryStudy.aspx?Id=1") is False
     assert driver.at_login_page("http://www.gaoxiaokaoshi.com/HidLogin.aspx") is False   # 子串会误伤
+    # 登录后的学习入口本身**不是**登录页（只做前缀匹配就会把它一起误杀）
+    assert driver.at_login_page("http://www.gaoxiaokaoshi.com/Homew/MainPage.aspx"
+                                "?menu=3&subMenu=4") is False
     assert driver.at_login_page("") is False
 
 

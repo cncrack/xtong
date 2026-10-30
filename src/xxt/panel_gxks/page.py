@@ -78,6 +78,10 @@ pre{background:#0f1115;color:#c9d1d9;padding:8px 10px;border-radius:6px;overflow
         <button id="btn-bstart" onclick="startBrowser()">启动浏览器</button>
         <button id="btn-bstop" class="danger" onclick="post('/api/browser/stop')">停止浏览器</button>
         <button id="btn-scheck" class="primary" onclick="checkSession()">检查会话</button>
+        <button id="btn-srestore" onclick="restoreSession()"
+          title="把登录态快照里的 cookie 注入当前 Chrome（零密码）">恢复登录</button>
+        <button id="btn-rlogin" onclick="reloginSession()"
+          title="用账号密码填表登录一次；遇验证码立即停、转人工">重新登录</button>
       </div>
     </div>
     <div id="browser"></div>
@@ -192,6 +196,13 @@ function renderBrowser(state) {
     ["user-data-dir", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认：账号表未配）")
       : "—"],
     ["managed profile", managed ? (b.managed_profile ? "已建" : "未建（首跑 = 未登录）") : "不适用"],
+    ["登录态快照", (b.state && b.state.saved)
+      ? esc(b.state.at) + " · " + esc(b.state.cookies) + " 条 cookie" +
+        (b.state.session_level && b.state.session_level.length
+          ? "（全是会话级，关浏览器即失 → 靠这份文件恢复）" : "")
+      : "未存（先点「检查会话」或「重新登录」）"],
+    ["账号密码", b.credentials ? "已配置（可自动重登）"
+      : "未配置（data/account.local.json 里没有可用 name/pw）"],
     ["上次检查", s ? esc(s.checked_at) + " · " + (s.logged_in ? "已登录" : "未登录") +
       (s.navigated ? "（本次导航了）" : "（零新请求）") + " · " + esc(s.url || "") : "没查过"],
   ];
@@ -207,6 +218,9 @@ function renderBrowser(state) {
   el("browser-meta").textContent = b.can_start ? "" : (managed ? "" : "缺 Chrome，启动按钮不可用");
   el("btn-bstart").disabled = !!b.port_alive || !b.can_start;
   el("btn-bstop").disabled = !b.started_by_panel;
+  // 恢复/重登必须先有活着的浏览器（注入与填表都得占着那个页面）
+  el("btn-srestore").disabled = !b.port_alive || !(b.state && b.state.saved);
+  el("btn-rlogin").disabled = !b.port_alive || !b.credentials;
 }
 
 async function startBrowser() {
@@ -217,6 +231,16 @@ async function startBrowser() {
 async function checkSession() {
   toast("正在检查会话（会访问平台一次，稍等）…");
   await post("/api/session/check");
+}
+
+async function restoreSession() {
+  toast("正在注入登录态快照（不发请求，稍等）…");
+  await post("/api/session/restore");
+}
+
+async function reloginSession() {
+  toast("正在用账号密码重登一次（若弹验证码，请在那台浏览器窗口里手输）…");
+  await post("/api/session/relogin");
 }
 
 function renderSections(state) {
@@ -304,7 +328,8 @@ const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
   "study-stop": "停止学习", "work-open": "打开练习", "work-fill": "回填完成",
   "work-submit": "交卷", "sections-read": "刷新节列表", "stop": "停止",
   "browser-start": "启动浏览器", "browser-stop": "停止浏览器",
-  "session-check": "检查会话", "error": "出错" };
+  "session-check": "检查会话", "session-restore": "恢复登录",
+  "session-relogin": "重新登录", "error": "出错" };
 
 function renderOps(state) {
   const rows = state.ops || [];

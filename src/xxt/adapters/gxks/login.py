@@ -31,6 +31,16 @@ _PLACEHOLDER_HINTS = ("在这里填", "填学号", "填密码", "TODO", "your_")
 DEFAULT_CRED_PATH = Path("data") / "account.local.json"
 
 
+def credentials_path(settings: Any) -> Path:
+    """凭据文件位置：跟着 `settings.data_dir` 走，不用相对 CWD 的默认值。
+
+    为什么必须这样：面板/脚本的 CWD 不一定是项目根，测试也会把 `XXT_ROOT` 指到临时
+    目录 —— 用相对路径就会去读到**真实凭据**（或反向：该读的读不到）。
+    """
+    data = getattr(settings, "data_dir", None)
+    return (Path(data) if data is not None else Path("data")) / "account.local.json"
+
+
 def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> dict[str, str] | None:
     """读凭据；文件不存在 / 解析失败 / 仍是占位符 → `None`（调用方按“未配置”处理）。"""
     p = Path(path)

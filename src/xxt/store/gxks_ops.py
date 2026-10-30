@@ -31,6 +31,8 @@ ACTIONS = (
     "browser-start", # 面板拉起了该账号的 Chrome（本机 cdp 形态）
     "browser-stop",  # 面板停掉了自己拉起的 Chrome
     "session-check",  # 去看了一次页面判登录态（**会访问平台**）
+    "session-restore",  # 把登录态快照的 cookie 注入回去（零密码，不导航）
+    "session-relogin",  # 用账号密码走真浏览器重登一次（验证码立即转人工）
     "stop",          # 通用停止（面板 ■ 按钮）
     "error",         # 任何失败；detail 写原因，code 带机器码
 )

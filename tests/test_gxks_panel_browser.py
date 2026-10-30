@@ -251,6 +251,86 @@ class TestGxksPanelBrowser(unittest.TestCase):
         r = self.client.post("/api/session/check", json={"label": "../etc"})
         self.assertEqual(r.status_code, 400)
 
+    # ---------------------------------------------------------------- 恢复登录
+
+    def _write_state(self, label: str = "jia") -> Path:
+        p = self.root / "data" / f"storage_state_gxks_{label}.json"
+        p.write_text(json.dumps({"cookies": [
+            {"name": ".ASPXAUTH", "value": "SECRET", "domain": "www.gaoxiaokaoshi.com",
+             "path": "/", "expires": -1}], "origins": []}), encoding="utf-8")
+        return p
+
+    def test_restore_without_snapshot_is_refused(self):
+        body = self.client.post("/api/session/restore", json={"label": "jia"}).json()
+        self.assertFalse(body["ok"])
+        self.assertIn("快照", body["error"])
+
+    def test_restore_injects_and_reports_logged_in(self):
+        self._write_state()
+        payload = {"ok": True, "logged_in": True, "restored": 4,
+                   "url": "http://example/main", "state": {"saved": True}}
+        done = mock.Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(panel_app.subprocess, "run", return_value=done) as run:
+            body = self.client.post("/api/session/restore", json={"label": "jia"}).json()
+        self.assertTrue(body["ok"])
+        self.assertIn("恢复登录", body["message"])
+        self.assertIn("--restore", run.call_args.args[0])
+
+    def test_restore_reports_ticket_rejected(self):
+        self._write_state()
+        payload = {"ok": True, "logged_in": False, "restored": 4}
+        done = mock.Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(panel_app.subprocess, "run", return_value=done):
+            body = self.client.post("/api/session/restore", json={"label": "jia"}).json()
+        self.assertTrue(body["ok"])
+        self.assertIn("不认", body["message"])
+
+    def test_restore_when_already_logged_in(self):
+        """本来就登着时脚本**不会走注入**（restored=0），文案不能谎称“已恢复”。"""
+        self._write_state()
+        payload = {"ok": True, "logged_in": True, "restored": 0}
+        done = mock.Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(panel_app.subprocess, "run", return_value=done):
+            body = self.client.post("/api/session/restore", json={"label": "jia"}).json()
+        self.assertTrue(body["ok"])
+        self.assertIn("本来就登录着", body["message"])
+        self.assertNotIn("已恢复登录", body["message"])
+
+    # ---------------------------------------------------------------- 重新登录
+
+    def test_relogin_needs_credentials(self):
+        """没配账号密码时门都不开（不白跑一次登录）。"""
+        (self.root / "data" / "account.local.json").unlink(missing_ok=True)
+        body = self.client.post("/api/session/relogin", json={"label": "jia"}).json()
+        self.assertFalse(body["ok"])
+        self.assertIn("账号密码", body["error"])
+
+    def test_relogin_success(self):
+        (self.root / "data" / "account.local.json").write_text(
+            json.dumps({"name": "s1001", "pw": "pw"}), encoding="utf-8")
+        payload = {"ok": True, "logged_in": True, "relogin": {"result": "ok"},
+                   "url": "http://example/main"}
+        done = mock.Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(panel_app.subprocess, "run", return_value=done) as run:
+            body = self.client.post("/api/session/relogin", json={"label": "jia"}).json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["message"], "已重新登录")
+        self.assertIn("--relogin", run.call_args.args[0])
+
+    def test_relogin_verify_code_stops_and_sends_human(self):
+        (self.root / "data" / "account.local.json").write_text(
+            json.dumps({"name": "s1001", "pw": "pw"}), encoding="utf-8")
+        payload = {"ok": True, "logged_in": False, "need_human": True,
+                   "relogin": {"result": "need_verify"}}
+        done = mock.Mock(returncode=3, stdout=json.dumps(payload), stderr="[WARN] 验证码")
+        with mock.patch.object(panel_app.subprocess, "run", return_value=done) as run:
+            body = self.client.post("/api/session/relogin", json={"label": "jia"}).json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["need_human"])
+        self.assertIn("验证码", body["error"])
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--port") + 1], "9222")   # 端口按账号表，不猜
+
 
 if __name__ == "__main__":
     unittest.main()

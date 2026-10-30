@@ -1,16 +1,19 @@
-"""导出当前浏览器会话（cookie + localStorage）到 `data/storage_state_gxks.json`。
+"""导出当前浏览器会话（cookie + localStorage）到该账号的登录态快照。
 
-**零请求、零风险**：只是把浏览器里已有的 cookie 读出来落盘，不访问站点、不顶号。
+**零请求、零风险**：只把浏览器里已有的 cookie 读出来落盘，不访问站点、不顶号。
 
-为什么做这件事（Q23）：本站与学习绑定的只有 `ASP.NET_SessionId`（明文）与「节 ID = 秒数」
-cookie，没有签名也没有加密 ⇒ **会话持久化 = 存 cookie**，重启 Chrome/进程后不用重登，
-比“掉线后自动重登”更根本（重登本身可能撞上验证码闸门）。
+为什么必须存文件（Q23 / 2026-10-30 实测）：本站 4 条 cookie（`.ASPXAUTH` /
+`ASP.NET_SessionId` / `Clerk` / `ZYLTheme`）**全是会话级**（`expires=-1`），Chrome 一关
+就全没、profile 目录里留不下东西 ⇒ **会话持久化只能靠这份 json**，被踢或重启后再靠
+`browser.restore_cookies()` 注入回来（面板「恢复登录」按钮就是干这个的）。
+
+文件名由 `browser.state_path()` 统一决定（`data/storage_state_gxks_<代号>.json`）：
+面板、脚本、恢复逻辑必须**用同一个名字**，否则会出现“存了却找不到”的假故障。
 
 用法：
+    .venv\\Scripts\\python.exe scripts/export_state_gxks.py --label default
 
-    .venv\\Scripts\\python.exe scripts/export_state_gxks.py
-
-输出文件被 `.gitignore` 的 `storage_state*.json` 覆盖，**不会入库**。
+输出文件被 `.gitignore` 的 `storage_state*.json` 覆盖，**不会入库**（`push_check` 也会拦）。
 本脚本只打印 cookie 的**名字与数量**，不打印值。
 """
 
@@ -18,52 +21,62 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
-from playwright.sync_api import sync_playwright
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from xxt.adapters.gxks import selectors
-
-DEFAULT_OUT = Path("data") / "storage_state_gxks.json"
+from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
+from xxt.adapters.gxks import browser as gbrowser    # noqa: E402
+from xxt.adapters.gxks import selectors              # noqa: E402
+from xxt.config import Settings, find_project_root   # noqa: E402
 
 
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=9222, help="Chrome 调试端口")
-    ap.add_argument("--out", default=str(DEFAULT_OUT), help="输出文件")
+    ap.add_argument("--label", default="", help="账号代号；缺省取第一个")
+    ap.add_argument("--port", type=int, default=0, help="Chrome 调试端口；0=按账号表")
     args = ap.parse_args()
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = Settings(root=find_project_root())
+    accs = gaccounts.load_accounts()
+    label = args.label or (accs[0].label if accs else "default")
+    port = args.port or gaccounts.resolve_port(label, fallback=gaccounts.DEFAULT_PORT)
 
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{args.port}")
-        ctx = None
-        for c in browser.contexts:
-            if any((pg.url or "").startswith(selectors.BASE) for pg in c.pages):
-                ctx = c
-                break
-        if ctx is None:
-            ctx = browser.contexts[0] if browser.contexts else None
-        if ctx is None:
-            print("[FAIL] 没有可用的浏览器上下文")
-            return 2
+    try:
+        # require_list=False：停在登录页也能导（那时本来就没有列表帧）
+        session = gbrowser.open_session(settings, label=label, port=port, require_list=False)
+    except gbrowser.SessionError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"       {exc.hint}", file=sys.stderr)
+        return 2
 
-        cookies = [c for c in ctx.cookies() if selectors.BASE.split("//")[1] in (c.get("domain") or "")]
-        names = sorted({c.get("name") for c in cookies})
-        session_level = [c.get("name") for c in cookies if not c.get("expires") or c.get("expires") == -1]
+    out_path = gbrowser.state_path(settings, label)
+    try:
+        ctx = gbrowser.context_of(session)
+        host = (urlparse(selectors.MAIN_PAGE).hostname or "").lower()
+        platform = [c for c in (ctx.cookies() if ctx is not None else [])
+                    if host and host in str(c.get("domain") or "").lower()]
+        info = gbrowser.save_state(session, out_path)
+    except Exception as exc:                                 # noqa: BLE001
+        print(f"[FAIL] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 5
+    finally:
+        session.close()                                      # Q31：不留常连
 
-        ctx.storage_state(path=str(out_path))
-        browser.close()
-
-    size = out_path.stat().st_size
-    print(f"已导出 → {out_path}（{size} 字节，{datetime.now():%H:%M:%S}）")
-    print(f"站点 cookie {len(cookies)} 条：{', '.join(names)}")
-    if session_level:
-        print(f"其中会话级（关浏览器即失）：{', '.join(sorted(set(session_level)))}")
-    print("⚠ 该文件等同登录态，**不要外发、不要入库**；复用方式见 docs/gxks/PLAN-GXKS.md Q23。")
+    if not info.get("saved"):
+        print(f"[FAIL] 导出后读不回快照：{out_path}", file=sys.stderr)
+        return 5
+    print(f"[OK] {label} 的登录态已存 → {out_path}（{info.get('size', 0)} 字节，"
+          f"{info.get('at', '')}）", file=sys.stderr)
+    print(f"     站点 cookie {len(platform)} 条：{', '.join(sorted({c.get('name', '') for c in platform}))}",
+          file=sys.stderr)
+    if info.get("session_level"):
+        print(f"     其中会话级（关浏览器即失）：{', '.join(info['session_level'])}",
+              file=sys.stderr)
+    print("⚠ 该文件等同登录态：不要外发、不要入库（.gitignore 已覆盖）。", file=sys.stderr)
     return 0
 
 
