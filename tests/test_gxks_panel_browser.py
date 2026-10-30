@@ -78,9 +78,22 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertIsNone(browser["session"])            # 还没检查过
 
     def test_state_never_leaks_credentials(self):
-        raw = self.client.get("/api/state").text
-        for secret in ("pw-A-123", "s1001", '"pw"', '"name"'):
-            self.assertNotIn(secret, raw)
+        """回包里不得出现凭据。
+
+        用**精确检查**而不是子串黑名单：面板后来加了 AI 配置，其字段说明里本就有
+        `{"key":"name"...}`、`credentials` 也是卡片上的布尔（不是凭据值）。
+        子串匹配 `"name"`／`"pw"` 会误报，掩盖真正的泄露。
+
+        这里检查两件事：
+        ① 账号对象里没有 name/pw 字段；② 整个回包里没有真实凭据值。
+        """
+        r = self.client.get("/api/state")
+        body = r.json()
+        for acc in body["accounts"]:
+            self.assertNotIn("name", acc)
+            self.assertNotIn("pw", acc)
+        for real in ("pw-A-123", "s1001"):
+            self.assertNotIn(real, r.text)
 
     def test_browser_state_defaults_to_first_account(self):
         body = self.client.get("/api/browser/state").json()

@@ -40,7 +40,43 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
   #sec-accounts{max-height:calc(100vh - 120px);display:flex;
                 flex-direction:column;min-height:320px}
   #sec-accounts>#accounts{overflow:auto;flex:1 1 auto}
+  /* 账号表格 8 栏 + 右侧「浏览器与会话」4 栏常驻：切账号时右边直接跟着变，
+     不用再滚到下面找那张卡（用户 2026-10-31：「右边留出区域放每个账号的浏览和会话」）。 */
+  #sec-accounts{grid-column:span 8}
+  #sec-browser{grid-column:span 4;position:sticky;top:70px;align-self:start}
+  /* 节进度的待学/已完成并排：两列各自滚动，比上下堆叠少滚一半 */
+  #sec-sections .sec-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;
+                          align-items:start}
 }
+@media (max-width:999px){
+  #sec-sections .sec-cols{display:grid;grid-template-columns:1fr;gap:12px}
+}
+/* ---------------------------------------------------------------- TAB 标签页
+   「账号设置」和「AI 模型」并成一张卡的两个标签页（用户 2026-10-31 要求）。
+   用纯 CSS + 一个 data 属性切换，不引任何框架。 */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 14px}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;
+             background:none;padding:9px 16px;color:var(--dim);font-size:14.5px;
+             font-weight:600;cursor:pointer}
+.tabs button:hover{color:var(--accent);background:#f5f9ff}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.tabpane{display:none}
+.tabpane.on{display:block}
+/* 表单两列：左列基本信息、右列额度与凭据，窄屏自动单列 */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 26px;align-items:start}
+@media (max-width:860px){.form-grid{grid-template-columns:1fr}}
+.form-grid .fld{grid-template-columns:110px 1fr}
+.form-grid .fld .hint{grid-column:2}
+.form-sec{grid-column:1/-1;margin:6px 0 4px;padding-top:10px;border-top:1px dashed var(--line);
+          color:var(--dim);font-size:12.5px;font-weight:700;letter-spacing:.04em}
+.form-sec:first-child{margin-top:0;padding-top:0;border-top:0}
+/* 搜索命中高亮：命中片段黄底加粗，扫一眼就知道为什么这行被筛出来 */
+mark.hit{background:#fff3bf;color:inherit;padding:0 1px;border-radius:2px;
+         font-weight:700;box-shadow:inset 0 -1px 0 #f0c000}
+/* 表单底部动作条：贴在卡片内，不再用弹窗 */
+.form-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;
+              margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.form-actions .sp{flex:1}
 /* 账号表格（替代原卡片视图）：见下方 .acct-tbl 一组规则。
    卡片每张 ~222px 高、20 个账号要 2300px；表格每行 ~44px、20 个约 1040px 且能在固定区滚动。 */
 /* ---------------------------------------------------------------- 账号表格
@@ -84,6 +120,25 @@ table.acct-tbl td.c-ops button{margin-left:4px}
 .acct-detail .row2{display:flex;gap:0;flex-wrap:wrap}
 .acct-detail b{color:#fff}
 .acct-detail .sep{border-top:1px solid #3a4048;margin:6px 0}
+/* AI 模型区重排（用户 2026-10-31）：左栏厂商+参数、右栏 Key 卡片，两栏在窄屏堆叠。
+   原来 Key 占一整条、参数被 auto-fit 拉成一排不等宽，看着散。 */
+.ai-wrap{display:grid;grid-template-columns:1fr 300px;gap:18px;align-items:start}
+@media (max-width:900px){.ai-wrap{grid-template-columns:1fr}}
+.ai-col{min-width:0}
+.ai-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+.ai-row select{font:inherit;border:1px solid var(--line);border-radius:6px;
+  background:#fff;padding:6px 10px;cursor:pointer;min-width:150px}
+.ai-grid{display:grid;grid-template-columns:1fr;gap:10px}
+.ai-f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ai-lab{color:var(--dim);font-size:12.5px;white-space:nowrap;font-weight:600}
+.ai-f input{font:inherit;border:1px solid var(--line);border-radius:6px;
+  padding:7px 10px;width:100%}
+.ai-col-key{padding:14px;background:#fafbfc;border:1px solid var(--line);border-radius:10px}
+.ai-keyhead{display:flex;align-items:center;gap:8px;margin:0 0 9px;
+  font-size:13px;font-weight:700;color:var(--txt)}
+.ai-col-key input{font:inherit;border:1px solid var(--line);border-radius:6px;
+  padding:7px 10px;width:100%;box-sizing:border-box}
+.ai-hint{color:var(--dim);font-size:12px;line-height:1.5;margin-top:8px}
 /* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
    原来 6 行竖表把整张卡撑到 396px，右侧一长条空白（实测 6 个账号时差 1116px）。 */
 .binfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
@@ -205,12 +260,12 @@ button.mini{padding:3px 9px;font-size:13px}
     <div class="card-head">
       <h2>账号与任务 <span class="muted" id="accounts-meta"></span></h2>
       <div class="toolbar">
-        <button class="primary" onclick="openAccount()"
-          title="新增一个账号：代号 + 端口 + 日额度（凭据可留空，之后再填）">＋ 新增账号</button>
+        <button class="primary" type="button" onclick="newAccount()"
+          title="跳到「账号设置」标签页并清空表单">＋ 新增账号</button>
       </div>
     </div>
     <div class="acct-tools">
-      <input id="acct-q" type="search" placeholder="搜索：名称 / 代号 / 端口 / 学校 / 学号 / 自定义字段"
+      <input id="acct-q" type="search" placeholder="搜索：名称 / 代号 / 端口 / 学校 / 学号 / 自定义字段（命中会高亮）"
              autocomplete="off">
       <select id="acct-status" title="按状态筛选">
         <option value="">状态：全部</option>
@@ -258,6 +313,130 @@ button.mini{padding:3px 9px;font-size:13px}
     <div id="browser"></div>
   </section>
 
+  <!-- 设置卡：两个 TAB ——「账号设置」（新增/编辑账号的内嵌表单）与「AI 模型」。
+       原来是两个独立区块 + 一个弹窗；用户 2026-10-31 要求并成一块、做成 TAB。
+       内嵌表单的好处：不遮住账号表，改的时候还能对照上面的行。 -->
+  <section id="sec-settings">
+    <div class="tabs" role="tablist">
+      <button type="button" id="tab-btn-account" class="on" role="tab"
+        aria-controls="pane-account" onclick="showTab('account')">账号设置</button>
+      <button type="button" id="tab-btn-ai" role="tab"
+        aria-controls="pane-ai" onclick="showTab('ai')">AI 模型</button>
+    </div>
+
+    <!-- ------------------------------------------------ TAB 1：账号设置 -->
+    <div class="tabpane on" id="pane-account" role="tabpanel">
+      <div class="card-head">
+        <h2 id="acct-form-title">新增账号 <span class="muted" id="acct-form-meta"></span></h2>
+        <div class="toolbar">
+          <button type="button" class="mini" onclick="resetAccountForm()"
+            title="清空表单，回到「新增账号」状态">清空</button>
+        </div>
+      </div>
+      <form id="acct-form" onsubmit="return false">
+        <div class="form-grid">
+          <div class="form-sec">基本信息</div>
+          <div class="fld">
+            <label for="f-label">代号</label>
+            <input id="f-label" type="text" placeholder="jia" autocomplete="off">
+            <div class="hint">只允许 a-z 0-9 _ -，用作文件名与日志标签；真名填「显示名」</div>
+          </div>
+          <div class="fld">
+            <label for="f-display">显示名</label>
+            <input id="f-display" type="text" placeholder="甲同学" autocomplete="off">
+            <div class="hint">只用于界面展示，不会写进文件名</div>
+          </div>
+          <div class="fld">
+            <label for="f-seq">序号</label>
+            <input id="f-seq" type="number" min="1" placeholder="自动生成">
+            <div class="hint">自动生成（1/2/3…），可改；只作展示与排序</div>
+          </div>
+          <div class="fld">
+            <label for="f-school">学校</label>
+            <input id="f-school" type="text" placeholder="示范学院" autocomplete="off">
+            <div class="hint">非必填；真名一律用代号</div>
+          </div>
+          <div class="fld">
+            <label for="f-major">专业</label>
+            <input id="f-major" type="text" placeholder="计算机科学与技术" autocomplete="off">
+            <div class="hint">非必填</div>
+          </div>
+          <div class="fld">
+            <label for="f-grade">年级</label>
+            <input id="f-grade" type="text" placeholder="2024 级" autocomplete="off">
+            <div class="hint">非必填</div>
+          </div>
+          <div class="fld">
+            <label for="f-student">学号</label>
+            <input id="f-student" type="text" placeholder="2602220131" autocomplete="off">
+            <div class="hint">非必填；只存本地，不入库</div>
+          </div>
+
+          <div class="form-sec">额度与端口</div>
+          <div class="fld">
+            <label for="f-port">调试端口</label>
+            <div class="row" style="gap:6px">
+              <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
+              <button class="mini" type="button" onclick="genPort()">随机</button>
+            </div>
+            <div class="hint">一账号一端口，不能重复。点「随机」自动分配未占用的</div>
+          </div>
+          <div class="fld">
+            <label for="f-sections">日节数上限</label>
+            <input id="f-sections" type="number" min="0" max="40" placeholder="10">
+            <div class="hint">0 = 不限。<b>按账号合计</b>：多门课共用这一个池子</div>
+          </div>
+          <div class="fld">
+            <label for="f-minutes">日时长上限</label>
+            <input id="f-minutes" type="number" min="0" max="1440" placeholder="600">
+            <div class="hint">分钟；0 = 不限。建议 ≥ 日节数 × 60</div>
+          </div>
+          <div class="fld">
+            <label for="f-enabled">启用</label>
+            <span><input id="f-enabled" type="checkbox" checked> 参与调度</span>
+            <div class="hint">停用后不参与批量调度，但数据保留</div>
+          </div>
+
+          <div class="form-sec">登录凭据（只存本地，永不回显）</div>
+          <div class="fld">
+            <label for="f-name">账号</label>
+            <input id="f-name" type="text" autocomplete="off" placeholder="留空 = 不自动重登">
+            <div class="hint" id="hint-name">留空则不写入；已有凭据时留空 = 保持原样</div>
+          </div>
+          <div class="fld">
+            <label for="f-pw">密码</label>
+            <input id="f-pw" type="password" autocomplete="new-password" placeholder="留空 = 不改">
+            <div class="hint">只写进 data/accounts.local.json（不入库），面板永不回显</div>
+          </div>
+
+          <div class="form-sec">自定义字段</div>
+          <div class="fld" style="grid-template-columns:110px 1fr">
+            <label>自定义</label>
+            <div id="f-custom-box" class="custom-box"></div>
+          </div>
+        </div>
+        <div class="muted" id="dlg-err" style="color:var(--bad);margin-top:8px"></div>
+        <div class="form-actions">
+          <span class="sp"></span>
+          <button type="button" onclick="resetAccountForm()">取消</button>
+          <button class="primary" type="button" onclick="saveAccount()">保存</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- ------------------------------------------------ TAB 2：AI 模型 -->
+    <div class="tabpane" id="pane-ai" role="tabpanel">
+      <div class="card-head">
+        <h2>AI 模型 <span class="muted" id="ai-meta"></span></h2>
+        <div class="toolbar">
+          <button class="primary" type="button" onclick="openProvider()"
+            title="新增一个厂商：名字 + 接口地址 + 模型">＋ 新增厂商</button>
+        </div>
+      </div>
+      <div id="ai"></div>
+    </div>
+  </section>
+
   <!-- 节进度：待学 / 已完成两个分区 + 两条进度条，见 renderSections -->
   <section id="sec-sections">
     <div class="card-head">
@@ -281,90 +460,34 @@ button.mini{padding:3px 9px;font-size:13px}
 <!-- 悬停详情浮层：鼠标划到某一行时浮在行右侧，移开自动隐藏（纯展示，无可点元素） -->
 <div id="acct-detail" class="acct-detail" hidden></div>
 
-<!-- 账号编辑对话框：一个表单同时用于新增与修改（修改时回填，密码框永远留空） -->
-<dialog id="dlg">
+<!-- 新增厂商对话框：只填 name/base_url/model 三件套，Key 另有入口（页面里那个 password 框） -->
+<dialog id="dlg-provider">
   <form method="dialog" onsubmit="return false">
     <div class="dlg-head">
-      <b id="dlg-title">新增账号</b>
-      <button class="mini" onclick="closeAccount()" type="button">关闭</button>
+      <b>新增厂商</b>
+      <button class="mini" onclick="closeProvider()" type="button">关闭</button>
     </div>
     <div class="dlg-body">
       <div class="fld">
-        <label for="f-label">代号</label>
-        <input id="f-label" type="text" placeholder="jia" autocomplete="off">
-        <div class="hint">只允许 a-z 0-9 _ -，用作文件名与日志标签；真名请填「显示名」</div>
+        <label for="pf-name">厂商名</label>
+        <input id="pf-name" type="text" placeholder="我的接入" autocomplete="off">
+        <div class="hint">只作展示；同名会覆盖老的</div>
       </div>
       <div class="fld">
-        <label for="f-display">显示名</label>
-        <input id="f-display" type="text" placeholder="甲同学" autocomplete="off">
-        <div class="hint">只用于界面展示，不会写进文件名</div>
+        <label for="pf-url">接口地址</label>
+        <input id="pf-url" type="text" placeholder="https://api.example.com/v1" autocomplete="off">
+        <div class="hint">OpenAI 兼容地址，结尾不要带 /</div>
       </div>
       <div class="fld">
-        <label for="f-seq">序号</label>
-        <input id="f-seq" type="number" min="1" placeholder="自动生成">
-        <div class="hint">自动生成（1/2/3…），可改；只作展示与排序</div>
+        <label for="pf-model">模型</label>
+        <input id="pf-model" type="text" placeholder="my-model" autocomplete="off">
+        <div class="hint">模型名，按厂商文档填</div>
       </div>
-      <div class="fld">
-        <label for="f-school">学校</label>
-        <input id="f-school" type="text" placeholder="示范学院" autocomplete="off">
-        <div class="hint">非必填；真名一律用代号，见 AGENTS</div>
-      </div>
-      <div class="fld">
-        <label for="f-major">专业</label>
-        <input id="f-major" type="text" placeholder="计算机科学与技术" autocomplete="off">
-        <div class="hint">非必填</div>
-      </div>
-      <div class="fld">
-        <label for="f-grade">年级</label>
-        <input id="f-grade" type="text" placeholder="2024 级" autocomplete="off">
-        <div class="hint">非必填</div>
-      </div>
-      <div class="fld">
-        <label for="f-student">学号</label>
-        <input id="f-student" type="text" placeholder="2602220131" autocomplete="off">
-        <div class="hint">非必填；只存本地，不入库</div>
-      </div>
-      <div class="fld">
-        <label for="f-port">调试端口</label>
-        <div class="row" style="gap:6px">
-          <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
-          <button class="mini" type="button" onclick="genPort()">随机</button>
-        </div>
-        <div class="hint">一账号一端口，不能重复。点「随机」自动分配一个未占用的</div>
-      </div>
-      <div class="fld">
-        <label for="f-sections">日节数上限</label>
-        <input id="f-sections" type="number" min="0" max="40" placeholder="10">
-        <div class="hint">0 = 不限。<b>按账号合计</b>：多门课共用这一个池子</div>
-      </div>
-      <div class="fld">
-        <label for="f-minutes">日时长上限</label>
-        <input id="f-minutes" type="number" min="0" max="1440" placeholder="600">
-        <div class="hint">分钟；0 = 不限。建议 ≥ 日节数 × 60，否则时长先卡住</div>
-      </div>
-      <div class="fld">
-        <label for="f-name">账号</label>
-        <input id="f-name" type="text" autocomplete="off" placeholder="留空 = 不自动重登">
-        <div class="hint" id="hint-name">留空则不写入；已有凭据时留空 = 保持原样</div>
-      </div>
-      <div class="fld">
-        <label for="f-pw">密码</label>
-        <input id="f-pw" type="password" autocomplete="new-password" placeholder="留空 = 不改">
-        <div class="hint">密码只写进 data/accounts.local.json（不入库），面板永不回显</div>
-      </div>
-      <div class="fld">
-        <label for="f-enabled">启用</label>
-        <span><input id="f-enabled" type="checkbox" checked> 参与调度</span>
-      </div>
-      <div class="fld">
-        <label>自定义字段</label>
-        <div id="f-custom-box" class="custom-box"></div>
-      </div>
-      <div class="muted" id="dlg-err" style="color:var(--bad)"></div>
+      <div class="dlg-err" id="pf-err"></div>
     </div>
     <div class="dlg-foot">
-      <button type="button" onclick="closeAccount()">取消</button>
-      <button class="primary" type="button" onclick="saveAccount()">保存</button>
+      <button type="button" onclick="closeProvider()">取消</button>
+      <button class="primary" type="button" onclick="saveProvider()">保存</button>
     </div>
   </form>
 </dialog>
@@ -473,6 +596,24 @@ function miniBar(done, total) {
     '" style="width:' + pct + '%"></i></span>';
 }
 
+// 搜索命中高亮：把文本里匹配 query 的片段包成 <mark>。
+// 先 esc 再按转义后的串匹配——这样不会把用户的查询当成 HTML 注入。
+// query 为空时原样返回（不做任何包裹，避免白加标签）。
+function hl(text, query) {
+  const s = String(text === undefined || text === null ? "" : text);
+  const q = String(query || "").trim();
+  if (!q) return esc(s);
+  const low = s.toLowerCase(), ql = q.toLowerCase();
+  let out = "", from = 0, at = low.indexOf(ql);
+  while (at >= 0) {
+    out += esc(s.slice(from, at)) + "<mark class=\"hit\">" +
+      esc(s.slice(at, at + q.length)) + "</mark>";
+    from = at + q.length;
+    at = low.indexOf(ql, from);
+  }
+  return out + esc(s.slice(from));
+}
+
 // 一行 = 一个账号。学校/专业放名称下面那行小字（用户要的"一行+展开"里的静态摘要）。
 function acctTr(c, accRow, cur) {
   const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
@@ -490,10 +631,13 @@ function acctTr(c, accRow, cur) {
   html += '<td><input type="checkbox" class="acct-pick"' +
     (SEL.has(c.label) ? " checked" : "") + ' data-label="' + esc(c.label) + '"></td>';
   html += '<td class="num muted">' + esc(pf.seq || "") + "</td>";
-  html += '<td class="c-name"><b>' + esc(c.display || c.label) + "</b>" +
-    (sub ? '<span class="sub" title="' + esc(sub) + '">' + esc(sub) + "</span>" : "") +
+  // 搜索命中处高亮：用户搜"甲"时能直接看出这行为什么被筛出来
+  const q = (FILTER.q || "").trim();
+  const nameTxt = c.display || c.label;
+  html += '<td class="c-name"><b>' + hl(nameTxt, q) + "</b>" +
+    (sub ? '<span class="sub" title="' + esc(sub) + '">' + hl(sub, q) + "</span>" : "") +
     "</td>";
-  html += '<td>' + esc(c.port) + " " + (c.port_alive
+  html += '<td>' + hl(c.port, q) + " " + (c.port_alive
     ? '<span class="tag t-done">活</span>' : '<span class="tag t-none">停</span>') + "</td>";
   html += "<td>" + acctStatusTag(c) + "</td>";
   html += '<td class="c-today"><b>' + esc(t.sections || 0) + "</b>/" +
@@ -505,11 +649,12 @@ function acctTr(c, accRow, cur) {
     : "—") + "</td>";
   html += '<td class="muted">' + (snap.saved ? esc((snap.at || "").slice(5, 16)) : "无快照") +
     (c.credentials ? "" : ' <span class="tag t-low">无凭据</span>') + "</td>";
-  // 操作列：按钮自己处理点击；行点击由下面的委托统一管（见 #accounts 的 click 监听）
+  // 操作列：8 栏宽度下放不下 4 个全称按钮，改成「主按钮 + 图标按钮」，
+  // 全称放 title 里（悬停可看）。删除仍用文字色区分危险操作。
   html += '<td class="c-ops">';
   if (c.job) {
     html += '<button class="mini danger" onclick="stopJob(\'' + esc(c.label) +
-      '\')">停止</button>';
+      '\')" title="停止这个账号的学习任务">停止</button>';
   } else if (!c.enabled) {
     html += '<button class="mini" disabled title="账号已停用；先点「启用」">已停用</button>';
   } else if (!c.port_alive) {
@@ -523,15 +668,15 @@ function acctTr(c, accRow, cur) {
       " 节</button>";
   }
   html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) + "','" +
-    esc(c.course_value || "") + '\')" title="重读这门课的节列表（约 1 分钟）">刷新</button>';
+    esc(c.course_value || "") + '\')" title="重读这门课的节列表（约 1 分钟）">↻</button>';
   html += '<button class="mini" onclick="openAccount(\'' + esc(c.label) +
-    '\')" title="改端口 / 日额度 / 学校等 / 凭据">✎</button>';
+    '\')" title="编辑：端口 / 日额度 / 学校 / 凭据">✎</button>';
   html += '<button class="mini" onclick="toggleAccount(\'' + esc(c.label) + "'," +
     (c.enabled ? "false" : "true") + ')" title="' +
     (c.enabled ? "停用（不参与调度）" : "重新启用") + '">' +
-    (c.enabled ? "停用" : "启用") + "</button>";
+    (c.enabled ? "⊘" : "✓") + "</button>";
   html += '<button class="mini danger" onclick="deleteAccount(\'' + esc(c.label) +
-    '\')" title="只删账号表里这一条，快照与 profile 保留">删除</button>';
+    '\')" title="只删账号表里这一条，快照与 profile 保留">✕</button>';
   html += "</td></tr>";
   return html;
 }
@@ -602,18 +747,20 @@ function renderAccounts(state) {
   const allChecked = shown.length > 0 && shown.every((c) => SEL.has(c.label));
   const rows = shown.map((c) => acctTr(
     c, accounts.find((a) => a.label === c.label) || null, state.label)).join("");
+  // 列宽：账号列吃掉余量（min-width:0 + 省略号），其余各列给足不折行的最小宽度。
+  // 表格在 8 栏宽度里要放下 8 列，所以操作列拆成两行更紧凑。
   let html = head + '<div class="table-wrap" style="max-height:none">' +
     '<table class="acct-tbl"><thead><tr>' +
-    '<th style="width:30px"><input type="checkbox" id="acct-all"' +
+    '<th style="width:28px"><input type="checkbox" id="acct-all"' +
     (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
-    '<th class="num" style="width:38px">#</th>' +
-    "<th>账号</th>" +
-    '<th style="width:84px">端口</th>' +
-    '<th style="width:92px">状态</th>' +
-    '<th style="width:150px">今日</th>' +
-    '<th style="width:92px">课程</th>' +
-    '<th style="width:120px">登录</th>' +
-    '<th style="width:260px">操作</th>' +
+    '<th class="num" style="width:34px">#</th>' +
+    '<th style="min-width:110px">账号</th>' +
+    '<th style="width:76px">端口</th>' +
+    '<th style="width:82px">状态</th>' +
+    '<th style="width:130px">今日</th>' +
+    '<th style="width:76px">课程</th>' +
+    '<th style="width:104px">登录</th>' +
+    '<th style="width:1%">操作</th>' +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
   if (!state.accounts_file) {
     html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
@@ -768,9 +915,36 @@ function stopJob(label) {
 }
 
 // ---------------------------------------------------------------- 账号管理
-// 新增与修改共用一个对话框：`EDITING` 为空 = 新增，否则是被改的那个代号。
+// 新增与修改共用同一张内嵌表单（原来是弹窗，用户 2026-10-31 要求并进 TAB）：
+// `EDITING` 为空 = 新增，否则是被改的那个代号。
 // 密码框永远不回填——面板拿不到密码（后端只回布尔），回填等于自欺。
 let EDITING = "";
+
+// TAB 切换：账号设置 / AI 模型。切换状态只放 DOM class，不进轮询重绘范围
+// （renderAi 只重画 #ai，不动 .tabs 与 .tabpane，所以切走的标签页不会被弹回来）。
+function showTab(which) {
+  const isAi = which === "ai";
+  const ba = el("tab-btn-account"), bai = el("tab-btn-ai");
+  const pa = el("pane-account"), pai = el("pane-ai");
+  if (!ba || !bai || !pa || !pai) return;
+  ba.classList.toggle("on", !isAi);
+  bai.classList.toggle("on", isAi);
+  pa.classList.toggle("on", !isAi);
+  pai.classList.toggle("on", isAi);
+  if (isAi) loadAi();          // 切到 AI 页时拉一次，保证看到最新
+}
+
+// 「＋ 新增账号」：切到账号 TAB 并清空表单
+function newAccount() {
+  showTab("account");
+  resetAccountForm();
+  const f = el("f-label");
+  if (f) f.focus();
+}
+
+function resetAccountForm() {
+  openAccount("");             // 空 = 新增态（会顺手要一个随机端口）
+}
 
 function openAccount(label) {
   EDITING = label || "";
@@ -779,8 +953,13 @@ function openAccount(label) {
   const accRow = (STATE && (STATE.accounts || []).find(x => x.label === label)) || null;
   const pf = (accRow && accRow.profile_fields) || {};
   const cf = (accRow && accRow.custom_fields) || {};
-  el("dlg-title").textContent = label ? ("编辑账号 · " + (c ? (c.display || label) : label))
-    : "新增账号";
+  const title = el("acct-form-title");
+  if (title) {
+    title.innerHTML = (label ? ("编辑账号 · " + esc(c ? (c.display || label) : label))
+      : "新增账号") + ' <span class="muted" id="acct-form-meta"></span>';
+  }
+  const meta = el("acct-form-meta");
+  if (meta) meta.textContent = label ? "（代号不可改）" : "（保存后出现在上方表格）";
   el("dlg-err").textContent = "";
   el("f-label").value = label || "";
   el("f-label").disabled = !!label;          // 改代号 = 重命名，会让登录态快照对不上，先不让改
@@ -808,7 +987,7 @@ function openAccount(label) {
     el("f-port").value = "";
     genPort();
   }
-  el("dlg").showModal();
+  showTab("account");
 }
 
 function renderCustomFields(cf) {
@@ -858,7 +1037,9 @@ async function genPort() {
 }
 
 function closeAccount() {
-  if (el("dlg").open) el("dlg").close();
+  // 表单已内嵌进卡片，没有"关闭"这回事；保留函数名是为了不打断既有调用点，
+  // 语义改成"清空并回到新增态"。
+  resetAccountForm();
   EDITING = "";
 }
 
@@ -1010,6 +1191,126 @@ function renderBrowser(state) {
   el("btn-rlogin").disabled = !b.port_alive || !b.credentials;
 }
 
+// ---------------------------------------------------------------- AI 模型配置
+// 厂商列表可增删改；每个配置项都把后端给的说明渲染出来（用户要求"做好对应每个配置项的说明"）。
+// ⚠ Key **只提交、不回显**：界面只显示"已配置 / 未配置"，输入框留空表示不修改。
+function openProvider() {
+  el("dlg-provider").showModal();
+  el("pf-name").value = "";
+  el("pf-url").value = "";
+  el("pf-model").value = "";
+  el("pf-err").textContent = "";
+}
+function closeProvider() { el("dlg-provider").close(); }
+async function saveProvider() {
+  const name = el("pf-name").value.trim();
+  const base_url = el("pf-url").value.trim();
+  const model = el("pf-model").value.trim();
+  const data = await apiPost("/api/ai/provider",
+    { name: name, base_url: base_url, model: model });
+  if (!data.ok) {
+    el("pf-err").textContent = data.error || "保存失败";
+    return;
+  }
+  closeProvider();
+  toast(data.message || "已保存");
+  load();
+}
+
+function renderAi(state) {
+  const a = state.ai || null;
+  const box = el("ai");
+  if (!a) {
+    box.innerHTML = '<div class="empty">AI 配置还没有加载。</div>';
+    return;
+  }
+  const cur = a.current || {};
+  el("ai-meta").textContent = cur.name
+    ? "当前：" + cur.name + (cur.model ? " · " + cur.model : "")
+    : "";
+
+  // 布局重排（用户 2026-10-31「AI 模型和选项也要重新规划排列」）：
+  //   左栏 = 厂商选择 + 三个参数（带说明）；右栏 = Key 卡片。
+  //   原来 Key 挤在参数下面一整条，参数又被 auto-fit 拉成一排不等宽，看着散。
+  let html = '<div class="ai-wrap">';
+
+  // ---------- 左栏：厂商 + 参数
+  html += '<div class="ai-col">';
+  html += '<div class="ai-row">';
+  html += '<span class="ai-lab">厂商</span>';
+  html += '<select id="ai-provider" title="选一个厂商，地址和模型会自动带出">';
+  for (const p of a.providers || []) {
+    const sel = (p.name === cur.name) ? " selected" : "";
+    html += '<option value="' + esc(p.name) + '"' + sel + '>' + esc(p.name) +
+      "</option>";
+  }
+  html += "</select>";
+  html += '<button class="mini primary" type="button" onclick="applyProvider()"'
+    + ' title="把选中的厂商设为当前使用的">应用</button>';
+  html += '<button class="mini danger" type="button" onclick="delProvider()"'
+    + ' title="删除当前选中的厂商（内置的删不掉，只会回落到默认）">删除</button>';
+  html += "</div>";
+
+  html += '<div class="ai-grid">';
+  html += aiField(a, "base_url", "接口地址", cur.base_url || "", "text");
+  html += aiField(a, "model", "模型", cur.model || "", "text");
+  html += aiField(a, "timeout", "超时（秒）", String(a.timeout || 60), "number");
+  html += "</div>";
+  html += "</div>";
+
+  // ---------- 右栏：Key 卡片
+  html += '<div class="ai-col ai-col-key">';
+  html += '<div class="ai-keyhead">API Key <span class="tag ' +
+    (a.has_key ? "t-done" : "t-none") + '">' +
+    (a.has_key ? "已配置" : "未配置") + "</span></div>";
+  html += '<input id="ai-key" type="password" autocomplete="new-password"'
+    + ' placeholder="' + (a.has_key ? "已配置（留空 = 不改）" : "粘贴 Key") + '">';
+  html += '<button class="mini primary" type="button" onclick="saveKey()"'
+    + ' style="margin-top:8px;width:100%">保存 Key</button>';
+  html += '<div class="ai-hint">加密存本机 data/ 自己的库，不入库、不回显、不走环境变量。</div>';
+  html += "</div>";
+
+  html += "</div>";
+  box.innerHTML = html;
+}
+
+// 一个配置项：标签 + 输入框 + 后端给的说明（用户要求每项都有说明）
+function aiField(a, key, cn, val, kind) {
+  const f = (a.fields || []).find((x) => x.key === key);
+  const desc = f ? f.desc : "";
+  return '<div class="ai-f">'
+    + '<label class="ai-lab" for="ai-' + key + '">' + esc(cn) + "</label>"
+    + '<input id="ai-' + key + '" type="' + kind + '" value="' + esc(val) + '">'
+    + '<div class="ai-hint">' + esc(desc) + "</div></div>";
+}
+
+async function applyProvider() {
+  const name = (el("ai-provider") || {}).value || "";
+  const data = await apiPost("/api/ai/current", {
+    name: name,
+    base_url: (el("ai-base_url") || {}).value || "",
+    model: (el("ai-model") || {}).value || "",
+    timeout: Number((el("ai-timeout") || {}).value || 0),
+  });
+  toast(data.message || data.error || "已提交", !data.ok);
+  load();
+}
+
+async function delProvider() {
+  const name = (el("ai-provider") || {}).value || "";
+  if (!confirm("删除厂商「" + name + "」？")) return;
+  const data = await apiPost("/api/ai/provider/delete", { name: name });
+  toast(data.message || data.error || "已提交", !data.ok);
+  load();
+}
+
+async function saveKey() {
+  const val = (el("ai-key") || {}).value || "";
+  const data = await apiPost("/api/ai/key", { api_key: val });
+  toast(data.message || data.error || "已提交", !data.ok);
+  load();
+}
+
 async function startBrowser() {
   toast("正在启动 Chrome（几秒内看新窗口）…");
   await post("/api/browser/start");
@@ -1130,6 +1431,9 @@ function renderSections(state) {
       esc(data.pager.total) + "</span>" : "") +
     "</div>";
 
+  // 待学 / 已完成并排（宽屏两列、窄屏自动堆叠），见 CSS .sec-cols。
+  // 上下堆叠时两区各要滚动一次；并排后一屏能同时看到"还差什么"和"已做完什么"。
+  html += '<div class="sec-cols">';
   html += '<details class="blk todo" data-blk="todo"' +
     (SEC_OPEN.todo ? " open" : "") + "><summary>待学" +
     '<span class="sum">' + todoRows.length + " 节 · 还差 " + todoLeft +
@@ -1145,6 +1449,7 @@ function renderSections(state) {
     (doneRows.length ? secTableHtml(doneRows, false)
       : '<div class="empty">还没有学完的节。</div>') +
     "</div></details>";
+  html += "</div>";
   box.innerHTML = html;
 }
 
@@ -1242,6 +1547,16 @@ function renderAccountsSelect(state) {
   sel.value = state.label || (list[0] && list[0].label) || "";
 }
 
+async function loadAi() {
+  // 只拉 AI 配置、只重画 #ai：不碰 .tabs/.tabpane，所以切走的标签页不会被弹回来，
+  // 也不会打断正在填的账号表单。
+  try {
+    const r = await fetch("/api/ai");
+    const data = await r.json();
+    if (data && data.ok !== false) renderAi({ ai: data });
+  } catch (e) { /* 轮询会兜底，这里静默 */ }
+}
+
 async function load() {
   try {
     let r = await fetch("/api/state?label=" + encodeURIComponent(LABEL));
@@ -1258,6 +1573,7 @@ async function load() {
     renderAccountsSelect(state);
     renderAccounts(state);
     renderBrowser(state);
+    renderAi(state);
     renderSections(state);
     renderWork(state);
     renderOps(state);

@@ -162,9 +162,133 @@ class TestAccountTable(unittest.TestCase):
         self.assertIn('el("accounts").addEventListener("mouseout"', PAGE)
 
 
+class TestAiPanelUI(unittest.TestCase):
+    """AI 模型配置界面（第二批，为 B5 回填做准备）。
+
+    用户要求：可自定义模型厂家 + 可添加到厂家列表 + 可修改 + 每项要有说明。
+    2026-10-31：与「账号设置」并成一张卡的两个 TAB（`#pane-ai`），布局重排成左右两栏。
+    """
+
+    def test_lives_in_tab_pane(self):
+        self.assertIn('<div class="tabpane" id="pane-ai"', PAGE)
+        self.assertIn('onclick="showTab(\'ai\')"', PAGE)
+        self.assertIn("function showTab(", PAGE)
+        # 旧的独立区块已被 TAB 取代
+        self.assertNotIn('<section id="sec-ai">', PAGE)
+
+    def test_entry_points(self):
+        self.assertIn("function renderAi(", PAGE)
+        self.assertIn("function applyProvider(", PAGE)
+        self.assertIn("function delProvider(", PAGE)
+        self.assertIn("function saveKey(", PAGE)
+        self.assertIn("function openProvider(", PAGE)
+        self.assertIn("＋ 新增厂商", PAGE)
+
+    def test_layout_is_two_columns(self):
+        """左栏厂商+参数、右栏 Key 卡片（用户：AI 模型和选项也要重新规划排列）。"""
+        self.assertIn('class="ai-wrap"', PAGE)
+        self.assertIn('class="ai-col"', PAGE)
+        self.assertIn("ai-col-key", PAGE)
+        self.assertIn(".ai-wrap{display:grid;grid-template-columns:1fr 300px", PAGE)
+
+    def test_each_config_item_renders_its_description(self):
+        """每个配置项都把后端给的 `desc` 渲染出来——用户明确要求"做好说明"。"""
+        self.assertIn("function aiField(", PAGE)
+        self.assertIn("ai-hint", PAGE)          # 说明用这个类
+        self.assertIn("esc(desc)", PAGE)
+
+    def test_key_is_password_and_never_prefilled(self):
+        """Key 只提交、不回显：type=password 且没有 value 回填。"""
+        self.assertIn('id="ai-key" type="password"', PAGE)
+        self.assertNotIn('id="ai-key" value=', PAGE)
+
+    def test_ai_endpoints_used(self):
+        for path in ("/api/ai/current", "/api/ai/provider/delete",
+                     "/api/ai/key", "/api/ai/provider"):
+            self.assertIn(path, PAGE)
+
+    def test_key_note_mentions_local_encrypted(self):
+        self.assertIn("不入库", PAGE)
+        self.assertIn("不回显", PAGE)
+
+
+class TestLayout20261031(unittest.TestCase):
+    """2026-10-31 这轮布局改造（用户逐条提的要求）。
+
+    每条都对应一个具体诉求，钉死实现，防止后续改样式时被悄悄改回去：
+    ① 「AI 模型配置和新建账号弄成一块，TAB 标签页」
+    ② 「账号表格每列列宽是否需要调一下」
+    ③ 「右边留出区域放每个账号对应的浏览和会话」
+    ④ 「搜索中也要能匹配到账号，匹配到突出显示」
+    ⑤ 「节进度待学区与完成区是否考虑并排排列」
+    """
+
+    # ① TAB 化
+    def test_settings_card_holds_two_tabs(self):
+        self.assertIn('<section id="sec-settings">', PAGE)
+        self.assertIn('id="tab-btn-account"', PAGE)
+        self.assertIn('id="tab-btn-ai"', PAGE)
+        self.assertIn('id="pane-account"', PAGE)
+        self.assertIn('id="pane-ai"', PAGE)
+        # 切换靠 class，不靠重绘（否则 4 秒轮询会把标签页弹回第一个）
+        self.assertIn('classList.toggle("on"', PAGE)
+
+    def test_tab_switch_does_not_get_reset_by_polling(self):
+        """renderAi 只重画 #ai，绝不能动 .tabs/.tabpane 的 class。"""
+        # 取 renderAi 函数体，确认里面没有操作 tab 元素
+        body = PAGE.split("function renderAi(", 1)[1].split("\nfunction aiField", 1)[0]
+        self.assertNotIn("tab-btn", body)
+        self.assertNotIn("tabpane", body)
+        self.assertIn('box.innerHTML = html', body)
+
+    def test_load_ai_only_repaints_ai_block(self):
+        body = PAGE.split("async function loadAi(", 1)[1].split("async function load(", 1)[0]
+        self.assertIn('renderAi({ ai: data })', body)
+        self.assertNotIn("renderAccounts", body)
+
+    # ② 列宽
+    def test_table_columns_have_explicit_widths(self):
+        """列宽显式给定，账号列吃余量；操作列压成 1% 自适应。"""
+        self.assertIn('<th style="min-width:110px">账号</th>', PAGE)
+        self.assertIn('<th style="width:1%">操作</th>', PAGE)
+        for w in ("width:76px", "width:82px", "width:130px", "width:104px"):
+            self.assertIn(w, PAGE)
+
+    # ③ 右侧浏览器与会话
+    def test_browser_card_sits_beside_table(self):
+        self.assertIn("#sec-accounts{grid-column:span 8}", PAGE)
+        self.assertIn("#sec-browser{grid-column:span 4", PAGE)
+        self.assertIn("position:sticky", PAGE)      # 跟随滚动，切账号时一直看得见
+
+    # ④ 搜索高亮
+    def test_search_hits_are_highlighted(self):
+        self.assertIn("function hl(", PAGE)
+        self.assertIn('<mark class=\\"hit\\">', PAGE)
+        self.assertIn("mark.hit{background:#fff3bf", PAGE)
+        # 名称、副标题（学校/专业）、端口都要用上高亮
+        self.assertIn("hl(nameTxt, q)", PAGE)
+        self.assertIn("hl(sub, q)", PAGE)
+        self.assertIn("hl(c.port, q)", PAGE)
+
+    def test_highlight_escapes_before_wrapping(self):
+        """先转义再包 <mark>：不能把用户的查询当 HTML 注入。"""
+        body = PAGE.split("function hl(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("esc(s.slice(", body)
+
+    def test_empty_query_does_not_wrap(self):
+        body = PAGE.split("function hl(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("if (!q) return esc(s);", body)
+
+    # ⑤ 节进度并排
+    def test_todo_and_done_are_side_by_side(self):
+        self.assertIn('class="sec-cols"', PAGE)
+        self.assertIn(".sec-cols{display:grid;grid-template-columns:1fr 1fr", PAGE)
+        # 窄屏要能堆叠，不能硬挤两列
+        self.assertIn("@media (max-width:999px){", PAGE)
+
+
 class TestTypography(unittest.TestCase):
     """字号梯度与重点信息突出（用户 2026-10-30：“字体调大、重点突出”）。"""
-
     def test_base_and_heading_font_sizes(self):
         self.assertIn("font:15px/1.6", PAGE)          # 基础字号从 14 提到 15
         self.assertIn("h1{font-size:18px", PAGE)
@@ -211,20 +335,27 @@ class TestLayoutBalance(unittest.TestCase):
 
 
 class TestAccountAdminUI(unittest.TestCase):
-    """面板里的账号增删改（用户 2026-10-30：“多账号管理是怎么规划的，能不能先落地看效果”）。"""
+    """面板里的账号增删改（用户 2026-10-30：“多账号管理是怎么规划的，能不能先落地看效果”）。
 
-    def test_new_account_button_and_dialog_exist(self):
-        self.assertIn('onclick="openAccount()"', PAGE)
-        self.assertIn('<dialog id="dlg">', PAGE)
+    2026-10-31 改造：新增/编辑从**弹窗**改成卡片内嵌表单，并与「AI 模型」并成两个 TAB。
+    """
+
+    def test_new_account_button_and_form_exist(self):
+        self.assertIn('onclick="newAccount()"', PAGE)
+        self.assertIn('<form id="acct-form"', PAGE)          # 内嵌表单，不再是弹窗
+        self.assertNotIn('<dialog id="dlg">', PAGE)          # 旧账号弹窗已移除
         self.assertIn("function openAccount(", PAGE)
+        self.assertIn("function newAccount(", PAGE)
         self.assertIn("function saveAccount(", PAGE)
 
     def test_row_has_edit_toggle_delete_buttons(self):
         for fn in ("openAccount(", "toggleAccount(", "deleteAccount("):
             self.assertIn(fn, PAGE, f"账号行缺 {fn} 入口")
-        # 表格列窄，按钮文案压到最短：✎ / 停用 / 删除
-        self.assertIn('title="改端口 / 日额度 / 学校等 / 凭据">✎</button>', PAGE)
+        # 表格变窄（右侧让给浏览器卡），按钮压成图标 + title
+        self.assertIn('title="编辑：端口 / 日额度 / 学校 / 凭据">✎</button>', PAGE)
         self.assertIn('"停用（不参与调度）"', PAGE)
+        self.assertIn(">✕</button>", PAGE)                   # 删除
+        self.assertIn(">↻</button>", PAGE)                   # 刷新节列表
 
     def test_password_is_never_prefilled(self):
         # 面板拿不到密码（后端只回布尔），回填等于自欺；这里钉死“永远清空”

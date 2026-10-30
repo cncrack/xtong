@@ -30,6 +30,7 @@ from ..adapters.gxks import ledger as gledger
 from ..adapters.gxks import login as glogin
 from ..adapters.gxks import sections_cache
 from ..config import Settings
+from ..store import gxks_ai_config
 from ..store import gxks_ops
 from ..store.schema_gxks import open_question_bank
 
@@ -407,6 +408,15 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
     return {"ok": True, "message": result}
 
 
+def _db_path(settings: Settings) -> Path:
+    """gxks 题库路径（AI 配置也存这里，与超星库完全分开）。
+
+    用 `settings.data_dir` 而不是 `find_project_root()`：测试数据目录是临时目录，
+    用 settings 才能隔离；写死项目根会让测试污染真实库。
+    """
+    return settings.data_dir / "gxks_questions.db"
+
+
 def create_app(settings: Settings) -> FastAPI:
     from .page import PAGE
 
@@ -424,6 +434,7 @@ def create_app(settings: Settings) -> FastAPI:
             _safe_label(settings, label)          # 越权代号直接拒，不静默回落
         else:
             label = rows[0]["label"] if rows else ""
+        ai = gxks_ai_config.load(_db_path(settings), data_dir=settings.data_dir)
         db = open_question_bank(settings.data_dir / "gxks_questions.db")
         try:
             ops = gxks_ops.recent_ops(db, account_label=label or None, limit=60)
@@ -449,6 +460,8 @@ def create_app(settings: Settings) -> FastAPI:
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
                         if label else None),
+            # AI 配置（厂商列表 + 当前选中 + **是否配了 Key**；Key 本身永不回显）
+            "ai": ai,
             "ops": ops,
         }
 
@@ -824,6 +837,68 @@ def create_app(settings: Settings) -> FastAPI:
                     "message": f"完成 {len(done)} 个（{names}）"}
         return {"ok": True, "results": results, "done": len(done), "failed": 0,
                 "message": f"完成 {len(done)} 个（{names}）"}
+
+    # ---------------------------------------------------------------- AI 配置（为 B5 做准备）
+    #
+    # 存 **gxks 自己的库**（`meta` 表），不碰超星的 `xxt.db`/`app_config`
+    # —— gxks 库里根本没有 app_config 表，照抄超星那套会得到"能存但读不到 Key"的假功能。
+    # Key 全程只以"有没有"的布尔对外，绝不回显。
+
+    @app.get("/api/ai")
+    def ai_get() -> dict:
+        """厂商列表 + 每个配置项的中文说明 + 当前选中 + 是否已配 Key。"""
+        return {"ok": True,
+                **gxks_ai_config.load(_db_path(settings), data_dir=settings.data_dir)}
+
+    @app.post("/api/ai/provider")
+    def ai_provider(body: dict) -> dict:
+        """新增或覆盖一家厂商（按 name 判重）。"""
+        item = {k: body.get(k) for k in ("name", "base_url", "model")}
+        saved, err = gxks_ai_config.save_provider(_db_path(settings), item)
+        if err:
+            return {"ok": False, "error": err}
+        _record(settings, "", "ai-provider-save",
+                f"保存 AI 厂商「{item.get('name')}」")
+        return {"ok": True, "message": f"已保存厂商「{item.get('name')}」",
+                "custom": saved}
+
+    @app.post("/api/ai/provider/delete")
+    def ai_provider_delete(body: dict) -> dict:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "厂商名不能为空"}
+        saved = gxks_ai_config.delete_provider(_db_path(settings), name)
+        _record(settings, "", "ai-provider-del", f"删除 AI 厂商「{name}」")
+        return {"ok": True, "message": f"已删除厂商「{name}」", "custom": saved}
+
+    @app.post("/api/ai/current")
+    def ai_current(body: dict) -> dict:
+        """切换当前厂商；允许只给名字（地址/模型按列表补）。"""
+        try:
+            timeout = int(body.get("timeout") or 0) or None
+        except (TypeError, ValueError):
+            timeout = None
+        cur, err = gxks_ai_config.save_current(
+            _db_path(settings), str(body.get("name") or ""),
+            base_url=str(body.get("base_url") or ""),
+            model=str(body.get("model") or ""), timeout=timeout)
+        if err:
+            return {"ok": False, "error": err}
+        _record(settings, "", "ai-current",
+                f"切换 AI 厂商 → {cur['name']}（{cur['base_url']}｜{cur['model']}）")
+        return {"ok": True, "message": f"已切换到「{cur['name']}」", "current": cur}
+
+    @app.post("/api/ai/key")
+    def ai_key(body: dict) -> dict:
+        """保存 API Key（加密存本机库）。空串 = 不修改。"""
+        ok, err = gxks_ai_config.save_key(
+            _db_path(settings), data_dir=settings.data_dir,
+            api_key=str(body.get("api_key") or ""))
+        if not ok:
+            return {"ok": False, "error": err}
+        # ⚠ 留痕只记"已更新"，**绝不写 Key 内容**
+        _record(settings, "", "ai-key", "更新 AI 的 API Key（内容不记录）")
+        return {"ok": True, "message": "已保存 API Key（加密存本机）"}
 
     return app
 

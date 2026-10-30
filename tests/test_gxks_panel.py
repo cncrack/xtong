@@ -67,9 +67,21 @@ class TestGxksPanel(unittest.TestCase):
         self.assertEqual(body["label"], "jia")           # 缺省取第一个
         self.assertTrue(body["accounts_file"])
         # 凭据绝不出现在回包里（连字段名都不该有）
-        raw = r.text
-        for secret in ("pw-A-123", "s1001", '"pw"', '"name"'):
-            self.assertNotIn(secret, raw)
+        # 说明：这里**只对账号对象**做严格检查。不能拿整个回包做子串匹配 —— 面板后来加了
+        # AI 配置，其字段说明里本就有 `{"key":"name"...}`、`credentials` 是卡片上的布尔，
+        # 子串匹配会误报，反而掩盖真正的泄露。
+
+        # ① 账号对象里既不该有 name/pw 字段，也不该出现真实值
+        for acc in body["accounts"]:
+            self.assertNotIn("name", acc, f"账号 {acc.get('label')} 泄露了 name 字段")
+            self.assertNotIn("pw", acc, f"账号 {acc.get('label')} 泄露了 pw 字段")
+        accounts_blob = json.dumps(body["accounts"], ensure_ascii=False)
+        for real in ("pw-A-123", "s1001"):
+            self.assertNotIn(real, accounts_blob, f"账号对象里出现了真实的凭据值 {real}")
+
+        # ② 整个回包里也不该有真实值（Key 之类同理）
+        for real in ("pw-A-123", "s1001"):
+            self.assertNotIn(real, r.text, f"回包里出现了真实的凭据值 {real}")
 
     def test_state_rejects_unknown_label(self):
         r = self.client.get("/api/state?label=nobody")
