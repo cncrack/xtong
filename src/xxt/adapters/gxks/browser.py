@@ -9,6 +9,7 @@
 - `managed`（容器 / 服务器）：程序自己 `launch_persistent_context`，profile 落
   `data/profiles/<代号>`。不依赖外部 Chrome、不暴露调试端口；代价是无头，
   没人能人工点交卷 —— 交卷只能走 `auto_submit` 或面板二次确认（PLAN-GXKS §13.2）。
+  无头 UA 必须显式设成真实 Chrome（否则带 `HeadlessChrome`），见 `_launch_managed()`。
 
 配置：`[gxks] browser_backend = "cdp" | "managed"`，缺省 `cdp`（与 P1 之前行为一致）；
 `managed` 是否无头由 `[gxks] managed_headless`（缺省 true）决定。
@@ -28,7 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ...core.browser import persistent_launch
+from ...core.browser import persistent_launch_kwargs
+from ...core.stealth import STEALTH_JS, context_kwargs
 from . import accounts, selectors
 
 _log = logging.getLogger(__name__)
@@ -169,6 +171,21 @@ def _open_cdp(settings: Any, port: int = 0) -> Session:
     return Session("cdp", page=page, browser=browser, _playwright=pw)
 
 
+def _launch_managed(pw: Any, path: Path, settings: Any, headless: bool) -> Any:
+    """起持久化上下文（返回 `BrowserContext`）。
+
+    **刻意不用 `core.browser.persistent_launch`**：它只传 headless + LAUNCH_ARGS，
+    不设 UA → 无头下 `navigator.userAgent` 里是 `HeadlessChrome/156…`（2026-10-30
+    干跑实测），站点一眼看出自动化。这里改用同模块的 `persistent_launch_kwargs`
+    （纯参数组装）+ `core.stealth.context_kwargs` 补真实 UA/语言/视口，再注入
+    `STEALTH_JS` —— 指纹面与超星侧保持一致，且不用改 `persistent_launch` 本身。
+    """
+    kw = context_kwargs(persistent_launch_kwargs(path, settings, headless=headless))
+    ctx = pw.chromium.launch_persistent_context(**kw)
+    ctx.add_init_script(STEALTH_JS)
+    return ctx
+
+
 def _open_managed(settings: Any, *, label: str, start_url: str | None,
                   headless: bool | None) -> Session:
     """程序自己起一个带 profile 的浏览器（容器 / 服务器形态）。"""
@@ -177,7 +194,7 @@ def _open_managed(settings: Any, *, label: str, start_url: str | None,
         headless = bool(_gxks_cfg(settings).get("managed_headless", True))
     pw = _start_playwright()
     try:
-        ctx = persistent_launch(pw, path, settings, headless=bool(headless))
+        ctx = _launch_managed(pw, path, settings, bool(headless))
     except Exception as exc:                               # noqa: BLE001
         try:
             pw.stop()

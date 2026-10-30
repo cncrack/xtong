@@ -20,6 +20,7 @@ from unittest import mock
 
 from xxt.adapters.gxks import browser as gbrowser
 from xxt.adapters.gxks import selectors
+from xxt.core.stealth import CHROME_UA
 
 
 class FakePage:
@@ -200,6 +201,18 @@ class TestCdpBackend(unittest.TestCase):
         session.close()
 
 
+class FakePersistentChromium:
+    """拦 `launch_persistent_context` 的实参，用来钉指纹参数。"""
+
+    def __init__(self) -> None:
+        self.kwargs: dict = {}
+        self.init_scripts: list[str] = []
+
+    def launch_persistent_context(self, **kw):
+        self.kwargs = kw
+        return SimpleNamespace(add_init_script=self.init_scripts.append)
+
+
 class TestManagedBackend(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -214,12 +227,12 @@ class TestManagedBackend(unittest.TestCase):
 
     def test_launches_profile_headless_by_default(self):
         with mock.patch.object(gbrowser, "_start_playwright", return_value=self.pw), \
-             mock.patch.object(gbrowser, "persistent_launch", return_value=self.ctx) as launch:
+             mock.patch.object(gbrowser, "_launch_managed", return_value=self.ctx) as launch:
             session = gbrowser.open_session(self.managed, label="jia",
                                             start_url=selectors.MAIN_PAGE)
         kwargs = launch.call_args
         self.assertEqual(kwargs.args[1], self.root / "data" / "profiles" / "jia")
-        self.assertIs(kwargs.kwargs["headless"], True)     # 容器形态默认无头
+        self.assertIs(kwargs.args[3], True)                # 容器形态默认无头
         self.assertEqual(self.page.gotos, [selectors.MAIN_PAGE])
         self.assertTrue(session.managed)
 
@@ -231,21 +244,36 @@ class TestManagedBackend(unittest.TestCase):
         cfg = StubSettings(self.root, {"gxks": {"browser_backend": "managed",
                                                "managed_headless": False}})
         with mock.patch.object(gbrowser, "_start_playwright", return_value=self.pw), \
-             mock.patch.object(gbrowser, "persistent_launch", return_value=self.ctx) as launch:
+             mock.patch.object(gbrowser, "_launch_managed", return_value=self.ctx) as launch:
             gbrowser.open_session(cfg, label="jia").close()
-        self.assertIs(launch.call_args.kwargs["headless"], False)
+        self.assertIs(launch.call_args.args[3], False)
+
+    def test_launch_sets_real_ua_and_injects_stealth(self):
+        """无头 UA 不能带 `HeadlessChrome`（2026-10-30 干跑实测的硬伤）。"""
+        chromium = FakePersistentChromium()
+        pw = SimpleNamespace(chromium=chromium)
+        profile = self.root / "data" / "profiles" / "jia"
+        gbrowser._launch_managed(pw, profile, self.managed, True)
+        self.assertEqual(chromium.kwargs["user_agent"], CHROME_UA)
+        self.assertNotIn("HeadlessChrome", chromium.kwargs["user_agent"])
+        self.assertEqual(chromium.kwargs["locale"], "zh-CN")
+        self.assertIs(chromium.kwargs["headless"], True)
+        self.assertEqual(chromium.kwargs["user_data_dir"], str(profile))
+        self.assertTrue(profile.is_dir())                  # 目录不存在就建
+        self.assertEqual(len(chromium.init_scripts), 1)    # STEALTH_JS 必须注入
+        self.assertIn("webdriver", chromium.init_scripts[0])
 
     def test_empty_context_gets_new_page(self):
         ctx = FakeContext([])
         with mock.patch.object(gbrowser, "_start_playwright", return_value=self.pw), \
-             mock.patch.object(gbrowser, "persistent_launch", return_value=ctx):
+             mock.patch.object(gbrowser, "_launch_managed", return_value=ctx):
             session = gbrowser.open_session(self.managed, label="jia")
         self.assertIsNotNone(session.page)
         session.close()
 
     def test_launch_error_is_wrapped(self):
         with mock.patch.object(gbrowser, "_start_playwright", return_value=self.pw), \
-             mock.patch.object(gbrowser, "persistent_launch",
+             mock.patch.object(gbrowser, "_launch_managed",
                                side_effect=RuntimeError("Executable doesn't exist")):
             with self.assertRaises(gbrowser.SessionError) as ctx:
                 gbrowser.open_session(self.managed, label="jia")
@@ -258,7 +286,7 @@ class TestManagedBackend(unittest.TestCase):
         page.goto.side_effect = RuntimeError("net::ERR_NAME_NOT_RESOLVED")
         ctx = FakeContext([page])
         with mock.patch.object(gbrowser, "_start_playwright", return_value=self.pw), \
-             mock.patch.object(gbrowser, "persistent_launch", return_value=ctx):
+             mock.patch.object(gbrowser, "_launch_managed", return_value=ctx):
             with self.assertRaises(gbrowser.SessionError) as err:
                 gbrowser.open_session(self.managed, label="jia", start_url="http://x.invalid/")
         self.assertEqual(err.exception.code, "navigate")

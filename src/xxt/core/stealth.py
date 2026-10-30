@@ -85,6 +85,17 @@ def _context_kwargs(kw: dict) -> dict:
     return kw
 
 
+def context_kwargs(kw: dict) -> dict:
+    """公开入口：给 `new_context` / `launch_persistent_context` 补 UA + 语言 + 视口。
+
+    2026-10-30：第二平台的 `managed` 后端用 `launch_persistent_context`，参数名与
+    `new_context` 一致，但走不到 `hardened_context()`；不补这一层，无头下 UA 会带
+    `HeadlessChrome/156…`（干跑实测），所以把 `_context_kwargs` 开放出来共用，
+    避免两处各写一份指纹参数、日后分叉。
+    """
+    return _context_kwargs(kw)
+
+
 def hardened_context(browser, **kw):
     """同步版：统一创建加固 context（正常 UA + 视口 + 反自动化指纹注入）。
 

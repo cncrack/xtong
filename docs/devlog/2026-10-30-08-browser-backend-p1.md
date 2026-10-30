@@ -53,10 +53,10 @@ Settings 实测：backend= cdp | headless= True | platform= gxks | panel= {'host
 
 ## 5. 没做的（不假装做完）
 
-1. **`managed` 一行都没实跑**：本机没真起无头浏览器（最小访问原则，不为验证而空跑一次平台访问）。`launch_persistent_context` 在这台机器能不能起来、无头下能不能登录，都未知。
+1. **`managed` 只做到干跑**（同日补充见 §8）：浏览器起得来、profile 正常、指纹加固过，但**未访问平台、未登录**。无头下能不能登得上（验证码/异地判定）仍未知。
 2. **容器首跑没有登录引导**：`managed` 的 profile 第一次是空的 = 未登录。`gxks_sections` / `gxks_work` 有本地凭据时会自动重登，`run_gxks` **不会**（它只在掉线时重登）。容器首跑必须先登录一次 —— 属 P2/P3。
 3. **形态 C 未实现**（回填后断开 → 面板展示整卷 → 人点确认 → 脚本重连代点交卷）。
-4. **未推送**：本地待推 4 个 commit。
+4. **未推送**：本地待推 5 个 commit。
 
 ## 6. 交接块
 
@@ -71,3 +71,34 @@ Settings 实测：backend= cdp | headless= True | platform= gxks | panel= {'host
    —— 应当弹出一个新的 Chrome 窗口并打开学习入口；把结果（成功/报错原文）贴回来。**验完记得改回 `cdp`**。
 2. 说「推送」→ 我重跑 `scripts/push_check.py` 全绿后推 4 个 commit（`5533ca4`、`91cfe81`、`06b90a8`、本次）。
 3. 说「继续」→ 我做 P2 面板接管登录（先只读的 `/api/browser/state`）。
+
+## 8. 补充（同日）：干跑查出**无头 UA 暴露**并修复
+
+用户选了「先验证 `managed`」。前置只读检查：Playwright 内核存在（Chromium 1248 / `chrome.exe`）、账号表 1 个（`default` / 9222）、本地凭据已配置、`data/profiles` 不存在（首跑全新）。
+
+然后跑了**零风险干跑**（`data/debug/diag_managed_dryrun.py`：不访问平台、不登录、不留配置），第一个结果就暴露硬伤：
+
+```
+# 修之前
+UA=Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... HeadlessChrome/156.0.8078.4 Safari/537.36
+```
+
+**根因**：`core/browser.persistent_launch` 只传 `headless` + `LAUNCH_ARGS`，**不设 UA**。超星侧没这问题，是因为它走 `hardened_context()`（`_context_kwargs` 里 `setdefault("user_agent", CHROME_UA)`）。也就是说「复用 `persistent_launch`」这个原设计在**指纹面**上是错的。
+
+**修法（不动 `persistent_launch` 本身，超星零影响）**：
+
+1. `core/stealth.py` 新增公开 `context_kwargs()`（`_context_kwargs` 的别名，附理由注释）——不让两处各写一份指纹参数；
+2. `adapters/gxks/browser.py` 新增 `_launch_managed()`：`persistent_launch_kwargs()`（纯参数组装）+ `context_kwargs()` → `launch_persistent_context()` → `ctx.add_init_script(STEALTH_JS)`；
+3. 单测新增 `test_launch_sets_real_ua_and_injects_stealth`（钉死 UA 不含 `HeadlessChrome`、`locale`、`user_data_dir`、STEALTH_JS 必须注入），`persistent_launch` 替身换成 `_launch_managed` 替身。
+
+**修后实测**（`data/debug/diag_managed_fp.py`，导航到 `data:text/html`，零网络）：
+
+```
+初页     : [False, 0, 'undefined', -1]     ← about:blank 不执行 init script（正常）
+导航后   : [False, 5, 'object', -1]        ← webdriver / plugins / userAgentData / 无 HeadlessChrome
+导航后UA : ... Chrome/156.0.0.0 Safari/537.36
+```
+
+⇒ 与超星侧同一套加固。**教训**：凡是「自己起浏览器」的新路径，必须实读一次 `navigator.userAgent`，不能假定 `LAUNCH_ARGS` 就把 UA 洗白了；`about:blank` 上的 `plugins=0` 是初页现象，不能当加固失效。
+
+验收：`test_gxks_browser.py` **16 条**（+1）；PLAN-GXKS §13.6 P1 / §九 已同步纠正。
