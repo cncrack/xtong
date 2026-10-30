@@ -136,6 +136,36 @@ class TestProfileDir(unittest.TestCase):
                 self.assertEqual(ctx.exception.code, "label")
 
 
+class TestCdpProfile(unittest.TestCase):
+    """cdp 形态用哪个 user-data-dir：显式配了听账号表的，没配就落到 data/profiles/<代号>。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.settings = StubSettings(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_explicit_profile_wins(self):
+        acc = SimpleNamespace(profile="D:/my/chrome-profile")
+        self.assertEqual(gbrowser.cdp_profile(self.settings, "jia", acc),
+                         Path("D:/my/chrome-profile"))
+
+    def test_missing_profile_falls_back_to_data_profiles(self):
+        # 单账号回落表没有 profile 字段；不兜这一层，“启动浏览器”就永远点不动
+        for acc in (SimpleNamespace(profile=""), SimpleNamespace()):
+            with self.subTest(acc=acc):
+                self.assertEqual(gbrowser.cdp_profile(self.settings, "jia", acc),
+                                 self.root / "data" / "profiles" / "jia")
+
+    def test_default_never_points_at_daily_chrome(self):
+        # 绝不回落到系统默认 Chrome 档案（那个目录被日常 Chrome 占着，端口起不来）
+        path = gbrowser.cdp_profile(self.settings, "jia", None)
+        self.assertNotIn("Google", str(path))
+        self.assertNotIn("User Data", str(path))
+
+
 class TestCdpBackend(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

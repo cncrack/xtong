@@ -276,6 +276,7 @@ profile_dir = "data/profiles/" # 相对 XXT_ROOT；草案尚未被代码消费
 ## 九、变更记录
 
 > 以下旧条目是历史快照；与当前规则冲突时以本次批准的 §一至§八及 §十 为准。历史“真实 HTML 入 fixture”等表述不再执行。
+- 2026-10-30（**P2 面板接管登录落地：一键起 Chrome + 检查会话，不用再手敲命令**）：① 新增 `adapters/gxks/chrome.py`（`find_chrome/launch_argv/port_alive/wait_alive/start`，只拉起与探活、不碰页面；子进程 `DETACHED`，面板退出不带走用户登录中的窗口）；② 新增 `scripts/gxks_session_check.py`：**判活只认“真去要一次页面看落在哪”**，`.ASPXAUTH` 仅作参考；已平台内页则**零新请求**；退出码 0/2/5；③ 面板新增 `GET /api/browser/state`、`POST /api/browser/start|stop`、`POST /api/session/check`（会访问平台，只在点按钮时跑，90s 超时），`/api/state` 多一块 `browser`，前端新增「浏览器与会话」卡片，动作词 `browser-start`/`browser-stop`/`session-check` 入 `gxks_ops.ACTIONS`；④ **三条安全边界**：managed 后端下拒起本机 Chrome、只杀面板自己拉起的 pid、账号有任务时不启动；⑤ **干跑查出真缺口并修**：单账号回落表无 `profile` 字段 → 按钮永远灰；新增 `browser.cdp_profile()`，没配则落 `data/profiles/<代号>`（与 managed 同目录，本机登一次容器直接用），**绝不**回落系统默认 Chrome 档案（被日常 Chrome 占着，端口起不来）。验收：新增 `test_gxks_chrome.py` 9 条 + `test_gxks_panel_browser.py` 18 条 + `cdp_profile` 3 条，全量 **491 passed**，面板 JS 过 `node --check`；⚠ “启动→登录→检查会话”**未在真实登录态下跑过**（本机 9222 无监听），见 §13.7 第 5 条。
 - 2026-10-30（**P1 浏览器后端落地：`cdp` / `managed` 一个入口**）：新增 `adapters/gxks/browser.py` —— `open_session(settings, label=, port=, start_url=, headless=)` 统一起法：`cdp`（缺省）连人已起好的 Chrome 且**不导航**（不打断人工操作）；`managed` 自己 `launch_persistent_context`（`persistent_launch_kwargs` + `stealth.context_kwargs` 组装 + `STEALTH_JS` 注入），profile 落 `data/profiles/<代号>`，无头缺省 true（`[gxks] managed_headless`）。**同日干跑查出硬伤并修复**：`persistent_launch` 不设 UA → 无头 UA 带 `HeadlessChrome/156…`，站点一眼看出自动化；改走 `persistent_launch_kwargs` + `context_kwargs`（`stealth.py` 新增公开别名）并注入 `STEALTH_JS`，实测导航后 `webdriver=False / plugins=5 / userAgentData=object / UA 无 HeadlessChrome`，未改 `persistent_launch` 本身。`SessionError(code, hint)` 覆盖 `connect`/`no_page`/`browser`/`label`/`navigate`，脚本退出码保持 2；**`cdp` 下“连上了没平台页面”也先断开再抛**（Q31）。`accounts.is_valid_label()` 公开复用，**代号非法一律拒**（不回落默认目录，防两账号共用登录态）。三处接入：`gxks_work.py`、`gxks_sections.py`（managed 传 `start_url=MAIN_PAGE`）、`run_gxks.py`（`acc_label` 前移决定 profile）。配置只进**本机覆盖层**，`Settings` 既有键零改动。验收：`test_gxks_browser.py` 15 条（替身，不真起浏览器）+ `py_compile` + 空端口真跑 exit 2 + 子集 **72 passed**。⚠ `managed` **未实跑**，“容器起得来 / 无头登得上”仍待验。
 - 2026-10-30（**P0 配置隔离落地：第二平台配置搬出被跟踪文件**）：① 新增 `config/settings.local.toml`（**不入库**，`.gitignore` 已忽略）+ 入库模板 `settings.local.example.toml`；`config/settings.toml` **还原成 main（超星）原样**（`platform=chaoxing`、`[reconcile]` 段回来、`float_ratio=[0.85,1.0]`）—— 本分支从此**零 diff** 落在该文件上，合并回 main 不会再顶掉超星配置。② `Settings` 加载顺序改为：内置默认值 → `settings.toml` → **本机覆盖层** → DB `app_config` → 环境变量；覆盖层解析失败只告警不中断（静默吞掉会表现成“改了不生效”）。③ 新增 `XXT_PANEL_HOST` / `XXT_PANEL_PORT` 覆盖 `[panel]`（容器必须 `0.0.0.0`，否则 `-p 8301:8301` 转不进来）；不设时行为与以前完全一致。验收：新增 `tests/test_config_local_override.py` 7 条 + m0/panel/gxks_panel 共 **56 passed**；`serve()` 实测仍绑 `127.0.0.1:8301`；超星目录 `git status` 为空。
 - 2026-10-30（**部署形态与提交确认定稿：练习不拆环境、C 形态面板二次确认、容器对外同源面板、兼容矩阵**）：纯设计会话，零代码改动，结论落 §十三。① 用户实机指出「回填没有保存，要么提交要么退出」→ **作废“容器回填 + 本机交卷”**，练习只能单一环境闭环；新增 **形态 C**（回填断开 CDP → 面板展示整卷 → 人点“确认提交” → 脚本重连、自己 accept confirm、点交卷、读分入库）。② **刷课与练习分开部署**：刷课进容器（无人工中间态），练习按 A/B/C；容器还顺带消掉 U7（v2rayN 系统代理拖死 `updateTime.ashx`）。③ **容器可对外提供同一套面板**，但三个前置：`host` 必须 `0.0.0.0` 且可环境变量覆盖、浏览器切 `managed` 后端（`persistent_launch` 现成且全仓库零调用）、无头下交卷只能由脚本代点。④ **兼容矩阵 8 层**：代码层可零影响（硬规矩“只新增不改 `launch`/`hardened_context`/`Settings` 既有键语义”），真耦合点是**共享的 `config/settings.toml`**（本分支缺 `[reconcile]` 段、`float_ratio` 为旧值，合并回 main 必冲突）与**共享 git 历史**（落后 main 3 个提交 / 21 文件）→ **P0 配置隔离为一切前置**。⑤ 另查实：两目录是同一仓库的两个 worktree；全仓库无 Chrome 路径探测；`.ASPXAUTH` 语义在 `selectors.py:36` 与 `__init__.py:66` 互相矛盾（⇒ 会话判据只认探 `MAIN_PAGE`，不看 `expires`）；无 `.dockerignore`（构建上下文会带走 `data/` 凭据）。
@@ -999,7 +1000,7 @@ C 的两条硬约束：
 |---|---|---|---|
 | **P0 配置隔离** ✅ 已落地 | `config/settings.local.toml`（gitignored）+ `Settings` 本机覆盖层 + `XXT_PANEL_HOST/PORT` | 1h | Docker 里面板直接访问不到；合并回 main 必改到超星 |
 | **P1 浏览器后端** ✅ 已落地 | `[gxks] browser_backend = "cdp" \| "managed"` 统一入口（`adapters/gxks/browser.py`） | 2h | 容器里起不了浏览器 |
-| **P2 面板接管登录** | `/api/browser/start\|stop`、`/api/login`、账号卡“会话”列（探 `MAIN_PAGE`，**不看 cookie `expires`**） | 2h | 仍需手敲 `chrome.exe` |
+| **P2 面板接管登录** ✅ 已落地 | `/api/browser/state\|start\|stop`、`/api/session/check`、浏览器与会话卡片（启动/停止/检查会话；判活只认**探 `MAIN_PAGE` 落在哪**，**不看 cookie `expires`**） | 2h | 仍需手敲 `chrome.exe` |
 | **P3 Docker 交付** | `Dockerfile.gxks` + `docker-compose.gxks.yml`（8301）+ `.dockerignore` | 1.5h | 无法一步起容器 |
 
 部署当天 5 步：① 装 Docker ② 放 `data/accounts.local.json` 与 `settings.local.toml` ③ 首次登录（容器内 headless；**仅遇验证码需人工**：拷入本机已登录 profile）④ `docker compose -f deploy/docker-compose.gxks.yml up -d` ⑤ 开 `http://<IP>:8301`。
@@ -1032,12 +1033,25 @@ C 的两条硬约束：
 - **修复**：`managed` 改用 `persistent_launch_kwargs`（纯参数组装）+ 新增的 `core/stealth.context_kwargs()`（`_context_kwargs` 的公开别名，避免两处各写一份指纹参数）起 context，再 `ctx.add_init_script(STEALTH_JS)`；**未改 `persistent_launch` 本身**，超星侧零影响。
 - **修后实测**（`data/debug/diag_managed_fp.py`，导航到 `data:text/html`，零网络）：`webdriver=False / plugins=5 / userAgentData=object / UA 无 HeadlessChrome`。⚠ 初始 `about:blank` 读到 `plugins=0` 是**正常现象**（init script 只对新 document 生效），真实流程必然先导航，不要误判成加固失效。
 
+#### P2 已落地（2026-10-30）
+
+目标：把“每次开跑前手敲 `chrome.exe --remote-debugging-port=… --user-data-dir=…`”从人工删掉。
+
+- **新增 `adapters/gxks/chrome.py`**（只做两件事：拉起、探活，不碰页面）：`find_chrome()`（`XXT_GXKS_CHROME` > 常见安装路径 > 注册表 App Paths > PATH，**找不到就返 None，不猜路径去撞**）、`launch_argv()`（端口与 profile 都是**账号属性**）、`port_alive()`（只打 `127.0.0.1/json/version`，零外网）、`wait_alive()`、`start()`（`CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS`——面板退出不带走用户正在登录的窗口）。
+- **新增 `scripts/gxks_session_check.py`**：判活只认**真去要一次页面、看落在哪**（登录页 ⇒ 未登录；平台内页 ⇒ 已登录）；`.ASPXAUTH` 只作参考字段、不参与判定（§13.7 第 3 条）；**最小访问**——页面已在平台域内则**零新请求**，只有停在 `about:blank` 之类才导航一次；退出码 0（登录与否都算查成功）/2（连不上浏览器）/5 其他。
+- **面板新增四个路由**：`GET /api/browser/state`（只读，仅探本地端口）、`POST /api/browser/start|stop`、`POST /api/session/check`（会访问平台，只在点按钮时跑，90 秒超时）；`/api/state` 回包多一块 `browser`；前端新增「浏览器与会话」卡片（后端/端口/profile/上次检查 + 三个按钮）；动作词 `browser-start`/`browser-stop`/`session-check` 已登进 `gxks_ops.ACTIONS`。
+- **三条安全边界**：① `managed` 后端下**拒绝**在面板里起本机 Chrome（那里没有窗口可给人用）；② 「停止浏览器」只 `taskkill` **面板自己拉起的 pid**，不是自己起的就拒（防误杀日常 Chrome）；③ 账号有任务在跑时不许起浏览器（两边抢同一会话会互相顶掉页面）。
+- **顺带修掉一个真缺口（干跑查出）**：单账号回落表 `data/account.local.json` 里**没有 `profile` 字段**，原实现要求 `acc.profile` 非空 → 面板「启动浏览器」在这台机器上**永远是灰的**，P2 等于白做。新增 `browser.cdp_profile()`：显式配了就用，没配落到 `data/profiles/<代号>`（**与 managed 同一目录**，于是“本机开窗口人工登录一次 → 容器直接复用登录态”）；**绝不**回落到系统默认 Chrome 档案（那个目录被日常 Chrome 占着，带调试端口只会给老进程开新标签、端口起不来）。
+- 验收：新增 `tests/test_gxks_chrome.py` **9 条**（探活用临时 `http.server`、启动用 `Popen` 替身，不碰真 Chrome）+ `tests/test_gxks_panel_browser.py` **18 条**（四条边界全部钉死）+ `test_gxks_browser.py` 加 `cdp_profile` **3 条**；全量 `pytest` **491 passed**；面板 JS 过 `node --check`；只读冒烟（真实账号表）`backend=cdp / chrome 找到 / profile=data/profiles/default / can_start=True / 回包无凭据`。
+- ⚠ **仍未验**：本机 9222 当前**没有** Chrome 在听（`port_alive=False`），所以“启动浏览器 → 人工登录 → 检查会话落到平台内页”这条链**没在真实登录态下跑过**，见 §13.7 第 5 条。
+
 ### 13.7 未验证 / 风险（不假装做完）
 
 1. **C 形态未实现**；`managed` 后端**已实现但未实跑**（§13.6 P1）——容器里的人机协作链路仍只是设计；
 2. **无头容器里的登录成功率未知**：可能触发验证码（站点侧规则未证实），届时只能拷 profile 兜底；
 3. **`.ASPXAUTH` 语义两处矛盾未裁决**（`selectors.py:36` 会话级 vs `__init__.py:66` 持久 cookie）→ 一律不据 `expires` 判活，只认探活结果；
 4. **P0 撤回 settings.toml 后本工作树行为不变**这件事本身需要一次实跑验证（面板起得来、8301 可访问、`settings.local.toml` 生效）。
+5. **P2 的“启动浏览器 → 登录 → 检查会话”未在真实登录态下跑过**（2026-10-30 本机 9222 无监听）：只验到「找不到 Chrome / 端口没响应 / 后端是 managed 就拒」这三条负路径，以及脚本在空端口上走 `exit 2`。真跑时会撞两件事：新 profile 首跑是**空档案 → 未登录**（要登一次）；登录行为本身可能顶掉既有会话（Q20 的会话级 `.ASPXAUTH`）。
 
 
 

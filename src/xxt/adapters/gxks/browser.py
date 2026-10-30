@@ -130,7 +130,22 @@ def _start_playwright() -> Any:
     return sync_playwright().start()
 
 
-def _pick_page(browser: Any) -> Any:
+def cdp_profile(settings: Any, label: str, acc: Any = None) -> Path:
+    """本机 cdp 形态给 Chrome 用哪个 `--user-data-dir`。
+
+    账号表里显式配了 `profile` 就用它（老环境、想复用既有 Chrome 档案的人）；
+    没配则落到 `data/profiles/<代号>` —— **与 managed 后端同一个目录**，于是
+    “本机开着窗口人工登录一次，容器里直接接着跑”成了同一个 profile，不用再登一次。
+
+    刻意**不**回落到系统默认 Chrome 档案（`%LOCALAPPDATA%/Google/Chrome/User Data`）：
+    那个目录平时被日常 Chrome 占着，带调试端口去开只会给老进程开个新标签、端口起不来
+    （见 `chrome.py` 开头的坑），而且把自动化登录态混进日常档案。
+    """
+    explicit = str(getattr(acc, "profile", "") or "").strip()
+    return Path(explicit) if explicit else profile_dir(settings, label)
+
+
+def _pick_list_page(browser: Any) -> Any:
     """挑出含课程列表帧的页面（与 `scripts/watch_gxks.connect_page` 同一判据）。"""
     for ctx in browser.contexts:
         for page in ctx.pages:
@@ -143,7 +158,15 @@ def _pick_page(browser: Any) -> Any:
     return None
 
 
-def _open_cdp(settings: Any, port: int = 0) -> Session:
+def _pick_any_page(browser: Any) -> Any:
+    """随便一个页面（“会话检查 / 登录”用：停在登录页时它**没有列表帧**）。"""
+    for ctx in browser.contexts:
+        for page in ctx.pages:
+            return page
+    return None
+
+
+def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Session:
     """连本机现成的 Chrome。cdp 下**不导航**：人已经开好页面，脚本沿用，避免打断人工操作。"""
     from .accounts import DEFAULT_PORT
 
@@ -162,7 +185,7 @@ def _open_cdp(settings: Any, port: int = 0) -> Session:
             f"先起浏览器：chrome.exe --remote-debugging-port={cdp_port} "
             f'--user-data-dir="<该账号专用目录>"',
         ) from exc
-    page = _pick_page(browser)
+    page = _pick_list_page(browser) if require_list else _pick_any_page(browser)
     if page is None:
         session = Session("cdp", browser=browser, _playwright=pw)
         session.close()                                    # Q31：连上了没页面也要立刻断
@@ -222,14 +245,17 @@ def open_session(
     port: int = 0,
     start_url: str | None = None,
     headless: bool | None = None,
+    require_list: bool = True,
 ) -> Session:
     """按配置开一个可用会话。
 
     - `label`：账号代号，`managed` 必须给（决定 profile 目录），`cdp` 可空；
     - `port`：CDP 端口，0 = 配置 `[gxks] port_base`（再没有就 9222）；
     - `start_url`：`managed` 起完浏览器后打开的地址（`cdp` 忽略——不打断人工已开的页面）；
-    - `headless`：仅 `managed` 生效，None = 配置 `[gxks] managed_headless`（缺省 true）。
+    - `headless`：仅 `managed` 生效，None = 配置 `[gxks] managed_headless`（缺省 true）；
+    - `require_list`：cdp 下是否只接“含课程列表帧”的页面。**会话检查/登录要传 False** ——
+      停在登录页的浏览器没有列表帧，按默认判据会被当成“找不到页面”。
     """
     if backend_of(settings) == "managed":
         return _open_managed(settings, label=label, start_url=start_url, headless=headless)
-    return _open_cdp(settings, port=port)
+    return _open_cdp(settings, port=port, require_list=require_list)

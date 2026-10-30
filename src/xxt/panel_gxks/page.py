@@ -70,6 +70,19 @@ pre{background:#0f1115;color:#c9d1d9;padding:8px 10px;border-radius:6px;overflow
 <main>
   <section id="sec-accounts"><h2>账号与任务</h2><div id="accounts"></div></section>
 
+  <!-- 浏览器与会话：只做本机 cdp 形态（拉起/探活/检查登录），不碰平台以外的任何东西 -->
+  <section>
+    <div class="row" style="justify-content:space-between">
+      <h2>浏览器与会话 <span class="muted" id="browser-meta"></span></h2>
+      <div class="row">
+        <button id="btn-bstart" onclick="startBrowser()">启动浏览器</button>
+        <button id="btn-bstop" class="danger" onclick="post('/api/browser/stop')">停止浏览器</button>
+        <button id="btn-scheck" class="primary" onclick="checkSession()">检查会话</button>
+      </div>
+    </div>
+    <div id="browser"></div>
+  </section>
+
   <section>
     <div class="row" style="justify-content:space-between">
       <h2>节进度 <span class="muted" id="sec-meta"></span></h2>
@@ -161,6 +174,51 @@ function renderAccounts(state) {
   el("accounts").innerHTML = html;
 }
 
+function renderBrowser(state) {
+  const b = state.browser || {};
+  const s = b.session || null;
+  const managed = b.backend === "managed";
+  let html = '<div class="row" style="margin-bottom:6px">' +
+    '<span class="tag ' + (managed ? "t-ai" : "t-bank") + '">' +
+    (managed ? "managed · 程序自起（容器形态）" : "cdp · 连你已开的 Chrome") + "</span>" +
+    '<span class="tag ' + (b.port_alive ? "t-done" : "t-none") + '">端口 ' +
+    esc(b.port) + (b.port_alive ? " 活着" : " 未监听") + "</span>" +
+    (b.started_by_panel ? '<span class="tag t-learn">面板启动 · ' + esc(b.since) + "</span>" : "") +
+    (s ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">页面上' +
+      (s.logged_in ? "已登录" : "未登录") + "</span>" : "") +
+    "</div>";
+  const rows = [
+    ["Chrome", b.chrome_ok ? esc(b.chrome) : "没找到（装 Chrome，或设环境变量 XXT_GXKS_CHROME）"],
+    ["user-data-dir", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认：账号表未配）")
+      : "—"],
+    ["managed profile", managed ? (b.managed_profile ? "已建" : "未建（首跑 = 未登录）") : "不适用"],
+    ["上次检查", s ? esc(s.checked_at) + " · " + (s.logged_in ? "已登录" : "未登录") +
+      (s.navigated ? "（本次导航了）" : "（零新请求）") + " · " + esc(s.url || "") : "没查过"],
+  ];
+  html += '<table><tbody>' + rows.map(r =>
+    "<tr><th>" + esc(r[0]) + "</th><td class=muted>" + (r[1] || "") + "</td></tr>"
+  ).join("") + "</tbody></table>";
+  if (managed) {
+    html += '<div class="muted" style="margin-top:6px">managed 后端不靠外部 Chrome：' +
+      "浏览器由脚本自己起。要人工看窗口/点交卷，请把 config/settings.local.toml 的 " +
+      "browser_backend 改回 cdp。</div>";
+  }
+  el("browser").innerHTML = html;
+  el("browser-meta").textContent = b.can_start ? "" : (managed ? "" : "缺 Chrome，启动按钮不可用");
+  el("btn-bstart").disabled = !!b.port_alive || !b.can_start;
+  el("btn-bstop").disabled = !b.started_by_panel;
+}
+
+async function startBrowser() {
+  toast("正在启动 Chrome（几秒内看新窗口）…");
+  await post("/api/browser/start");
+}
+
+async function checkSession() {
+  toast("正在检查会话（会访问平台一次，稍等）…");
+  await post("/api/session/check");
+}
+
 function renderSections(state) {
   const box = el("sections");
   const data = state.sections;
@@ -245,7 +303,8 @@ function renderWork(state) {
 const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
   "study-stop": "停止学习", "work-open": "打开练习", "work-fill": "回填完成",
   "work-submit": "交卷", "sections-read": "刷新节列表", "stop": "停止",
-  "error": "出错" };
+  "browser-start": "启动浏览器", "browser-stop": "停止浏览器",
+  "session-check": "检查会话", "error": "出错" };
 
 function renderOps(state) {
   const rows = state.ops || [];
@@ -283,6 +342,7 @@ async function load() {
     LABEL = state.label || "";
     renderAccountsSelect(state);
     renderAccounts(state);
+    renderBrowser(state);
     renderSections(state);
     renderWork(state);
     renderOps(state);

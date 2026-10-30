@@ -24,6 +24,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
 from ..adapters.gxks import accounts as gaccounts
+from ..adapters.gxks import browser as gbrowser
+from ..adapters.gxks import chrome as gchrome
 from ..config import Settings
 from ..store import gxks_ops
 from ..store.schema_gxks import open_question_bank
@@ -34,6 +36,10 @@ SCRIPTS = ROOT / "scripts"
 # 每个账号同时只允许一个任务：两个脚本抢同一个 Chrome 会话会互相顶掉页面
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+
+# 面板自己拉起的浏览器（只记我们起的，用于“停止浏览器”时只杀自己那一只）
+_BROWSERS: dict[str, dict[str, Any]] = {}
+_BROWSER_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ 子进程
@@ -149,6 +155,64 @@ def _account_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _record(settings: Settings, label: str, action: str, detail: str,
+            result: str = "ok", payload: dict | None = None) -> None:
+    """写一条 `gx_ops`。**记日志失败不能把主流程打断**（面板只管展示，不影响干活）。"""
+    db = open_question_bank(settings.data_dir / "gxks_questions.db")
+    try:
+        gxks_ops.record_op(db, account_label=label, action=action, result=result,
+                           detail=detail[:200], payload=payload)
+    except Exception:                                      # noqa: BLE001
+        pass
+    finally:
+        db.close()
+
+
+def _kill_pid(pid: int) -> str:
+    """按 pid 杀进程树。**只对面板自己拉起的 pid 调用**（否则会误杀日常 Chrome）。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(int(pid))],
+                           capture_output=True, timeout=20)
+        else:
+            os.kill(int(pid), 15)
+        return "已停止"
+    except Exception as exc:                                # noqa: BLE001
+        return f"停止失败：{exc}"
+
+
+def _browser_state(settings: Settings, label: str) -> dict[str, Any]:
+    """浏览器/会话的**本地**状态：只探本地调试端口，**不访问平台**。"""
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), label)
+    backend = gbrowser.backend_of(settings)
+    chrome = gchrome.find_chrome()
+    try:
+        managed_dir = bool(label) and gbrowser.profile_dir(settings, label).exists()
+        # cdp 用哪个 user-data-dir：账号表显式配了就用它，否则默认 data/profiles/<代号>
+        cdp_dir = gbrowser.cdp_profile(settings, label, acc) if label else None
+    except gbrowser.SessionError:
+        managed_dir, cdp_dir = False, None
+    with _BROWSER_LOCK:
+        own = _BROWSERS.get(label)
+    return {
+        "backend": backend,
+        "chrome": str(chrome) if chrome else "",
+        "chrome_ok": chrome is not None,
+        "port": acc.port if acc else 0,
+        "port_alive": gchrome.port_alive(acc.port) if acc else False,
+        "profile_set": bool(acc and acc.profile),
+        "profile": str(cdp_dir) if cdp_dir else "",
+        "profile_name": (Path(acc.profile).name if acc and acc.profile
+                         else (f"data/{gbrowser.PROFILE_ROOT}/{label}" if cdp_dir else "")),
+        "managed_profile": managed_dir,
+        "started_by_panel": bool(own),
+        "since": own["since"] if own else "",
+        "can_start": backend == "cdp" and chrome is not None and cdp_dir is not None,
+        "session": _read_json(_latest(f"session_{label}.json",
+                                      settings.data_dir / "debug")) if label else None,
+    }
+
+
 def _latest(pattern: str, directory: Path) -> Path | None:
     files = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime)
     return files[-1] if files else None
@@ -194,6 +258,7 @@ def create_app(settings: Settings) -> FastAPI:
             "jobs": _jobs_snapshot(),
             "sections": _read_json(_latest(f"sections_{label}.json", debug_dir)),
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
+            "browser": _browser_state(settings, label) if label else None,
             "ops": ops,
         }
 
@@ -260,6 +325,93 @@ def create_app(settings: Settings) -> FastAPI:
         finally:
             db.close()
         return {"ok": True, "message": result}
+
+    @app.get("/api/browser/state")
+    def browser_state(label: str = "") -> dict:
+        # 空代号 = 看第一个账号（与 /api/state 同一口径），不能直接 400
+        if not label:
+            rows = _account_rows()
+            label = rows[0]["label"] if rows else ""
+        return {"ok": True, **_browser_state(settings, _safe_label(settings, label)
+                                              if label else "")}
+
+    @app.post("/api/browser/start")
+    def browser_start(body: dict) -> dict:
+        """拉起该账号自己的 Chrome（带它的调试端口与 user-data-dir）。
+
+        只做本机形态：容器（managed）下浏览器由程序自己起，面板里没有窗口可给人用。
+        """
+        acc = _account(settings, str(body.get("label") or ""))
+        state = _browser_state(settings, acc.label)
+        if state["backend"] != "cdp":
+            return {"ok": False,
+                    "error": "当前是 managed 后端（容器形态）：面板内不起浏览器。"
+                             "本机请把 config/settings.local.toml 里 browser_backend 改回 cdp"}
+        if state["port_alive"]:
+            return {"ok": True, "message": f"端口 {acc.port} 已在运行，不用重复启动"}
+        profile = gbrowser.cdp_profile(settings, acc.label, acc)
+        chrome = gchrome.find_chrome()
+        if chrome is None:
+            return {"ok": False, "error": "没找到 Chrome。请安装，或设环境变量 "
+                                          "XXT_GXKS_CHROME 指向 chrome.exe"}
+        if any(j["label"] == acc.label for j in _jobs_snapshot()):
+            return {"ok": False, "error": "该账号有任务在跑，先「停止」再启动浏览器"}
+        proc = gchrome.start(chrome, port=acc.port, profile=profile,
+                             url=gchrome.default_start_url())
+        if not gchrome.port_alive(acc.port):
+            return {"ok": False,
+                    "error": f"Chrome 起来了但调试端口 {acc.port} 没响应：这个 profile 可能已被"
+                             "另一个不带调试端口的 Chrome 打开——先把该账号的 Chrome 全部关掉再点一次"}
+        with _BROWSER_LOCK:
+            _BROWSERS[acc.label] = {"pid": proc.pid, "since": time.strftime("%H:%M:%S"),
+                                    "port": acc.port, "profile": str(profile)}
+        _record(settings, acc.label, "browser-start",
+                f"面板启动 Chrome（端口 {acc.port}，profile {profile.name}）")
+        return {"ok": True, "message": f"Chrome 已启动（端口 {acc.port}）；"
+                                        "登录后点「检查会话」确认"}
+
+    @app.post("/api/browser/stop")
+    def browser_stop(body: dict) -> dict:
+        label = _safe_label(settings, str(body.get("label") or ""))
+        with _BROWSER_LOCK:
+            own = _BROWSERS.pop(label, None)
+        if own is None:
+            return {"ok": False, "error": "这个浏览器不是面板起的，不敢盲杀（会误杀你日常的 "
+                                          "Chrome）；请在那个窗口里手动关"}
+        result = _kill_pid(int(own["pid"]))
+        _record(settings, label, "browser-stop", f"面板停止 Chrome（{result}）")
+        return {"ok": True, "message": result}
+
+    @app.post("/api/session/check")
+    def session_check(body: dict) -> dict:
+        """真去看一次页面判登录态（唯一可靠判据）。**会访问平台**，所以只在点按钮时跑。"""
+        acc = _account(settings, str(body.get("label") or ""))
+        if getattr(sys, "frozen", False):
+            return {"ok": False, "error": "打包版面板不支持起脚本（scripts/ 不在 exe 内）"}
+        argv = [sys.executable, "-u", str(SCRIPTS / "gxks_session_check.py"),
+                "--label", acc.label, "--port", str(acc.port)]
+        try:
+            done = subprocess.run(argv, cwd=str(ROOT), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=90)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "会话检查超时（90 秒）"}
+        parsed: dict | None = None
+        for line in reversed((done.stdout or "").strip().splitlines()):
+            if line.startswith("{"):
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                break
+        if parsed is None:
+            tail = ((done.stderr or "") + (done.stdout or "")).strip().splitlines()[-3:]
+            return {"ok": False, "error": "检查没拿到结果：" + " / ".join(tail)}
+        logged = bool(parsed.get("logged_in"))
+        _record(settings, acc.label, "session-check",
+                f"会话检查：{'已登录' if logged else '未登录'}（{parsed.get('url', '')[:60]}）",
+                result="ok" if logged else "fail")
+        return {"ok": True, "message": "已登录" if logged else "未登录（落到登录页）",
+                "session": parsed}
 
     @app.get("/api/ops")
     def ops(label: str = "", limit: int = 100) -> dict:

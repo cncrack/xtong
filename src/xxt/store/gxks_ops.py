@@ -28,6 +28,9 @@ ACTIONS = (
     "work-fill",     # 题目已回填（不提交）
     "work-submit",   # 交卷（人工或 auto_submit）
     "sections-read", # 读了一次节列表（面板「刷新」）
+    "browser-start", # 面板拉起了该账号的 Chrome（本机 cdp 形态）
+    "browser-stop",  # 面板停掉了自己拉起的 Chrome
+    "session-check",  # 去看了一次页面判登录态（**会访问平台**）
     "stop",          # 通用停止（面板 ■ 按钮）
     "error",         # 任何失败；detail 写原因，code 带机器码
 )
