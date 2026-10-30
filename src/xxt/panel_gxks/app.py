@@ -28,6 +28,7 @@ from ..adapters.gxks import browser as gbrowser
 from ..adapters.gxks import chrome as gchrome
 from ..adapters.gxks import ledger as gledger
 from ..adapters.gxks import login as glogin
+from ..adapters.gxks import sections_cache
 from ..config import Settings
 from ..store import gxks_ops
 from ..store.schema_gxks import open_question_bank
@@ -165,6 +166,40 @@ def _ledger_path(settings: Settings) -> Path:
     return settings.data_dir / "gxks_ledger.jsonl"
 
 
+def _pick_sections_cache(debug_dir: Path, label: str,
+                         course: str = "") -> tuple[dict[str, Any], str]:
+    """选这个账号该读哪一份节列表缓存，返回 `(数据, 实际读到的课程)`。
+
+    **B1 之后**缓存按课程分开（`sections_<代号>_<课程>.json`）。读取顺序：
+
+    ① 面板明确指定了课程 → 精确读那一份（找不到再往下走）；
+    ② **带课程的缓存优先于老文件**，同类里取 mtime 最新的一份；
+    ③ 最后才回落升级前的老文件 `sections_<代号>.json`。
+
+    ⚠ ② 的顺序**不能**交给 mtime 决定：两个文件可能同一秒写入，谁新谁旧不可靠，
+    而"老文件盖住新数据"比"读不到"更难发现。所以先按**文件名是否带课程**分两档，
+    档内才比 mtime。
+
+    为什么不做"合并所有课程"：节 ID 在不同课程间可能撞车（见 ledger 的同一教训），
+    合并出来的表会把两门课的节混在一屏，比"只显示最近一门"更误导。
+    """
+    if course:
+        exact = sections_cache.path(debug_dir, label, course)
+        data = _read_json(exact)
+        if data:
+            return data, str(data.get("course") or course)
+
+    with_course: list[Path] = []
+    legacy: list[Path] = []
+    for p in sections_cache.list_all(debug_dir, label):
+        (legacy if p.name == f"sections_{label}.json" else with_course).append(p)
+    for p in [*with_course, *legacy]:
+        data = _read_json(p)
+        if data:
+            return data, str(data.get("course") or "")
+    return {}, ""
+
+
 def _account_cards(settings: Settings) -> list[dict[str, Any]]:
     """多账号总览：每个账号一张卡的数据。
 
@@ -178,10 +213,12 @@ def _account_cards(settings: Settings) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for acc in accounts:
         today = gledger.today_totals(ledger_path, acc.label)
-        cached = _read_json(_latest(f"sections_{acc.label}.json", debug_dir)) or {}
+        cached, cached_course = _pick_sections_cache(debug_dir, acc.label)
         summary = cached.get("summary") or {}
         course = next((r.get("category") for r in cached.get("rows") or []
                        if r.get("category")), "")
+        # 这个账号一共有几门课的缓存（多课程时卡片要能看出来）
+        courses_cached = len(sections_cache.list_all(debug_dir, acc.label))
         snap = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
         # `left = None` = 该账号把日节数设成 0（不限），卡片要显示“不限”而不是“0 剩”
         left = None if acc.daily_sections <= 0 else max(0, acc.daily_sections - today["sections"])
@@ -200,6 +237,8 @@ def _account_cards(settings: Settings) -> list[dict[str, Any]]:
                       "by_course": today.get("courses") or {}},
             "snapshot": snap,
             "course": course,
+            "course_value": cached_course,      # 缓存对应的课程 value（多课程时区分用）
+            "courses_cached": courses_cached,
             "sections": {"done": summary.get("done", 0),
                          "total": summary.get("sections", 0),
                          "read_at": cached.get("read_at", "")},
@@ -295,7 +334,7 @@ def create_app(settings: Settings) -> FastAPI:
         return PAGE
 
     @app.get("/api/state")
-    def state(label: str = "") -> dict:
+    def state(label: str = "", course: str = "") -> dict:
         rows = _account_rows()
         if label:
             _safe_label(settings, label)          # 越权代号直接拒，不静默回落
@@ -306,15 +345,19 @@ def create_app(settings: Settings) -> FastAPI:
             ops = gxks_ops.recent_ops(db, account_label=label or None, limit=60)
         finally:
             db.close()
+        # B1：节列表按课程分开存；`course` 给了就读那一份，没给就读该账号最新的一份
+        sections, sections_course = (_pick_sections_cache(debug_dir, label, course)
+                                     if label else ({}, ""))
         return {
             "ok": True,
             "accounts": rows,
             "cards": _account_cards(settings),
             "accounts_file": gaccounts.default_path().exists(),
             "label": label,
+            "course": sections_course,
             "auto_submit": bool(settings.raw.get("gxks", {}).get("auto_submit", False)),
             "jobs": _jobs_snapshot(),
-            "sections": _read_json(_latest(f"sections_{label}.json", debug_dir)),
+            "sections": sections or None,
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
             "browser": _browser_state(settings, label) if label else None,
             "ops": ops,
@@ -326,9 +369,13 @@ def create_app(settings: Settings) -> FastAPI:
         label = acc.label
         if any(j["label"] == label for j in _jobs_snapshot()):
             return {"ok": False, "error": "该账号已有任务在跑"}
-        return _start(settings, label, "sections", "gxks_sections.py",
-                      "--label", label, "--port", str(acc.port), "--all",
-                      message="正在读节列表（含翻页），约 1 分钟")
+        args = ["--label", label, "--port", str(acc.port), "--all"]
+        course = sections_cache.safe_course(body.get("course"))
+        if course:
+            args += ["--course", course]
+        return _start(settings, label, "sections", "gxks_sections.py", *args,
+                      message=("正在读节列表（含翻页），约 1 分钟" if not course
+                               else f"正在读课程 {course} 的节列表，约 1 分钟"))
 
     @app.post("/api/work")
     def do_work(body: dict) -> dict:

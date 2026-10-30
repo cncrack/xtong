@@ -10,9 +10,11 @@
     ... --all                                      # 抓到最后一页（补齐整门课）
     ... --cache-only                               # 不连浏览器，直接读上次结果
     ... --label demo --port 9300
+    ... --label demo --course 32 --all             # 指定课程（多课程时用）
 
 输出：最后一行打印 JSON（面板读它），同时落
-`data/debug/sections_<label>.json`。该文件同时充当 `--cache-only` 的缓存。
+`data/debug/sections_<label>_<课程>.json`（**没有课程时**落 `sections_<label>.json`）。
+命名规则集中在 `adapters/gxks/sections_cache.py`，面板按同一套规则读，两边不会错位。
 
 退出码：0 成功；2 连不上浏览器；3 掉登录；5 其他失败。
 """
@@ -31,6 +33,7 @@ from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
 from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
+from xxt.adapters.gxks import sections_cache  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
 from xxt.store import gxks_ops  # noqa: E402
@@ -94,19 +97,28 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=0, help="CDP 端口；0=取配置 port_base")
     ap.add_argument("--pages", type=int, default=1, help="读到第几页（含）")
     ap.add_argument("--all", action="store_true", help="一路翻到最后一页")
+    ap.add_argument("--course", default="",
+                    help="课程 value（列表页 ddlClass）；空 = 当前课程，"
+                         "缓存落 sections_<代号>.json")
     ap.add_argument("--cache-only", action="store_true", help="不连浏览器，读上次结果")
     args = ap.parse_args()
     label = args.label or _default_label()
+    course = sections_cache.safe_course(args.course)
 
     settings = Settings(root=find_project_root())
-    cache = settings.data_dir / "debug" / f"sections_{label}.json"
+    debug_dir = settings.data_dir / "debug"
+    # 课程不合法（含中文/路径符）时 safe_course 返回 ""，等价于"不带课程"——绝不拼进路径
+    cache = sections_cache.path(debug_dir, label, course)
 
     if args.cache_only:
-        if not cache.exists():
-            print(f"[FAIL] 没有缓存 {cache.name}，先跑一次不带 --cache-only 的",
-                  file=sys.stderr)
+        # 读取时按「先带课程、再老文件」找：升级前的老缓存还能用，不会突然"没有节列表"
+        hit = next((p for p in sections_cache.read_paths(debug_dir, label, course)
+                    if p.exists()), None)
+        if hit is None:
+            print(f"[FAIL] 没有缓存 {cache.name}（也没有老文件），"
+                  f"先跑一次不带 --cache-only 的", file=sys.stderr)
             return 5
-        print(cache.read_text(encoding="utf-8"))
+        print(hit.read_text(encoding="utf-8"))
         return 0
 
     port = args.port or gaccounts.resolve_port(
@@ -131,9 +143,15 @@ def main() -> int:
                 return 3
 
         drv = gdriver.GxksDriver(page)
+        # 指定了课程就先切过去；切不过去直接停（不猜切换方式，见 driver.select_course）
+        if course:
+            if not drv.select_course(course):
+                print(f"[FAIL] 切不到课程 {course}（该账号可能没有这门课，"
+                      f"或站点改了切换方式）→ 停", file=sys.stderr)
+                return 2
         rows, pager = _gather(drv, args.pages, args.all)
         result = {
-            "ok": True, "label": label,
+            "ok": True, "label": label, "course": course,
             "read_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "pager": pager,
             "summary": {
@@ -163,11 +181,14 @@ def main() -> int:
 
     db = open_question_bank(settings.data_dir / "gxks_questions.db")
     try:
+        where = f"课程 {course}" if course else "当前课程"
         gxks_ops.record_op(
             db, account_label=label, action="sections-read",
-            detail=f"读取节列表 {len(rows)} 节（已完成 {result['summary']['done']}、"
+            detail=f"读取节列表 {len(rows)} 节（{where}；已完成 "
+                   f"{result['summary']['done']}、"
                    f"可做练习 {result['summary']['practice_ready']}）",
-            payload={"pager": pager, "summary": result["summary"]})
+            payload={"pager": pager, "summary": result["summary"],
+                     "course": course})
     finally:
         db.close()
 

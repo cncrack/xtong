@@ -340,7 +340,9 @@ function acctCard(c, cur) {
     : '<span class="muted">无快照</span>' + (c.credentials ? " · 有凭据" : " · 无凭据"));
   html += acctRow("课程", sec.total
     ? esc(c.course || "（未命名课程）") + " · " + esc(sec.done) + "/" + esc(sec.total) +
-      " 节 · 读于 " + esc(sec.read_at || "?")
+      " 节 · 读于 " + esc(sec.read_at || "?") +
+      (c.courses_cached > 1 ? ' <span class="muted">（共 ' + esc(c.courses_cached) +
+        " 门课有缓存）</span>" : "")
     : '<span class="muted">还没读过节列表</span>');
   html += "</div>";
   // 卡内动作：点它们不能连带触发“切账号”，所以 stopPropagation
@@ -364,7 +366,8 @@ function acctCard(c, cur) {
     html += '<button onclick="pick(\'' + esc(c.label) + '\')">详情</button>';
   }
   // 刷新节列表放到卡上（台账 B8）：以前只有节进度区块头有，多账号时要先切账号再点
-  html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) +
+  html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) + "','" +
+    esc(c.course_value || "") +
     '\')" title="重新读这个账号的整个课程（含翻页），约 1 分钟">刷新节列表</button>';
   // 管理：编辑 / 启停 / 删除（都不切账号）
   html += '<button class="mini" onclick="openAccount(\'' + esc(c.label) +
@@ -724,11 +727,12 @@ function renderSections(state) {
 }
 
 function refreshSections() {
-  post("/api/sections/refresh");
+  // 带上当前显示的课程 value：B1 之后缓存按课程分开，不带就会写到“无课程”那份去
+  post("/api/sections/refresh", { course: (STATE && STATE.course) || "" });
 }
 
-function refreshSectionsFor(label) {
-  post("/api/sections/refresh", { label: label });
+function refreshSectionsFor(label, course) {
+  post("/api/sections/refresh", { label: label, course: course || "" });
 }
 
 function doWork(btn) {

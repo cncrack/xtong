@@ -145,6 +145,47 @@ class TestAccountCards(unittest.TestCase):
         self.assertEqual(self._cards()[1]["sections"],
                          {"done": 0, "total": 0, "read_at": ""})
 
+    # ---------------------------------------------------------------- B1：按课程分文件
+    def test_legacy_cache_still_readable(self):
+        """升级前的老文件 `sections_<代号>.json` 必须还能读到，不能“升级即空白”。"""
+        self._write_sections()                                  # 写的就是老文件名
+        self.assertEqual(self._cards()[0]["sections"]["total"], 9)
+
+    def test_course_cache_preferred_over_legacy(self):
+        """带课程的新文件优先于老文件（否则新数据会被旧数据盖住）。"""
+        self._write_sections()                                  # 老文件：9 节
+        newer = dict(SECTIONS, read_at="2026-10-30 15:00:00",
+                     summary={"sections": 12, "done": 3, "practice_ready": 3,
+                              "practice_locked": 0, "minutes_done": 0,
+                              "minutes_required": 500},
+                     course="32")
+        (self.root / "data" / "debug" / "sections_jia_32.json").write_text(
+            json.dumps(newer, ensure_ascii=False), encoding="utf-8")
+        card = self._cards()[0]
+        self.assertEqual(card["sections"]["total"], 12)          # 用了新文件
+        self.assertEqual(card["sections"]["read_at"], "2026-10-30 15:00:00")
+        self.assertEqual(card["course_value"], "32")
+
+    def test_courses_cached_counts_all_files(self):
+        self._write_sections()
+        for course in ("32", "33"):
+            (self.root / "data" / "debug" / f"sections_jia_{course}.json").write_text(
+                json.dumps(dict(SECTIONS, course=course), ensure_ascii=False),
+                encoding="utf-8")
+        self.assertEqual(self._cards()[0]["courses_cached"], 3)  # 老文件 + 2 门课
+        self.assertEqual(self._cards()[1]["courses_cached"], 0)
+
+    def test_state_reads_cache_for_requested_course(self):
+        for course, total in (("32", 9), ("33", 5)):
+            (self.root / "data" / "debug" / f"sections_jia_{course}.json").write_text(
+                json.dumps(dict(SECTIONS, course=course,
+                                summary=dict(SECTIONS["summary"], sections=total)),
+                           ensure_ascii=False), encoding="utf-8")
+        with mock.patch("xxt.panel_gxks.app.gchrome.port_alive", return_value=False):
+            body = self.client.get("/api/state?label=jia&course=33").json()
+        self.assertEqual(body["course"], "33")
+        self.assertEqual(body["sections"]["summary"]["sections"], 5)
+
     # ---------------------------------------------------------------- 运行中
     def test_running_job_is_attached_to_its_own_card(self):
         job = {"label": "yi", "kind": "study", "since": "14:02:14"}
