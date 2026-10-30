@@ -85,6 +85,19 @@ def test_sched_sig_detects_change():
     assert "llm.model" not in sa          # 换 AI 模型不该触发“调度配置已重载”
 
 
+def test_sched_sig_ignores_daemon_owned_keys():
+    """会话72（C）：守护自写的 auto.plan / auto.retry_after 是指纹运行态，
+    不得进指纹——否则守护每回写一次退避/计划→下轮自检测到“配置已重载”→日志噪声。
+    但用户可调的 [auto] 参数（如 max_tries）变化必须仍能被认出。"""
+    a = {"auto": {"max_tries": 2, "plan": '{"a":"09:50"}', "retry_after": "{}"}}
+    b = {"auto": {"max_tries": 2, "plan": '{"a":"10:30"}', "retry_after": '{"1":"12:40"}'}}
+    sa, sb = _sched_sig(a), _sched_sig(b)
+    assert "auto.plan" not in sa and "auto.retry_after" not in sa
+    assert sa == sb                        # 只有守护自有键变了 → 指纹不变，不会误报重载
+    c = {"auto": {"max_tries": 5}}
+    assert sa["auto.max_tries"] != _sched_sig(c)["auto.max_tries"]  # 用户改参数仍能识别
+
+
 def test_db_readable(tmp_path):
     """热重载保护①：库读不了就整轮跳过，免得分额被回退成内置默认值。"""
     missing = tmp_path / "nope.db"

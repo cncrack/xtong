@@ -821,14 +821,23 @@ def _prio(val) -> float:
 
 
 def _sched_sig(raw: dict | None) -> dict[str, str]:
-    """取调度相关配置（[auto]/[quota]/[pace]）的指纹，变没变一比自己。"""
+    """取调度相关配置（[auto]/[quota]/[pace]）的指纹，变没变一比自己。
+
+    会话72：跳过守护自己回写的状态键 `auto.plan`、`auto.retry_after`——它们是守护
+    持久化到 app_config 的运行态（会被 Settings 并进 raw），若纳入指纹，守护每自写
+    一次退避/计划→下轮巡检就自检测到“配置已重载”→日志噪声且措辞误导（C）。
+    用户可调的 [auto] 参数（max_tries/retry_minutes…）与 [quota]/[pace] 仍全量监控。
+    """
     import json
 
+    _daemon_owned = frozenset({"auto.plan", "auto.retry_after"})
     sig: dict[str, str] = {}
     for sec in ("auto", "quota", "pace"):
         node = (raw or {}).get(sec)
         if isinstance(node, dict):
             for k, v in node.items():
+                if f"{sec}.{k}" in _daemon_owned:
+                    continue
                 sig[f"{sec}.{k}"] = json.dumps(v, sort_keys=True, ensure_ascii=False)
     return sig
 
@@ -1226,7 +1235,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
 
         n_aid = tries.get(aid, 0)
         why = str(row_end["detail"] or "") if row_end else ""
-        code = classify(why or "会话已退出且无停止说明")
+        # 无 session-end（子进程连收尾都没写出来 = 长空闲里被硬杀/外部带走）
+        # → 直接归 crash（会话异常中止），不再拿占位句去 classify 落到 unknown/未归类
+        # （会话72：未归类“原因不在已知类型里”误导，crash 才是准确且仍会自动重试的中性态）
+        code = classify(why) if why else "crash"
         label, _hint = describe(code)
         tier = tier_for(code)
         # P1（2026-10-28）：达成不能只信子进程一句话。子进程报「额度达标」时，
@@ -1701,8 +1713,9 @@ def cmd_auto(args: argparse.Namespace) -> int:
                     conn.close()
                 if not picks:
                     skipped.add(aid)
-                    print(f"[auto] 账号#{aid} 无可学课程（先抓课程/章节），今日跳过")
-                    _ev(aid, "auto-skip", "无可学课程（先抓课程/章节）", "WARNING")
+                    print(f"[auto] 账号#{aid} 无可自动刷课程（无启用的学习安排，且没有课纳入自动刷），今日跳过")
+                    _ev(aid, "auto-skip",
+                        "无可自动刷课程：请在「学习安排」排课，或在面板课程行点「🔄 自动刷」把它纳入（v10）", "WARNING")
                     continue
                 course_name, course_pid = _course_ref(picks[0])
                 src_cn = "学习安排" if plan else "轮转"

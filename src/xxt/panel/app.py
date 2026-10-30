@@ -83,7 +83,7 @@ def _find_course_row(conn, account_id: int, pid: str, name: str):
     """
     pid = str(pid or "").strip()
     return conn.execute(
-        "SELECT id, name, platform_course_id FROM courses WHERE account_id=? "
+        "SELECT id, name, platform_course_id, auto_grind FROM courses WHERE account_id=? "
         "AND (platform_course_id=? OR name=?) "
         "ORDER BY CASE WHEN platform_course_id=? THEN 0 ELSE 1 END LIMIT 1",
         (account_id, pid, str(name or "").strip(), pid),
@@ -291,7 +291,7 @@ select,input[type=time],input[type=number],input[type=text],input[type=password]
 {border:1px solid var(--line);border-radius:10px;padding:.42rem .6rem;font-size:.86rem;
 background:var(--card);color:var(--ink);outline:none;transition:.15s}
 select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,108,255,.12)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(410px,1fr));gap:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(410px,1fr));gap:1rem;align-items:start}
 .card{background:var(--card);border-radius:18px;padding:1.05rem 1.15rem;border:1px solid var(--line);
 box-shadow:0 1px 4px rgba(25,35,70,.05);transition:.2s;position:relative;overflow:hidden}
 .card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(25,35,70,.13)}
@@ -302,7 +302,7 @@ box-shadow:0 1px 4px rgba(25,35,70,.05);transition:.2s;position:relative;overflo
 .avatar{width:38px;height:38px;border-radius:12px;background:var(--grad);color:#fff;
 display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:700;flex:none;
 box-shadow:0 3px 8px rgba(70,80,220,.3)}
-.head .names{min-width:0;flex:1 1 130px}
+.head .names{min-width:0;flex:1 1 130px;min-height:66px}
 .who{font-size:1.05rem;font-weight:800;line-height:1.25;word-break:break-all}
 .who .nicktag{font-size:.6rem;font-weight:600;color:var(--muted);border:1px solid var(--line);
  border-radius:6px;padding:0 .25rem;margin-left:.35rem;vertical-align:2px;white-space:nowrap}
@@ -333,7 +333,7 @@ font-size:.75rem;cursor:pointer;transition:.15s;color:var(--ink);white-space:now
 .b-ok{background:#e3f6ec;color:var(--ok)}.b-warn{background:#fdf2df;color:var(--warn)}
 .b-info{background:#e8edff;color:#4353d8}
 .pulse{animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.55}}
-.chips{display:flex;gap:.3rem;flex-wrap:wrap;margin:.05rem 0 .55rem}
+.chips{display:flex;gap:.3rem;flex-wrap:wrap;align-content:flex-start;height:52px;overflow-y:auto;margin:.05rem 0 .55rem}
 .chip{font-size:.68rem;color:var(--muted);background:var(--bg);border:1px solid var(--line);
 border-radius:7px;padding:.12rem .5rem}
 .course{margin:.5rem 0;padding:.45rem .55rem;border-radius:11px;border:1px solid transparent;transition:.15s}
@@ -362,7 +362,8 @@ box-shadow:0 3px 10px rgba(214,69,69,.35);transform:translateY(-1px)}
 border-radius:10px;padding:.4rem .5rem;font-size:.76rem;color:var(--muted);
 cursor:pointer;transition:.15s;text-align:center}
 .morebtn:hover{border-color:var(--accent);color:var(--accent);border-style:solid}
-.more{margin-top:.15rem}
+.more{margin-top:.15rem;max-height:340px;overflow-y:auto}
+.cap{max-height:340px;overflow-y:auto}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:5px}
 .bar>i{display:block;height:100%;width:0;border-radius:4px;background:var(--grad);transition:width .6s ease}
 .pager{display:flex;align-items:center;gap:.55rem;justify-content:center;margin-top:1.1rem;font-size:.86rem}
@@ -775,6 +776,17 @@ function renderAccounts(){
       // 点了会被引擎零访问退出、面板却弹“已开始刷”（假成功）。现在无树只给
       // 「⬇ 抓章节」：抓树不产生 video-done、不动当日额度，看到节数后 ▶ 才出现（2026-10-30 轻档）
       const noTree=!c.total;
+      // “刷完了”=有章节树、待学节数 pending=0、且已学 done>0（与后端 rotation.course_weights 跳过判据一致）
+      const finished=c.total>0 && c.pending===0 && c.done>0;
+      // 会话72（D 口径 b）：把“作业/测验…”等非视频节点从“已学完”里拆出来，
+      // 免得“✔ 已学完 · 69/70”看着像没学完（那 1 其实是作业）。
+      const tasksOpen=(c.tasks||0)-(c.tasks_done||0);
+      const vTotal=c.total-(c.tasks||0), vDone=c.done-(c.tasks_done||0);
+      // 课程级自动刷开关（v10 会话72）：无树的课先不显（得先抓章节才能判断刷不刷）。
+      const gridOn=c.auto_grind?1:0;
+      const toggle=noTree?'':`<button class="minibtn${gridOn?' primary':''}" style="white-space:nowrap" title="${gridOn?'已纳入自动刷：守护到点会轮转刷这门；点击移出（移出后只能手动刷）':'未纳入自动刷：守护不会自动刷它；点击纳入轮转池（今天起可被自动轮转）'}"
+            data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}" data-on="${gridOn?0:1}"
+            onclick="setAutoGrind(${a.id},this.dataset.c,this.dataset.p,this.dataset.on)">🔄 ${gridOn?'自动刷 开':'自动刷 关'}</button>`;
       const ctl=runningThis
         ?`<button class="stopc" title="正在刷这门课（${run.since} 开始），点击停止；已看的进度全部保留"
             onclick="stopGrind(${a.id})">■ 停止刷课</button>`
@@ -782,25 +794,35 @@ function renderAccounts(){
         ?`<button class="minibtn" title="进该课程页抓一次章节树（约 10~20 秒，不播放视频、不消耗当日额度）；抓完才知道共几节、要不要刷"
             data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
             onclick="fetchChapters(${a.id},this.dataset.c,this.dataset.p)">⬇ 抓章节</button>`
+        :finished
+        ?`<span class="badge b-ok" style="white-space:nowrap" title="视频已全部刷完，自动刷课不会再选中它（轮转按 pending 跳过）${tasksOpen>0?'；剩余的是作业，请用下方「参考答案/去处理」单独完成':''}">${tasksOpen>0?'✔ 视频刷完':'✔ 已学完'}</span>`
         :`<button class="play" title="开始刷这门课（从上次进度继续）"
             data-c="${esc(c.name)}" data-p="${esc(c.platform_course_id||'')}"
             onclick="startGrind(${a.id},this.dataset.c,this.dataset.p)">▶ 刷这门课</button>`;
       const nums=noTree
         ?`<span class="nums" title="本地还没有章节树：先点「⬇ 抓章节」（1 次页面访问，不消耗当日额度）">未抓章节</span>`
+        :finished
+        ?`<span class="nums" title="视频已刷完，自动刷课不会再选中它（已归档）">${tasksOpen>0?`✔ 视频刷完 · <b>${vDone}/${vTotal}</b>｜另 ${tasksOpen} 项作业待做`:`✔ 已学完 · <b>${c.done}/${c.total}</b>`}</span>`
         :`<span class="nums">${Math.round(c.done/c.total*100)}% · <b>${c.done}/${c.total}</b></span>`;
       const q=document.getElementById('q').value.trim();
       const now=runningThis?` style="border-left:3px solid var(--ok);padding-left:.5rem"`:'';
       const nowTag=runningThis?` <span class="badge b-ok pulse" style="margin-left:.3rem">当前正在学</span>`:'';
       const bold=runningThis?'font-weight:800;':'';
     return `<div class="course${hit}"${now}><span class="nm" style="${bold}">${hl(c.name,q)}${nowTag}</span>
-      <div class="t2">${nums}${ctl}</div>
+      <div class="t2">${nums}${toggle}${ctl}</div>
       <div class="spent">已学 ${fmtDur(c.total_min)}${c.est_total_min>c.total_min?` / 总${c.est_is_exact?'':'约'}${fmtDur(c.est_total_min)}`:''}</div>
       <div class="bar"><i style="width:${c.total?c.done/c.total*100:0}%"></i></div></div>`;};
     const run=RUNNING[a.id];
-    // 主显课程：正在刷的 > 最有进度的 > 第一门；其余默认折叠（点击展开；搜索时自动展开）
-    const mainCourse = (run && a.courses.find(c=>c.name===run.course))
-      || a.courses.find(c=>c.done>0) || a.courses[0];
-    const others = a.courses.filter(c=>!mainCourse || c.name!==mainCourse.name);
+    // 四分区（v10 会话72）：①正在刷 ②自动刷队列（auto_grind=1 且 pending>0）③其他未纳入 ④视频刷完归档
+    const cs=a.courses||[];
+    const isFin=c=>c.total>0&&c.pending===0&&c.done>0;
+    const isQueued=c=>!!c.auto_grind&&c.pending>0;
+    const runningCourse=run?cs.find(c=>c.name===run.course):null;
+    const queue=cs.filter(c=>isQueued(c)&&c!==runningCourse);
+    const doneArch=cs.filter(c=>isFin(c)&&c!==runningCourse);
+    const rest=cs.filter(c=>c!==runningCourse&&!isQueued(c)&&!isFin(c));
+    // “立即补跑”目标课：在刷的 > 队列首门 > 任意有待学的 > 第一门
+    const mainCourse = runningCourse || queue[0] || cs.find(c=>c.pending>0) || cs[0];
     // 作业任务点（名称含"作业/测验/考试"）：挂课程行下展示真实状态
     const workRe = /作业|测验|考试/;
     const works = a.works || [];
@@ -825,20 +847,25 @@ function renderAccounts(){
       : (mainCourse && workRe.test(mainCourse.name) ? '' : '');
     const searching = document.getElementById('q').value.trim()!=='';
     // 仅当"课程名"命中才自动展开；搜人名/备注时保持折叠（找人不找课）
-    const autoOpen = others.some(c=>hits.some(h=>h.name===c.name));
-    const open = autoOpen || !!EXPANDED[a.id];
-    // 课程区标题：在刷="正在学习的课程"（绿），未刷="下次将继续的课程"（灰）
-    const runningNow = run && mainCourse && run.course===mainCourse.name;
-    const zoneTitle = mainCourse
-      ? `<div style="font-size:.78rem;font-weight:700;margin:-.15rem 0 .35rem;color:${runningNow?'var(--ok)':'var(--muted)'}">
-           ${runningNow?'▶ 正在学习的课程':'⏭ 下次将继续的课程'}</div>` : '';
-    const mainHtml = mainCourse ? zoneTitle + mkCourse(mainCourse) : '';
-    const othersHtml = others.map(mkCourse).join('');
-    const doneSum = others.reduce((s,c)=>s+c.done,0);
-    const courses = (mainCourse ? mainHtml : '<div class="muted" style="font-size:.8rem">暂无课程数据</div>')
-      + workHtml
-      + (others.length ? `<button class="morebtn" onclick="toggleMore(${a.id})">${open?'▾':'▸'} 其他 ${others.length} 门课 · 已完成 ${doneSum} 个知识点</button>
-        <div class="more" style="display:${open?'':'none'}">${othersHtml}</div>` : '');
+    const autoOpen = cs.some(c=>hits.some(h=>h.name===c.name));
+    // 两个折叠区各自独立展开（会话72 修“点一个两个一起开/收”）：:r=其他、:d=已学完
+    const openRest = autoOpen || !!EXPANDED[a.id+':r'] || !!EXPANDED[a.id];
+    const openDone = autoOpen || !!EXPANDED[a.id+':d'] || !!EXPANDED[a.id];
+    const zoneHead=(txt,color)=>`<div style="font-size:.78rem;font-weight:700;margin:-.15rem 0 .35rem;color:${color}">${txt}</div>`;
+    // ① 正在刷（绿）② 自动刷队列（平铺列表，同刻只刷一门）
+    let cHtml = runningCourse ? zoneHead('▶ 正在学习的课程','var(--ok)')+mkCourse(runningCourse) : '';
+    cHtml += queue.length ? zoneHead(`⏭ 自动刷队列 · ${queue.length} 门待轮（守护每天自动轮一门，同一时刻只刷一门）`,'var(--ok)')+`<div class="cap">`+queue.map(mkCourse).join('')+`</div>` : '';
+    cHtml += workHtml;
+    // ③ 其他（未纳入自动刷 / 无树，可手动刷或点🔄纳入）——折叠
+    const restSum=rest.reduce((s,c)=>s+(c.done||0),0);
+    cHtml += rest.length ? `<button class="morebtn" onclick="toggleMore('${a.id}:r')">${openRest?'▾':'▸'} 其他 ${rest.length} 门（未纳入自动刷）· 已完成 ${restSum} 个知识点</button>
+      <div class="more" style="display:${openRest?'':'none'}">${rest.map(mkCourse).join('')}</div>` : '';
+    // ④ 视频刷完（归档，自动刷不再选中）——折叠
+    cHtml += doneArch.length ? `<button class="morebtn" onclick="toggleMore('${a.id}:d')">${openDone?'▾':'▸'} ✔ 已学完 ${doneArch.length} 门（自动刷不再选中）</button>
+      <div class="more" style="display:${openDone?'':'none'}">${doneArch.map(mkCourse).join('')}</div>` : '';
+    if(!cHtml) cHtml='<div class="muted" style="font-size:.8rem">暂无课程数据</div>';
+    else if(!runningCourse&&!queue.length) cHtml += '<div class="muted" style="font-size:.72rem;margin-top:.25rem">提示：暂无课程纳入自动刷——守护不会自动开刷。想让它自动刷，在某门课点「🔄 自动刷 关」切到开；只想刷一次就直接「▶ 刷这门课」</div>';
+    const courses=cHtml;
     const stopBtn=run?`<button class="minibtn danger pulse" title="停止该账号正在刷的课：已完成视频全部保留，下次点▶从断点续播" onclick="stopGrind(${a.id})">■ 停止</button>`:'';
     // 失败警示（Q20）：今日最近一次失败 → 归类成一句话 + 最多 3 个真能点的按钮。
     // 数据库为空的号不显示任何东西；已经重新跑起来的号也不显示（后端已判）。
@@ -914,6 +941,7 @@ const EVNAME={'chapter-start':'开始一节','video-done':'看完一节','video-
   'session-stop':'手动停止','auto-fire':'已开跑','auto-try':'发起尝试',
   'auto-revoke':'撤回今日已学','auto-suspend':'已挂起','auto-done':'今日已收工',
   'auto-error':'失败（可重试）','auto-hardstop':'已硬停','auto-skip':'今日跳过','auto-plan':'今日计划',
+  'auto-corrected':'已纠正误报',
   'auto-start':'守护启动','auto-stop':'守护停止',
   'auto-request':'启动请求','auto-replan':'计划变更','auto-plan-stale':'计划陈旧',
   'auto-exit':'守护异常退出','diag-visited-fix':'数据修复',
@@ -1553,7 +1581,7 @@ function delPlan(id){
   fetch(`/api/plans/${id}`,{method:'DELETE'}).then(r=>r.json()).then(()=>{
     toast('✔ 学习安排已删除');loadPlans();});}
 let EDIT=null,RUNNING={},AUTOPLAN={times:{}},AUTOSTATE={},EXPANDED={};
-function toggleMore(id){EXPANDED[id]=!EXPANDED[id];renderAccounts();}
+function toggleMore(k){EXPANDED[k]=!EXPANDED[k];renderAccounts();}
 function startGrind(id,course,pid){
   fetch('/api/study/start',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
@@ -1563,14 +1591,24 @@ function startGrind(id,course,pid){
 // 所以它是“确定要刷哪门”之前的低成本确认动作：抓到树看到节数，你再决定刷不刷。
 // 结果不在本请求里等（子进程要十几秒），靠 15 秒自动刷新回显节数。
 function fetchChapters(id,course,pid){
-  if(!confirm('抓取《'+course+'》的章节树？\n\n· 进该课程页 1 次（约 10~20 秒）\n'
-              +'· 不播放视频，不写“看完一节”，因此不占用今日额度\n'
+  if(!confirm('抓取《'+course+'》的章节树？\\n\\n· 进该课程页 1 次（约 10~20 秒）\\n'
+              +'· 不播放视频，不写“看完一节”，因此不占用今日额度\\n'
               +'· 抓完课程行会显示共几节，你再决定刷不刷'))return;
   fetch('/api/chapters/fetch',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({account_id:id,course:course,course_pid:pid||null})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){alert('抓章节失败：'+d.error);return;}
     toast('已发起抓《'+course+'》章节树（约 10~20 秒），完成后自动显示节数');
+    syncRun();});}
+// 课程级「纳入自动刷」开关（v10 会话72）：纯本地改库、零平台访问，点了即时生效。
+// 关→开：这门课进守护轮转池（今天起可被自动轮刷）；开→关：移出，只能手动刷。
+// 手动 ▶ 不受此开关约束。抓树不再自动进池——必须在这里显式打开，根治“抓了树就被偷刷”。
+function setAutoGrind(id,course,pid,on){
+  fetch('/api/course/auto-grind',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({account_id:id,course:course,course_pid:pid||null,on:on==='1'})})
+  .then(r=>r.json()).then(d=>{
+    if(!d.ok){toast('设置失败：'+(d.error||'未知'),1);return;}
+    toast(on==='1'?'✔ 《'+course+'》已纳入自动刷':'✔ 《'+course+'》已移出自动刷（可手动刷）');
     syncRun();});}
 // 警示条「看日志」：切到日志页并把账号筛好，不用用户再手输
 function gotoLogs(id){
@@ -1840,6 +1878,13 @@ def create_app(settings: Settings) -> FastAPI:
             fresh = Settings(root=settings.root)  # 每次请求重读 DB：改全局额度后无需重启面板
             global_default = fresh.quiz.get(
                 "work_mode_default", "owner")  # 生效策略计算用（账号显式优先）
+            # 会话72（D）：非视频节点（作业/测验/…）名单，用于把课程分母拆成
+            # “视频 vs 作业”。与刷课引擎同一口径（learn.non_video_marks）。
+            _nv_marks = [m.strip() for m in
+                         str(fresh.learn.get("non_video_marks", "")).split(",") if m.strip()]
+            _nv_where = ("(" + " OR ".join(["h.name LIKE ?"] * len(_nv_marks)) + ")"
+                         if _nv_marks else "0")
+            _nv_params = [f"%{m}%" for m in _nv_marks]
             for a in accounts:
                 state = settings.data_dir / "accounts" / str(a["id"]) / "state.json"
                 a["has_session"] = state.exists()
@@ -1871,12 +1916,18 @@ def create_app(settings: Settings) -> FastAPI:
                 a["courses"] = [
                     dict(r)
                     for r in conn.execute(
-                        """SELECT c.name, c.platform_course_id, c.clazz_id,
+                        f"""SELECT c.name, c.platform_course_id, c.clazz_id, c.auto_grind,
                            (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id) AS total,
                            (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id
-                              AND h.status='done') AS done
+                              AND h.status='done') AS done,
+                           (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id
+                              AND h.status='pending') AS pending,
+                           (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id
+                              AND {_nv_where}) AS tasks,
+                           (SELECT COUNT(*) FROM chapters h WHERE h.course_id=c.id
+                              AND {_nv_where} AND h.status='done') AS tasks_done
                            FROM courses c WHERE c.account_id=? ORDER BY c.id""",
-                        (a["id"],),
+                        (*_nv_params, *_nv_params, a["id"]),
                     )
                 ]
                 # 每门课程：已学时长（按标题去重的真实时长和）+ 预计总时长（未看的按平均估）
@@ -2010,7 +2061,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         try:
             rows = conn.execute(
-                "SELECT account_id, ts, event, detail, code FROM run_logs"
+                "SELECT id, account_id, ts, event, detail, code FROM run_logs"
                 " WHERE ts LIKE ? AND account_id > 0 AND event IN"
                 " ('auto-error','auto-hardstop','auto-revoke','auto-suspend','auto-done',"
                 "  'video-interrupt','chapter-fail',"
@@ -2041,6 +2092,32 @@ def create_app(settings: Settings) -> FastAPI:
                 code = raw_code or "interrupt"
             else:
                 code = raw_code or classify(detail)
+            # 自愈（会话72）：存量 code 是守护当时用旧规则写死的；若按当前规则复核它的
+            # 真实原因其实已达成/学完（典型：旧代码把“本地已无待学章节”误判成 structure），
+            # 就地纠正存量码 + 记一条“已纠正误报”日志，让纠错即时生效而不是等跨天。
+            # 只用于消误报（复核为 achieved 才动），真失败复核后仍是失败类，不受影响；
+            # 去掉守护自己加的标签词（describe(raw_code)[0]）再复核，避免“挂起（页面打不开）”前缀干扰。
+            # UPDATE 带 code 条件、命中才写日志 → 天然幂等，轮询再多也只纠正一次。
+            if (ev in ("auto-suspend", "auto-error", "auto-hardstop") and raw_code
+                    and tier_for(raw_code) != "achieved"):
+                derived = classify(detail.replace(describe(raw_code)[0], "", 1))
+                if tier_for(derived) == "achieved":
+                    try:
+                        with conn:
+                            cur = conn.execute(
+                                "UPDATE run_logs SET code=? WHERE id=? AND code=?",
+                                (derived, r["id"], raw_code))
+                            if cur.rowcount:
+                                conn.execute(
+                                    "INSERT INTO run_logs(ts, level, event, detail, account_id, code)"
+                                    " VALUES(?,?,?,?,?,?)",
+                                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "INFO", "auto-corrected",
+                                     f"旧记录原判「{describe(raw_code)[0]}」，按当前规则复核为"
+                                     f"「{describe(derived)[0]}」，已纠正并不再告警｜原文：{detail[:120]}",
+                                     aid, derived))
+                    except Exception:
+                        pass
+                    continue  # 复核为达成 → 本次不示警
             tier = tier_for(code)
             if tier == "achieved":
                 continue  # 达成不算异常，不占卡片
@@ -2995,6 +3072,42 @@ def create_app(settings: Settings) -> FastAPI:
                    f"已发起抓《{crow['name']}》章节树（子进程 pid={proc.pid}，不消耗当日额度）"
                    + (f"；本地已有 {n_ch} 行，本次是重新对账" if n_ch else ""))
         return {"ok": True, "pid": proc.pid, "had_tree": bool(n_ch)}
+
+    @app.post("/api/course/auto-grind")
+    def course_auto_grind(body: dict):
+        """课程级「纳入自动刷」开关（v10 会话72）：开=这门课进守护轮转池，关=只手动刷。
+
+        抓章节不再让课自动进池——必须这里显式打开，根治“抓了树就被偷刷”。
+        纯本地改库、零平台访问；写 config_audit 留痕 + run_logs 供日志页可见。
+        手动 ▶ 不走轮转，不受此开关约束（没勾的课照样能手动刷一次）。
+        """
+        account_id, course = body.get("account_id"), body.get("course")
+        if not (account_id and course):
+            return {"ok": False, "error": "缺少 account_id / course"}
+        want = 1 if bool(body.get("on")) else 0
+        conn = db()
+        try:
+            crow = _find_course_row(conn, int(account_id), str(body.get("course_pid") or ""),
+                                    str(course))
+            if crow is None:
+                return {"ok": False, "error": f"该账号没有这门课（{course}）"}
+            cur = int(crow["auto_grind"] or 0)
+            if cur == want:
+                return {"ok": True, "auto_grind": cur, "changed": False}   # 同值不写审计
+            with conn:
+                conn.execute("UPDATE courses SET auto_grind=? WHERE id=?", (want, crow["id"]))
+                conn.execute(
+                    "INSERT INTO config_audit(ts, source, key, old_value, new_value)"
+                    " VALUES(?,?,?,?,?)",
+                    (time.strftime("%Y-%m-%dT%H:%M:%S"), "panel",
+                     f"course.{crow['id']}.auto_grind", str(cur), str(want)))
+            name = crow["name"]
+        finally:
+            conn.close()
+        _log_event(int(account_id), "course-autogrid",
+                   f"《{name}》{'已纳入自动刷（守护会轮转刷它）' if want else '已移出自动刷（只可手动刷）'}"
+                   "｜手动 ▶ 不受此开关约束")
+        return {"ok": True, "auto_grind": want, "changed": True}
 
     @app.post("/api/study/start")
     def study_start(body: dict):

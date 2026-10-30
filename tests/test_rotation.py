@@ -13,9 +13,15 @@ from xxt.store.db import connect
 
 
 def seed_courses(conn: sqlite3.Connection) -> None:
-    """两门课：A（10 章 5 待学，优先级 3）、B（4 章 4 待学，默认优先级 1）。"""
-    conn.execute("INSERT INTO courses(account_id, platform_course_id, name) VALUES(1,'ca','课程甲')")
-    conn.execute("INSERT INTO courses(account_id, platform_course_id, name) VALUES(1,'cb','课程乙')")
+    """两门课：A（10 章 5 待学，优先级 3）、B（4 章 4 待学，默认优先级 1）。
+
+    两门都 `auto_grind=1`（已纳入自动刷）——v10 后轮转只认显式纳入的课，
+    夹具默认纳入才能继续测权重/挑选逻辑。
+    """
+    conn.execute("INSERT INTO courses(account_id, platform_course_id, name, auto_grind) "
+                 "VALUES(1,'ca','课程甲',1)")
+    conn.execute("INSERT INTO courses(account_id, platform_course_id, name, auto_grind) "
+                 "VALUES(1,'cb','课程乙',1)")
     conn.commit()
     ca = conn.execute("SELECT id FROM courses WHERE name='课程甲'").fetchone()["id"]
     cb = conn.execute("SELECT id FROM courses WHERE name='课程乙'").fetchone()["id"]
@@ -52,6 +58,29 @@ class TestRotation(unittest.TestCase):
         w = course_weights(self.conn, 1, {str(ca): 3.0})
         wa = next(wt for wt, r in w if r["name"] == "课程甲")
         self.assertAlmostEqual(wa, 1.5)   # 3.0 × 0.5
+
+    def test_course_not_auto_grind_is_excluded(self):
+        """v10 核心：未纳入自动刷（auto_grind=0）的课不得进轮转池——即使有树、有 pending。
+
+        根治“抓了章节树就被守护偷刷”：抓树不再自动进池，必须显式开启。
+        """
+        self.conn.execute(
+            "INSERT INTO courses(account_id, platform_course_id, name, auto_grind) "
+            "VALUES(1,'cc','课程丙',0)")
+        cc = self.conn.execute("SELECT id FROM courses WHERE name='课程丙'").fetchone()["id"]
+        for i in range(6):  # 有树且全 pending，若不开关就会被轮转
+            self.conn.execute(
+                "INSERT INTO chapters(course_id, platform_chapter_id, name, idx, status) "
+                "VALUES(?,?,?,?, 'pending')", (cc, f"c{i}", f"丙{i}", i))
+        self.conn.commit()
+        names = {r["name"] for _, r in course_weights(self.conn, 1, {})}
+        self.assertNotIn("课程丙", names)          # 未纳入 → 排除
+        self.assertIn("课程甲", names)               # 已纳入 → 保留
+        # 显式纳入后立刻进池
+        self.conn.execute("UPDATE courses SET auto_grind=1 WHERE name='课程丙'")
+        self.conn.commit()
+        names2 = {r["name"] for _, r in course_weights(self.conn, 1, {})}
+        self.assertIn("课程丙", names2)
 
     def test_pick_returns_unique_rows(self):
         rotation = {"courses_per_day": [2, 2], "priorities": {}}

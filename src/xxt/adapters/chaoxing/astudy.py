@@ -746,10 +746,20 @@ class AsyncStudyRunner:
                     gap = sample_gap(self.rng, self.pace)
                     log.info("[#%s] 拟人间隔 %.0f 秒后继续", self.account_id, gap)
                     waited = 0.0
-                    while waited < gap:
-                        step = min(1.0, gap - waited)
-                        await page.wait_for_timeout(int(step * 1000))
-                        waited += step
+                    try:
+                        while waited < gap:
+                            step = min(1.0, gap - waited)
+                            await page.wait_for_timeout(int(step * 1000))
+                            waited += step
+                    except Exception as exc:  # noqa: BLE001
+                        # 会话72（B治本）：长间隔（可达 600s）期间浏览器/CDP 连接若掉线，
+                        # 旧代码让异常一路抛出 → 只有 traceback、不写 session-end →
+                        # 守护只能归“无收尾=崩”。就地接住，写一条含 exc 文本的收尾原因
+                        # （TargetClosed→crash、timeout→network），干净 break 交 cli 写 session-end。
+                        stats["stop_reason"] = f"拟人间隔等待中断：{exc!r}"
+                        log.warning("[#%s] 拟人间隔期间连接异常，结束本会话：%r",
+                                    self.account_id, exc)
+                        break
 
                 # 会话收尾（2026-10-27 语义修正）：现在 visited = “非视频节点穿过了”，
                 # 不再是“这节进过但没学成”。旧代码在这里无条件写入，会把最后一次

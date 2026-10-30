@@ -333,6 +333,44 @@ class TestPanel(unittest.TestCase):
         self.assertEqual(al["tier"], "hard_stop")
         self.assertIn("立即补跑", al["actions"])
 
+    def test_alert_self_heals_misbaked_structure_to_done(self):
+        """自愈（会话72）：旧代码把「本地已无待学章节」误判成 structure 存库；
+        面板出横幅前按当前规则复核 → 即时纠正为 done 并记一条「已纠正误报」日志，
+        不示警、也不等跨天（用户：“纠正要生效，但日志里面要体现”）。"""
+        self._seed_account_and_event(
+            "auto-suspend",
+            "挂起（页面打不开）：会话已退出，今日已播 7 个｜短退避已用 2/3 次，"
+            "硬上限 4 轮｜ 下一节按钮不可点；本地已无待学章节｜30 分钟后自动恢复",
+            code="structure")
+        # ① 横幅即时消失
+        self.assertIsNone(self._alert())
+        conn = connect(self.settings.db_path)
+        # ② 存量码被就地纠正为 done
+        row = conn.execute(
+            "SELECT code FROM run_logs WHERE event='auto-suspend' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(row["code"], "done")
+        # ③ 日志里留痕：新增一条 auto-corrected
+        fixed = conn.execute(
+            "SELECT detail FROM run_logs WHERE event='auto-corrected'").fetchall()
+        self.assertTrue(fixed, "纠正没写进 run_logs")
+        self.assertIn("已纠正", fixed[0]["detail"])
+        conn.close()
+
+    def test_alert_self_heal_is_idempotent(self):
+        """复核纠正只发生一次：再次读告警不重复写 auto-corrected 日志（不刷屏）。"""
+        self._seed_account_and_event(
+            "auto-suspend",
+            "挂起（页面打不开）：下一节按钮不可点；本地已无待学章节",
+            code="structure")
+        self.assertIsNone(self._alert())
+        self.assertIsNone(self._alert())  # 第二次读：已纠正为 done，不再命中
+        conn = connect(self.settings.db_path)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM run_logs WHERE event='auto-corrected'").fetchone()[0]
+        self.assertEqual(n, 1, "重复纠正会刷屏日志")
+        conn.close()
+
     def test_hardstop_event_marks_card(self):
         """B（2026-10-28）：硬停改成独立事件 `auto-hardstop`，卡片照样标硬停 + 留补跑入口。
 
@@ -736,6 +774,174 @@ class NoTreeGatingTest(unittest.TestCase):
         # notree 不能误入 structure（可挂起 → 守护白重试）；done 不能落入 unknown
         self.assertEqual(classify(r_no), "notree")
         self.assertEqual(classify(r_done), "done")
+
+    def test_overview_exposes_pending_for_finished_and_inprogress(self):
+        """卡片“已学完”归档判定以后端 `pending` 为准（与 rotation.course_weights 跳过同一把尺）。
+
+        以前 overview 只发 total/done，前端拿 `done>0` 当“下次将继续”，
+        导致 100% 学完的课还赖在 C 位标“下次将继续”（与后端永不重刷矛盾）。
+        """
+        def courses():
+            accs = self.client.get("/api/overview").json()["accounts"]
+            return {c["name"]: c for c in accs[0]["courses"]}
+
+        # 初始：有树课 1 节 pending（未学完）
+        c = courses()["有树课"]
+        self.assertEqual(c["pending"], 1)
+        self.assertEqual(c["done"], 0)
+        # 无树课：total=0 → pending 也必须为 0（不能退 None，前端要参与判据）
+        self.assertEqual(courses()["无树课"]["pending"], 0)
+        # 把有树课标完→ pending 变 0、done 变 1（这就是“已学完”的信号）
+        conn = connect(self.settings.db_path)
+        try:
+            cid = conn.execute(
+                "SELECT id FROM courses WHERE platform_course_id='c1'").fetchone()["id"]
+            conn.execute("UPDATE chapters SET status='done' WHERE course_id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        done_c = courses()["有树课"]
+        self.assertEqual(done_c["pending"], 0)
+        self.assertEqual(done_c["done"], 1)
+
+    def test_overview_splits_video_from_assignment(self):
+        """会话72（D）：overview 把课程分母拆成“视频 vs 作业”，供前端徽章说清
+        “视频刷完·x/x｜另 N 项作业待做”，不再用“69/70”这种把作业混进分母的写法。"""
+        conn = connect(self.settings.db_path)
+        try:
+            cid = conn.execute(
+                "SELECT id FROM courses WHERE platform_course_id='c1'").fetchone()["id"]
+            conn.execute("INSERT INTO chapters(course_id,platform_chapter_id,name,idx,status)"
+                         " VALUES(?, 'k2', '1.2 视频二', 1, 'done')", (cid,))
+            conn.execute("INSERT INTO chapters(course_id,platform_chapter_id,name,idx,status)"
+                         " VALUES(?, 'k3', '第一章｜2.12 作业', 2, 'visited')", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        c = {x["name"]: x for x in
+             self.client.get("/api/overview").json()["accounts"][0]["courses"]}["有树课"]
+        # k1 pending 视频 + k2 done 视频 + k3 作业(visited)：total=3，作业 1 节、已完成作业 0
+        self.assertEqual(c["total"], 3)
+        self.assertEqual(c["tasks"], 1)          # 名称含“作业”→非视频
+        self.assertEqual(c["tasks_done"], 0)
+        self.assertEqual(c["total"] - c["tasks"], 2)       # 视频总数
+        self.assertEqual(c["done"] - c["tasks_done"], 1)   # 视频已学完数
+
+
+class AutoGrindToggleTest(unittest.TestCase):
+    """课程级「纳入自动刷」opt-in（v10 会话72）：抓树不再自动进轮转池。
+
+    根治“刚抓到需要的课、没说要刷，守护就自动开刷”：
+    • 默认 auto_grind=0 → course_weights 不选它（守护不会自动刷）；
+    • 面板开关 POST /api/course/auto-grind 开→纳入，关→移出；
+    • 开关写 config_audit 留痕，同值重复设置幂等。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = Settings(root=Path(self.tmp.name))
+        conn = connect(self.settings.db_path)
+        # 一门有树、全 pending 的课（旧行为下会被轮转自动开刷）
+        conn.execute("INSERT INTO courses(account_id, platform_course_id, name, url) "
+                     "VALUES(1,'c1','待刷课','http://x/1')")
+        conn.commit()
+        cid = conn.execute("SELECT id FROM courses WHERE platform_course_id='c1'").fetchone()["id"]
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO chapters(course_id, platform_chapter_id, name, idx, status) "
+                "VALUES(?,?,?,?,'pending')", (cid, f"k{i}", f"1.{i} 节", i))
+        conn.commit()
+        conn.close()
+        self.client = TestClient(create_app(self.settings))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _weights(self):
+        from xxt.core.rotation import course_weights
+        conn = connect(self.settings.db_path)
+        try:
+            return {r["name"] for _, r in course_weights(conn, 1, {})}
+        finally:
+            conn.close()
+
+    def test_not_in_rotation_pool_until_switched_on(self):
+        # 默认关：有树有 pending 也不进池（这就是修复点）
+        self.assertEqual(self._weights(), set())
+        ov = self.client.get("/api/overview").json()["accounts"][0]["courses"][0]
+        self.assertEqual(ov["auto_grind"], 0)
+        # 开启后立刻进轮转池
+        d = self.client.post("/api/course/auto-grind", json={
+            "account_id": 1, "course": "待刷课", "course_pid": "c1", "on": True}).json()
+        self.assertTrue(d["ok"], d)
+        self.assertEqual(d["auto_grind"], 1)
+        self.assertEqual(self._weights(), {"待刷课"})
+        self.assertEqual(
+            self.client.get("/api/overview").json()["accounts"][0]["courses"][0]["auto_grind"], 1)
+
+    def test_switch_off_removes_and_writes_audit(self):
+        self.client.post("/api/course/auto-grind", json={
+            "account_id": 1, "course": "待刷课", "course_pid": "c1", "on": True})
+        conn = connect(self.settings.db_path)
+        try:
+            n_audit = conn.execute(
+                "SELECT COUNT(*) c FROM config_audit WHERE key LIKE 'course.%.auto_grind'"
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n_audit, 1)   # 0→1 写一行审计
+        self.client.post("/api/course/auto-grind", json={
+            "account_id": 1, "course": "待刷课", "course_pid": "c1", "on": False})
+        self.assertEqual(self._weights(), set())   # 1→0 移出池
+        conn = connect(self.settings.db_path)
+        try:
+            n_audit = conn.execute(
+                "SELECT COUNT(*) c FROM config_audit WHERE key LIKE 'course.%.auto_grind'"
+            ).fetchone()["c"]
+            n_dup = conn.execute(
+                "SELECT COUNT(*) c FROM config_audit WHERE new_value='1'"
+                " AND old_value='1' AND key LIKE 'course.%'").fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n_audit, 2)   # 1→0 再写一行
+        self.assertEqual(n_dup, 0)     # 同值不写审计
+
+    def test_switch_unknown_course_errors(self):
+        d = self.client.post("/api/course/auto-grind", json={
+            "account_id": 1, "course": "没这门课", "on": True}).json()
+        self.assertFalse(d["ok"])
+
+
+class PanelPageJSSyntaxTest(unittest.TestCase):
+    """面板内嵌 JS 语法守卫（2026-10-30 新增）。
+
+    真实事故：轻档给 confirm 文案写了单 `\n`，而 `_PAGE` 是 Python 非原始字符串
+    → `\n` 变成真换行弄断 JS 字符串 → 整个 <script> 块不执行 → 页面永久“加载中…”。
+    pytest 只测接口不跑 JS，完全没拦住。这条用 `node --check` 守住同类错误。
+    """
+
+    def test_page_script_block_is_valid_js(self):
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        from xxt.panel import app
+
+        if shutil.which("node") is None:
+            self.skipTest("本机无 node，跳过 JS 语法检查")
+        js = "\n".join(re.findall(r"<script>(.*?)</script>", app._PAGE, re.S))
+        self.assertTrue(js.strip(), "没抽到 <script> 块，守卫失效")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8",
+                                         delete=False) as f:
+            f.write(js)
+            path = f.name
+        try:
+            r = subprocess.run(["node", "--check", path],
+                               capture_output=True, text=True)
+        finally:
+            import os
+            os.unlink(path)
+        self.assertEqual(r.returncode, 0, f"内嵌 JS 语法错误：\n{r.stderr[:800]}")
 
 
 if __name__ == "__main__":

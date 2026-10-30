@@ -8,7 +8,9 @@ from pathlib import Path
 
 # v9（2026-10-28）：run_logs 补 `code` 列——守护判定的机器码（core.diagnose 的类别）
 # 直接落库，面板不再拿人话文案二次归类（Q30：文案里带引号/重复词就会归错）。
-SCHEMA_VERSION = 9
+# v10（2026-10-30）：courses 补 `auto_grind` 列——课程级「是否纳入自动刷」opt-in 开关，
+# 默认 0（关）。抓章节不再让课程自动进守护轮转池，必须用户在面板显式打开（会话72 修“抓了树就被偷刷”）。
+SCHEMA_VERSION = 10
 
 # v7：账号作业策略——ai（AI代答semi）/ owner（号主自理，默认）/ reference（面板出参考答案人工填）
 _ACCOUNT_COLS = {
@@ -62,6 +64,7 @@ CREATE TABLE IF NOT EXISTS courses (
     clazz_id           TEXT,
     name               TEXT NOT NULL,
     url                TEXT,
+    auto_grind         INTEGER NOT NULL DEFAULT 0,   -- 1=纳入守护自动刷池；0=只手动刷（v10）
     UNIQUE (account_id, platform_course_id)
 );
 CREATE TABLE IF NOT EXISTS chapters (
@@ -190,6 +193,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     # 可能多个连接同时执行同一 ALTER → 抛 "duplicate column name"。用 _ensure_col
     # 把"已存在/并发已加"都视为成功，迁移幂等。
     _ensure_col(conn, "courses", "clazz_id", "TEXT")
+    # v10：课程级自动刷 opt-in 开关，默认关（含老库已有的课，一律回到“未被自动刷”保守态）。
+    _ensure_col(conn, "courses", "auto_grind", "INTEGER NOT NULL DEFAULT 0")
     acols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}
     for name, decl in _ACCOUNT_COLS.items():
         if name not in acols:
