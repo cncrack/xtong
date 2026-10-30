@@ -35,6 +35,11 @@ auto_submit = false
 port_base = 9300
 # 允许的题型代码：目前实测只有单选=2，未实测题型整卷停。
 allowed_types = "2"
+# 浏览器后端：cdp（默认，连本机已登好的 Chrome）| managed（程序自己起，容器用）
+# 详见 src/xxt/adapters/gxks/browser.py 与 docs/gxks/PLAN-GXKS.md §13.6 P1。
+browser_backend = "cdp"
+# managed 是否无头：容器里保持 true；本机调试想看窗口可改 false。
+managed_headless = true
 
 # ---------------------------------------------------------------- 可选：只改某一项
 # [quota]

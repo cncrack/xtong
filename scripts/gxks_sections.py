@@ -27,9 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import watch_gxks as wg  # noqa: E402
-
 from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
+from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
@@ -113,12 +112,12 @@ def main() -> int:
     port = args.port or gaccounts.resolve_port(
         label, fallback=int(settings.raw.get("gxks", {}).get("port_base",
                                                           gaccounts.DEFAULT_PORT)))
-    browser = None
+    session = None
     try:
-        browser, page = wg.connect_page(f"http://127.0.0.1:{port}")
-        if page is None:
-            print("[FAIL] 连上了但找不到页面", file=sys.stderr)
-            return 2
+        # cdp 后端忽略 start_url（不打断人工已开的页面）；managed 后端起完浏览器直接开首页
+        session = gbrowser.open_session(settings, label=label, port=port,
+                                        start_url=selectors.MAIN_PAGE)
+        page = session.page
         if gdriver.at_login_page(page.url):
             cred = glogin.load_credentials()
             if not cred:
@@ -147,15 +146,17 @@ def main() -> int:
             },
             "rows": rows,
         }
+    except gbrowser.SessionError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"       {exc.hint}", file=sys.stderr)
+        return 2
     except Exception as exc:                                # noqa: BLE001
         print(f"[FAIL] {type(exc).__name__}: {exc}", file=sys.stderr)
         return 5
     finally:
-        if browser is not None:
-            try:
-                browser.close()                             # Q31：不留常连
-            except Exception:                               # noqa: BLE001
-                pass
+        if session is not None:
+            session.close()                                 # Q31：不留常连
 
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

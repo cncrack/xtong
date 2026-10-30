@@ -1,6 +1,7 @@
 """单节课后练习：开卷 → 读题 → 题库/AI 出答案 → 回填（默认不提交）。
 
-用法（Chrome 已登录、CDP 端口在）：
+用法（Chrome 已登录、CDP 端口在；`[gxks] browser_backend = "managed"` 时改成
+程序自己起浏览器，不需要外部 Chrome，见 `adapters/gxks/browser.py`）：
 
     .venv\\Scripts\\python.exe scripts/gxks_work.py --exercise-id 14670 \\
         --section-id 1299 --section-name "2.2 国家安全形势"
@@ -29,9 +30,8 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import watch_gxks as wg  # noqa: E402  复用连浏览器的方式
-
 from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
+from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
@@ -148,18 +148,16 @@ def main() -> int:
     started = time.monotonic()
 
     db = open_question_bank(settings.data_dir / "gxks_questions.db")
-    browser = None
+    session = None
     try:
         try:
-            browser, page = wg.connect_page(f"http://127.0.0.1:{port}")
-        except Exception as exc:                            # noqa: BLE001
-            print(f"[FAIL] 连不上 CDP 端口 {port}：{exc}", file=sys.stderr)
-            print(f"       先起浏览器：chrome.exe --remote-debugging-port={port} "
-                  f'--user-data-dir="<该账号专用目录>"', file=sys.stderr)
+            session = gbrowser.open_session(settings, label=label, port=port)
+        except gbrowser.SessionError as exc:
+            print(f"[FAIL] {exc}", file=sys.stderr)
+            if exc.hint:
+                print(f"       {exc.hint}", file=sys.stderr)
             return EXIT_NO_PAGE
-        if page is None:
-            print("[FAIL] 连上了但找不到页面", file=sys.stderr)
-            return EXIT_NO_PAGE
+        page = session.page
         if not _ensure_login(page, settings):
             return EXIT_LOGIN
 
@@ -260,11 +258,8 @@ def main() -> int:
         return EXIT_FAIL
     finally:
         # 必须断开：连着 CDP 会吞掉人工交卷的 confirm（Q31）
-        if browser is not None:
-            try:
-                browser.close()
-            except Exception:                               # noqa: BLE001
-                pass
+        if session is not None:
+            session.close()
         db.close()
 
 

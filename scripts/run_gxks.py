@@ -36,10 +36,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import watch_gxks as wg  # noqa: E402  复用连浏览器 / 事件打印
 
 from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
+from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
+from xxt.config import Settings, find_project_root  # noqa: E402
 
 
 def ensure_list(page, drv, tries: int = 3):
@@ -96,10 +98,17 @@ def main() -> int:
     args = ap.parse_args()
 
     started = time.monotonic()
-    browser, page = wg.connect_page(f"http://127.0.0.1:{args.port}")
-    if page is None:
-        print("[FAIL] 找不到含列表帧的页面（Chrome 是否已登录？）")
+    # 账号代号先定：managed 后端的 profile 目录由它决定（一账号一 profile）
+    acc_label = args.account_label or args.label or "default"
+    try:
+        session = gbrowser.open_session(Settings(root=find_project_root()),
+                                        label=acc_label, port=args.port)
+    except gbrowser.SessionError as exc:
+        print(f"[FAIL] {exc}")
+        if exc.hint:
+            print(f"       {exc.hint}")
         return 2
+    page = session.page
     drv = gdriver.GxksDriver(page)
 
     wanted = [s.strip() for s in args.sections.split(",")] if args.sections else None
@@ -108,7 +117,6 @@ def main() -> int:
 
     # ---- 当日额度（本地账本）----
     # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
-    acc_label = args.account_label or args.label or "default"
     acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
     secs_limit = acc.daily_sections if acc else gaccounts.DEFAULT_SECTIONS_PER_DAY
     mins_limit = acc.daily_minutes if acc else gaccounts.DEFAULT_MINUTES_PER_DAY
@@ -119,7 +127,7 @@ def main() -> int:
               f"{q['left_minutes']:.0f} 分钟")
         if q["exhausted"]:
             print("[SKIP] 今日额度已用完 → 不跑（明天再继续，或 --ignore-quota 调试）")
-            browser.close()
+            session.close()
             return 0
         if args.max_sections > q["left_sections"]:
             print(f"额度限制：本次最多播 {q['left_sections']} 节（原定 {args.max_sections}）")
@@ -283,7 +291,7 @@ def main() -> int:
         q = gledger.quota_left(acc_label, sections_limit=secs_limit, minutes_limit=mins_limit)
         print(f"今日累计：{q['sections']} 节 / {q['minutes']:.0f} 分钟"
               f"（额度 {secs_limit} 节 / {mins_limit} 分钟）")
-    browser.close()
+    session.close()
     return code
 
 

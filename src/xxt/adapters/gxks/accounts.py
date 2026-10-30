@@ -182,6 +182,11 @@ def find_by_label(accounts: list[Account], label: str) -> Account | None:
     return None
 
 
+def is_valid_label(label: str) -> bool:
+    """代号是否合法（= 能否安全用作目录名 / 配置键）。`browser.profile_dir()` 也认它。"""
+    return bool(_LABEL_RE.match(str(label or "")))
+
+
 def resolve_port(label: str, *, accounts: list[Account] | None = None,
                  fallback: int = DEFAULT_PORT) -> int:
     """账号对应的 CDP 端口。
