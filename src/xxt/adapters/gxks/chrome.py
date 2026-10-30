@@ -25,10 +25,16 @@ from pathlib import Path
 from . import selectors
 
 # 与 `core/stealth.py::LAUNCH_ARGS` 保持同一口径：只去掉自动化开关，不动别的
+#
+# `--no-proxy-server` 是 2026-10-30 实测加的：本机系统代理（v2rayN/xray）开着时，
+# 目标站点单次请求要 10 秒以上、真实浏览器甚至超时打不开（直连 0.33 秒），
+# 而站点每 60 秒要上报一次学习进度 → **学时白刷**。
+# 给这个专用 Chrome 加这个参数让它自己绕过代理，**不碰系统代理设置**（别的软件照常用代理）。
 _CHROME_ARGS = [
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-blink-features=AutomationControlled",
+    "--no-proxy-server",
 ]
 
 _REG_KEYS = (

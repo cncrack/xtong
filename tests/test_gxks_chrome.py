@@ -70,6 +70,14 @@ class TestLaunchArgv(unittest.TestCase):
         argv = gchrome.launch_argv("C:/c/chrome.exe", port=9333, profile="D:/p")
         self.assertFalse(any(a.startswith("http") for a in argv))
 
+    def test_launch_argv_bypasses_system_proxy(self):
+        """`--no-proxy-server`：本机系统代理开着时站点要 10 秒以上、浏览器甚至超时，
+        直连只要 0.33 秒，而站点每 60 秒要上报一次学习进度 → 学时白刷。
+        给这个专用 Chrome 绕开代理，**不碰系统代理设置**。
+        """
+        argv = gchrome.launch_argv("C:/c/chrome.exe", port=9333, profile="D:/p")
+        self.assertIn("--no-proxy-server", argv)
+
 
 class TestPortAlive(unittest.TestCase):
     def test_false_when_nothing_listens(self):

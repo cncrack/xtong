@@ -40,6 +40,7 @@ from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
+from xxt.adapters.gxks import netcheck  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
 
@@ -95,11 +96,24 @@ def main() -> int:
                     help="忽略当日额度（调试用）")
     ap.add_argument("--no-relogin", action="store_true",
                     help="禁用自动重登（即使 data/account.local.json 已配好）")
+    ap.add_argument("--no-netcheck", action="store_true",
+                    help="跳过开跑前的网络自检（调试用；自检会真实访问站点一次）")
     args = ap.parse_args()
 
     started = time.monotonic()
     # 账号代号先定：managed 后端的 profile 目录由它决定（一账号一 profile）
     acc_label = args.account_label or args.label or "default"
+
+    # ---- 开跑前网络自检（在打开浏览器之前）----
+    # 站点每 60 秒上报一次学习进度；链路慢会让学时真丢而页面看起来在播。
+    # 这里测的是**直连耗时**——因为 chrome.py 给 Chrome 加了 `--no-proxy-server`，
+    # 那个浏览器自己绕过代理，所以"直连慢"就是真的慢。
+    if not args.no_netcheck:
+        net = netcheck.preflight()
+        print(netcheck.format_report(net))
+        if not net["ok"]:
+            print("\n[SKIP] 网络自检未通过 → 不打开浏览器、不访问平台")
+            return 4
     try:
         session = gbrowser.open_session(Settings(root=find_project_root()),
                                         label=acc_label, port=args.port)
