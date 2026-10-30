@@ -336,6 +336,47 @@ def _read_json(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
+# ---------------------------------------------------------------- 单账号动作（批量复用）
+#
+# 抽成模块级函数是为了让 `/api/study`、`/api/stop` 与批量的 `/api/accounts/batch`
+# 走**同一段逻辑**——否则批量那条路早晚会跟单个那条走偏（比如漏掉"在跑就不重复起"）。
+
+
+def _study_one(settings: Settings, label: str,
+               max_sections: object = None, sections: object = None) -> dict[str, Any]:
+    """给一个账号起刷课子进程。返回面板回包（`ok`/`error`/`message`）。"""
+    acc = _account(settings, label)
+    if any(j["label"] == acc.label for j in _jobs_snapshot()):
+        return {"ok": False, "error": "该账号已有任务在跑"}
+    n = int(max_sections or 3)
+    args = ["--label", acc.label, "--account-label", acc.label,
+            "--port", str(acc.port),
+            "--max-sections", str(max(1, min(n, 12)))]
+    if sections:
+        args += ["--sections", str(sections)]
+    return _start(settings, acc.label, "study", "run_gxks.py", *args,
+                  message=f"开始刷课，最多 {n} 节；随时可停")
+
+
+def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
+    """停一个账号正在跑的任务。"""
+    label = _safe_label(settings, label)
+    with _JOBS_LOCK:
+        job = _JOBS.get(label)
+    if job is None:
+        return {"ok": False, "error": "该账号没有在跑的任务"}
+    result = _kill(job["proc"])
+    with _JOBS_LOCK:
+        _JOBS.pop(label, None)
+    db = open_question_bank(settings.data_dir / "gxks_questions.db")
+    try:
+        gxks_ops.record_op(db, account_label=label, action="stop",
+                           detail=f"面板手动停止（{result}）")
+    finally:
+        db.close()
+    return {"ok": True, "message": result}
+
+
 def create_app(settings: Settings) -> FastAPI:
     from .page import PAGE
 
@@ -413,36 +454,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/study")
     def do_study(body: dict) -> dict:
-        acc = _account(settings, str(body.get("label") or ""))
-        label = acc.label
-        if any(j["label"] == label for j in _jobs_snapshot()):
-            return {"ok": False, "error": "该账号已有任务在跑"}
-        max_sections = int(body.get("max_sections") or 3)
-        args = ["--label", label, "--account-label", label,
-                "--port", str(acc.port),
-                "--max-sections", str(max(1, min(max_sections, 12)))]
-        if body.get("sections"):
-            args += ["--sections", str(body["sections"])]
-        return _start(settings, label, "study", "run_gxks.py", *args,
-                      message=f"开始刷课，最多 {max_sections} 节；随时可停")
+        return _study_one(settings, str(body.get("label") or ""),
+                          body.get("max_sections"), body.get("sections"))
 
     @app.post("/api/stop")
     def do_stop(body: dict) -> dict:
-        label = _safe_label(settings, str(body.get("label") or ""))
-        with _JOBS_LOCK:
-            job = _JOBS.get(label)
-        if job is None:
-            return {"ok": False, "error": "该账号没有在跑的任务"}
-        result = _kill(job["proc"])
-        with _JOBS_LOCK:
-            _JOBS.pop(label, None)
-        db = open_question_bank(settings.data_dir / "gxks_questions.db")
-        try:
-            gxks_ops.record_op(db, account_label=label, action="stop",
-                               detail=f"面板手动停止（{result}）")
-        finally:
-            db.close()
-        return {"ok": True, "message": result}
+        return _stop_one(settings, str(body.get("label") or ""))
 
     @app.get("/api/browser/state")
     def browser_state(label: str = "") -> dict:
@@ -700,6 +717,78 @@ def create_app(settings: Settings) -> FastAPI:
         _record(settings, label, "account-del",
                 f"删除账号 {label}（profile 目录与登录态快照保留，没删）")
         return {"ok": True, "message": f"已删除 {label}（登录态快照保留在磁盘上）"}
+
+    @app.post("/api/accounts/batch")
+    def accounts_batch(body: dict) -> dict:
+        """批量动作：`start` / `stop` / `enable` / `disable` / `delete`。
+
+        语义与单个操作**完全一致**（复用 `_study_one`/`_stop_one`），
+        并且**一个失败不影响其它**——批量最怕"第 3 个报错，后面全没做"，
+        所以逐账号收集结果，最后统一汇总给人看。
+
+        删除另外多加两道闸：① 必须带 `confirm`；② 一次不许把账号删光。
+        """
+        action = str(body.get("action") or "").strip().lower()
+        labels = body.get("labels")
+        if not isinstance(labels, list) or not labels:
+            return {"ok": False, "error": "没有选中账号"}
+        labels = [str(x).strip().lower() for x in labels if str(x).strip()]
+        if action not in ("start", "stop", "enable", "disable", "delete"):
+            return {"ok": False, "error": f"不认识的批量动作：{action}"}
+
+        known = {a.label for a in gaccounts.load_accounts()}
+        unknown = [x for x in labels if x not in known]
+        if unknown:
+            return {"ok": False, "error": f"账号表里没有：{'、'.join(unknown)}"}
+
+        if action == "delete":
+            if not body.get("confirm"):
+                return {"ok": False, "error": "批量删除需要二次确认"}
+            remaining = [a.label for a in gaccounts.load_accounts()
+                         if a.label not in set(labels)]
+            if not remaining:
+                return {"ok": False,
+                        "error": "这批会把账号删光；请至少留一个账号"}
+
+        results: list[dict[str, Any]] = []
+        for label in labels:
+            if action == "start":
+                got = _study_one(settings, label, body.get("max_sections"))
+            elif action == "stop":
+                got = _stop_one(settings, label)
+            elif action in ("enable", "disable"):
+                want = action == "enable"
+                if not want and any(j["label"] == label for j in _jobs_snapshot()):
+                    got = {"ok": False, "error": "有任务在跑：先「停止」再停用"}
+                elif gaccounts.set_enabled(label, want):
+                    _record(settings, label, "account-toggle",
+                            f"{'启用' if want else '停用'}账号 {label}（批量）")
+                    got = {"ok": True, "message": "已" + ("启用" if want else "停用")}
+                else:
+                    got = {"ok": False, "error": "账号表里没有它"}
+            else:                                       # delete
+                if any(j["label"] == label for j in _jobs_snapshot()):
+                    got = {"ok": False, "error": "有任务在跑：先「停止」再删除"}
+                elif gaccounts.delete_account(label):
+                    _record(settings, label, "account-del",
+                            f"删除账号 {label}（批量；profile 与快照保留）")
+                    got = {"ok": True, "message": "已删除"}
+                else:
+                    got = {"ok": False, "error": "账号表里没有它"}
+            results.append({"label": label, "ok": bool(got.get("ok")),
+                            "message": str(got.get("message") or got.get("error") or "")})
+
+        done = [r for r in results if r["ok"]]
+        failed = [r for r in results if not r["ok"]]
+        names = "、".join(r["label"] for r in done) or "（无）"
+        if failed:
+            why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
+            return {"ok": bool(done), "results": results, "done": len(done),
+                    "failed": len(failed),
+                    "error": f"{len(failed)} 个没做成——{why}",
+                    "message": f"完成 {len(done)} 个（{names}）"}
+        return {"ok": True, "results": results, "done": len(done), "failed": 0,
+                "message": f"完成 {len(done)} 个（{names}）"}
 
     return app
 

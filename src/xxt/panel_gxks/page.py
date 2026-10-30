@@ -32,37 +32,58 @@ main{max-width:1280px;margin:0 auto;padding:16px 18px 60px;
      display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;align-items:start}
 section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
         border-radius:12px;padding:16px 20px;box-shadow:var(--shadow)}
-/* 宽屏：账号区与浏览器区各占一半。
-   `align-items:stretch` 让同一行的两张卡**等高**——账号多时右侧不再空一大片；
-   浏览器卡内容少，靠 `.section-body` 的 `justify-content:space-between` 把内容摊开。 */
+/* 宽屏：账号表格需要宽度（9 列约 940px），所以**整行独占**；
+   浏览器卡是短信息，跟在全宽表格下面当一条状态带。
+   （原来的 6+6 并排在换成表格后不再合适：表格挤到 600px 会折行。） */
 @media (min-width:1000px){
-  main{align-items:stretch}
-  #sec-accounts{grid-column:span 6}
-  #sec-browser{grid-column:span 6}
-  /* 两列都限高：账号特别多时在卡内滚动，而不是把整页拉到 2000px+ */
-  #sec-accounts,#sec-browser{max-height:calc(100vh - 120px);display:flex;
-                             flex-direction:column;min-height:320px}
-  #sec-accounts>#accounts,#sec-browser>#browser{overflow:auto;flex:1 1 auto}
+  /* 账号行多时在卡内滚动，而不是把整页拉到 2000px+ */
+  #sec-accounts{max-height:calc(100vh - 120px);display:flex;
+                flex-direction:column;min-height:320px}
+  #sec-accounts>#accounts{overflow:auto;flex:1 1 auto}
 }
-/* 账号卡片：每账号一张，点卡片切换下面四个区块。
-   用 auto-fit 而不是 auto-fill：账号少时卡片撑满整行，不会只占左边一小块、右边空一片。
-   窄列（6 栏约 600px）下每行放 1~2 张，避免卡片被压到 300px 以下折行。 */
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
-.acct{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff;
-      cursor:pointer;transition:border-color .12s,box-shadow .12s}
-.acct:hover{border-color:#c7d7ee;box-shadow:0 2px 8px rgba(16,24,40,.06)}
-.acct.cur{border-color:var(--accent);box-shadow:0 0 0 3px #e8f0fe,inset 4px 0 0 var(--accent)}
-.acct.off{opacity:.6}
-.acct-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-           padding-bottom:8px;border-bottom:1px solid var(--line)}
-.acct-head b{font-size:16px;font-weight:700}
-/* 键列定宽：不同卡片之间“今日/端口/登录/课程”的值列能对齐，不会各自错开 */
-.kv{display:grid;grid-template-columns:64px 1fr;gap:5px 12px;font-size:13px;margin:10px 0}
-.kv .k{color:var(--dim);white-space:nowrap}
-.kv .v{color:var(--txt);line-height:1.5}
-/* 重点数字（今日已完成节数）拉大加重，扫一眼就能看到 */
-.kv .v b{font-size:16px;color:var(--accent);font-variant-numeric:tabular-nums}
-.acct-actions{display:flex;gap:6px;flex-wrap:wrap}
+/* 账号表格（替代原卡片视图）：见下方 .acct-tbl 一组规则。
+   卡片每张 ~222px 高、20 个账号要 2300px；表格每行 ~44px、20 个约 1040px 且能在固定区滚动。 */
+/* ---------------------------------------------------------------- 账号表格
+   为什么从卡片改成表格（用户 2026-10-30 提议）：卡片每张 ~222px 高，6 个账号 ~700px、
+   20 个账号 ~2300px；表格每行 ~44px，6 个 ~310px、20 个 ~1040px（固定区内滚动）。
+   同样空间能多放 2~3 倍账号，而且**列对齐才能横向比较**（谁的额度用完了、谁端口没开）。 */
+.acct-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.acct-tools input[type=search]{font:inherit;flex:1 1 260px;min-width:180px;
+  border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+.acct-tools select{font:inherit;border:1px solid var(--line);border-radius:6px;
+  background:#fff;padding:5px 8px;cursor:pointer}
+.chips{display:flex;gap:4px;flex-wrap:wrap}
+.acct-batch{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+            min-height:0;margin:0 0 8px}
+.acct-batch:not(:empty){padding:8px 10px;background:#f7f9fc;border:1px solid var(--line);
+                        border-radius:8px}
+table.acct-tbl{font-size:13.5px}
+table.acct-tbl th{font-size:12.5px;padding:6px 8px}
+table.acct-tbl td{padding:6px 8px;vertical-align:middle}
+table.acct-tbl tbody tr{cursor:pointer}
+table.acct-tbl tbody tr.cur{background:#f0f6ff;
+  box-shadow:inset 3px 0 0 var(--accent)}
+table.acct-tbl tbody tr.off{opacity:.55}
+table.acct-tbl td.c-name b{font-size:14.5px}
+table.acct-tbl td.c-name .sub{color:var(--dim);font-size:12px;display:block;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+table.acct-tbl td.c-today b{font-size:15px;color:var(--accent);
+  font-variant-numeric:tabular-nums}
+table.acct-tbl td.c-ops{white-space:nowrap;text-align:right}
+table.acct-tbl td.c-ops button{margin-left:4px}
+/* 行内小进度条：30px 宽足够看出"快满了" */
+.mini-bar{display:inline-block;width:34px;height:6px;border-radius:99px;
+  background:#eef0f3;overflow:hidden;vertical-align:middle;margin-left:5px}
+.mini-bar i{display:block;height:100%;background:#3fb27f}
+.mini-bar i.warn{background:#f2b45c}
+/* 悬停详情浮层：固定定位、不挡鼠标（pointer-events:none），所以移开一定自动隐藏 */
+.acct-detail{position:fixed;z-index:60;max-width:330px;background:#1f2328;color:#fff;
+  border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.6;
+  box-shadow:0 8px 24px rgba(0,0,0,.24);pointer-events:none}
+.acct-detail .dk{color:#9aa4b2;margin-right:6px}
+.acct-detail .row2{display:flex;gap:0;flex-wrap:wrap}
+.acct-detail b{color:#fff}
+.acct-detail .sep{border-top:1px solid #3a4048;margin:6px 0}
 /* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
    原来 6 行竖表把整张卡撑到 396px，右侧一长条空白（实测 6 个账号时差 1116px）。 */
 .binfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
@@ -178,16 +199,45 @@ button.mini{padding:3px 9px;font-size:13px}
   <span class="muted" id="clock"></span>
 </header>
 <main>
-  <!-- 账号卡片：每个账号一张卡，卡上是总览，点卡片 = 把下面四个区块切到该账号 -->
+  <!-- 账号列表：表格（一行一个账号），鼠标悬停行右侧浮出详情，点行 = 切换下方四个区块。
+       工具栏**不随 4 秒轮询重绘**（否则搜索框会掉焦点），只重绘 #accounts。 -->
   <section id="sec-accounts">
     <div class="card-head">
       <h2>账号与任务 <span class="muted" id="accounts-meta"></span></h2>
       <div class="toolbar">
-        <span class="muted">点卡片切换下方「浏览器/节进度/作答/记录」</span>
         <button class="primary" onclick="openAccount()"
           title="新增一个账号：代号 + 端口 + 日额度（凭据可留空，之后再填）">＋ 新增账号</button>
       </div>
     </div>
+    <div class="acct-tools">
+      <input id="acct-q" type="search" placeholder="搜索：名称 / 代号 / 端口 / 学校 / 学号 / 自定义字段"
+             autocomplete="off">
+      <select id="acct-status" title="按状态筛选">
+        <option value="">状态：全部</option>
+        <option value="running">运行中</option>
+        <option value="idle">空闲</option>
+        <option value="off">已停用</option>
+        <option value="full">额度用完</option>
+      </select>
+      <select id="acct-port" title="按端口是否监听筛选">
+        <option value="">端口：全部</option>
+        <option value="alive">活着</option>
+        <option value="dead">未监听</option>
+      </select>
+      <select id="acct-cred" title="按是否配置账号密码筛选">
+        <option value="">凭据：全部</option>
+        <option value="yes">已配置</option>
+        <option value="no">未配置</option>
+      </select>
+      <span class="chips">
+        <button class="mini" type="button" onclick="quickFilter('running')">运行中</button>
+        <button class="mini" type="button" onclick="quickFilter('full')">额度用完</button>
+        <button class="mini" type="button" onclick="quickFilter('dead')">端口没开</button>
+        <button class="mini" type="button" onclick="quickFilter('noconf')">无凭据</button>
+        <button class="mini" type="button" onclick="clearFilter()">清空</button>
+      </span>
+    </div>
+    <div class="acct-batch" id="acct-batch"></div>
     <div id="accounts"></div>
   </section>
 
@@ -228,6 +278,8 @@ button.mini{padding:3px 9px;font-size:13px}
   <section id="sec-ops"><h2>操作记录</h2><div id="ops"></div></section>
 </main>
 <div id="toast"></div>
+<!-- 悬停详情浮层：鼠标划到某一行时浮在行右侧，移开自动隐藏（纯展示，无可点元素） -->
+<div id="acct-detail" class="acct-detail" hidden></div>
 
 <!-- 账号编辑对话框：一个表单同时用于新增与修改（修改时回填，密码框永远留空） -->
 <dialog id="dlg">
@@ -365,136 +417,339 @@ function practiceCell(row) {
   return '<span class="tag t-none">未解锁</span>';
 }
 
-function acctRow(k, v) {
-  return '<span class="k">' + esc(k) + '</span><span class="v">' + v + "</span>";
+// ---------------------------------------------------------------- 账号表格
+// 为什么是表格：卡片每张 ~222px 高，20 个账号要 2300px；表格每行 ~44px，20 个约 1040px
+// 且能在固定区里滚动。列对齐才能横向比较（谁的额度用完了、谁端口没开）。
+//
+// 选中集合记在 JS 里：4 秒轮询会整块重绘表格，状态不能只靠 DOM（与 SEC_OPEN 同理）。
+const SEL = new Set();
+const FILTER = { q: "", status: "", port: "", cred: "" };
+
+function acctStatus(c) {
+  if (!c.enabled) return "off";
+  if (c.job) return "running";
+  const t = c.today || {}, lim = c.limits || {};
+  if (Number(lim.sections) > 0 && t.left_sections === 0) return "full";
+  return "idle";
 }
 
-// 一张账号卡 = 该账号的总览（今日额度 / 端口 / 登录态 / 课程进度）+ 它能做的动作
-function acctCard(c, cur) {
+function acctStatusTag(c) {
+  const s = acctStatus(c);
+  if (s === "off") return '<span class="tag t-none">已停用</span>';
+  if (s === "running") return '<span class="tag t-learn">运行中</span>';
+  if (s === "full") return '<span class="tag t-low">额度用完</span>';
+  return '<span class="tag t-done">空闲</span>';
+}
+
+// 搜索：名称/代号/端口/课程/序号/学校/专业/年级/学号/自定义字段 全都能搜
+function acctSearchText(c, accRow) {
+  const pf = (accRow && accRow.profile_fields) || {};
+  const cf = (accRow && accRow.custom_fields) || {};
+  return [c.label, c.display, c.port, c.course,
+          pf.seq, pf.school, pf.major, pf.grade, pf.student_id,
+          Object.keys(cf).join(" "), Object.values(cf).join(" ")]
+    .map((v) => String(v === undefined || v === null ? "" : v)).join(" ").toLowerCase();
+}
+
+function visibleCards(state) {
+  const cards = state.cards || [];
+  const accounts = state.accounts || [];
+  const q = (FILTER.q || "").trim().toLowerCase();
+  return cards.filter((c) => {
+    const accRow = accounts.find((a) => a.label === c.label) || null;
+    if (q && acctSearchText(c, accRow).indexOf(q) < 0) return false;
+    if (FILTER.status && acctStatus(c) !== FILTER.status) return false;
+    if (FILTER.port === "alive" && !c.port_alive) return false;
+    if (FILTER.port === "dead" && c.port_alive) return false;
+    if (FILTER.cred === "yes" && !c.credentials) return false;
+    if (FILTER.cred === "no" && c.credentials) return false;
+    return true;
+  });
+}
+
+function miniBar(done, total) {
+  const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total)) : 0;
+  return '<span class="mini-bar"><i class="' + (pct >= 100 ? "" : "warn") +
+    '" style="width:' + pct + '%"></i></span>';
+}
+
+// 一行 = 一个账号。学校/专业放名称下面那行小字（用户要的"一行+展开"里的静态摘要）。
+function acctTr(c, accRow, cur) {
   const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
   const snap = c.snapshot || {};
+  const pf = (accRow && accRow.profile_fields) || {};
   const active = c.label === cur;
-  // `left_sections === null` = 日节数设成 0（不限），不能显示成“还剩 0 节”
+  const st = acctStatus(c);
+  const secLim = Number(lim.sections) || 0;
   const left = t.left_sections === null || t.left_sections === undefined
     ? Infinity : Number(t.left_sections) || 0;
-  const tag = !c.enabled ? '<span class="tag t-none">已停用</span>'
-    : c.job ? '<span class="tag t-learn">运行中 · ' + esc(c.job.kind) + " · " +
-              esc(c.job.since) + "</span>"
-            : '<span class="tag t-done">空闲</span>';
-  let html = '<div class="acct' + (active ? " cur" : "") + (c.enabled ? "" : " off") +
-    '" onclick="pick(\'' + esc(c.label) + '\')">';
-  html += '<div class="acct-head"><b>' + esc(c.display || c.label) + "</b>" + tag +
-    (active ? '<span class="tag t-ai">当前</span>' : "") +
-    (c.profile_fields && c.profile_fields.seq ?
-      '<span class="muted">#' + esc(c.profile_fields.seq) + "</span>" : "") +
-    '<span class="muted">' + esc(c.label) + "@" + esc(c.port) + "</span></div>";
-  html += '<div class="kv">';
-  // 学校/专业/年级/学号：只显示填了的，全空就不占一行（避免一张卡全是「—」）
-  const pf = c.profile_fields || {};
-  const profileParts = [pf.school, pf.major, pf.grade, pf.student_id]
-    .map((v) => String(v || "").trim()).filter(Boolean);
-  if (profileParts.length) {
-    html += acctRow("学校/专业", esc(profileParts.join(" · ")));
-  }
-  // 自定义字段：原样显示（用户自己加的键值）
-  const cf = c.custom_fields || {};
-  const cfParts = Object.keys(cf).filter((k) => String(cf[k] || "").trim() !== "")
-    .map((k) => esc(k) + "=" + esc(cf[k]));
-  if (cfParts.length) {
-    html += acctRow("自定义", esc(cfParts.join(" · ")));
-  }
-  const secLim = Number(lim.sections) || 0;
-  html += acctRow("今日", "<b>" + esc(t.sections || 0) + "</b> / " +
-    (secLim > 0 ? esc(secLim) : "不限") + " 节 · " + esc(t.minutes || 0) + " / " +
-    (Number(lim.minutes) > 0 ? esc(lim.minutes) : "不限") + " 分");
-  html += acctRow("端口", c.port_alive ? '<span class="tag t-done">活着</span>'
-    : '<span class="tag t-none">未监听</span>');
-  html += acctRow("登录", snap.saved
-    ? "快照 " + esc(snap.at || "") + " · " + esc(snap.cookies || 0) + " 条"
-    : '<span class="muted">无快照</span>' + (c.credentials ? " · 有凭据" : " · 无凭据"));
-  html += acctRow("课程", sec.total
-    ? esc(c.course || "（未命名课程）") + " · " + esc(sec.done) + "/" + esc(sec.total) +
-      " 节 · 读于 " + esc(sec.read_at || "?") +
-      (c.courses_cached > 1 ? ' <span class="muted">（共 ' + esc(c.courses_cached) +
-        " 门课有缓存）</span>" : "")
-    : '<span class="muted">还没读过节列表</span>');
-  html += "</div>";
-  // 卡内动作：点它们不能连带触发“切账号”，所以 stopPropagation
-  html += '<div class="acct-actions" onclick="event.stopPropagation()">';
+  const sub = [pf.school, pf.major, pf.grade].map((v) => String(v || "").trim())
+    .filter(Boolean).join(" · ");
+  let html = '<tr class="' + (active ? "cur " : "") + (c.enabled ? "" : "off") +
+    '" data-label="' + esc(c.label) + '">';
+  html += '<td><input type="checkbox" class="acct-pick"' +
+    (SEL.has(c.label) ? " checked" : "") + ' data-label="' + esc(c.label) + '"></td>';
+  html += '<td class="num muted">' + esc(pf.seq || "") + "</td>";
+  html += '<td class="c-name"><b>' + esc(c.display || c.label) + "</b>" +
+    (sub ? '<span class="sub" title="' + esc(sub) + '">' + esc(sub) + "</span>" : "") +
+    "</td>";
+  html += '<td>' + esc(c.port) + " " + (c.port_alive
+    ? '<span class="tag t-done">活</span>' : '<span class="tag t-none">停</span>') + "</td>";
+  html += "<td>" + acctStatusTag(c) + "</td>";
+  html += '<td class="c-today"><b>' + esc(t.sections || 0) + "</b>/" +
+    (secLim > 0 ? esc(secLim) : "不限") + " 节 " +
+    miniBar(Number(t.sections) || 0, secLim > 0 ? secLim : Math.max(1, Number(t.sections) || 1)) +
+    '<span class="muted"> ' + esc(Math.round(Number(t.minutes) || 0)) + " 分</span></td>";
+  html += '<td class="muted">' + (sec.total
+    ? esc(sec.done) + "/" + esc(sec.total) + " 节"
+    : "—") + "</td>";
+  html += '<td class="muted">' + (snap.saved ? esc((snap.at || "").slice(5, 16)) : "无快照") +
+    (c.credentials ? "" : ' <span class="tag t-low">无凭据</span>') + "</td>";
+  // 操作列：按钮自己处理点击；行点击由下面的委托统一管（见 #accounts 的 click 监听）
+  html += '<td class="c-ops">';
   if (c.job) {
-    html += '<button class="danger" onclick="stopJob(\'' + esc(c.label) +
+    html += '<button class="mini danger" onclick="stopJob(\'' + esc(c.label) +
       '\')">停止</button>';
   } else if (!c.enabled) {
-    html += '<button disabled title="账号表里 enabled=false（不参与调度）；要跑就先点「启用」">已停用</button>';
+    html += '<button class="mini" disabled title="账号已停用；先点「启用」">已停用</button>';
   } else if (!c.port_alive) {
-    html += '<button disabled title="先点下面「启动浏览器」，按钮才会亮">浏览器没开</button>';
+    html += '<button class="mini" disabled title="先点上方「启动浏览器」">浏览器没开</button>';
   } else if (left <= 0) {
-    html += '<button disabled title="今日额度已用完（账本按账号统计）">额度已用完</button>';
+    html += '<button class="mini" disabled title="今日额度已用完（账本按账号统计）">额度用完</button>';
   } else {
     const n = left === Infinity ? 3 : Math.min(3, left);
-    html += '<button class="primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
-      ')" title="今日还剩 ' + (left === Infinity ? "不限" : left) + ' 节，本次先跑 ' + n +
-      ' 节">开始学习（' + n + " 节）</button>";
+    html += '<button class="mini primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
+      ')" title="今日还剩 ' + (left === Infinity ? "不限" : left) + ' 节">学习 ' + n +
+      " 节</button>";
   }
-  if (!active) {
-    html += '<button onclick="pick(\'' + esc(c.label) + '\')">详情</button>';
-  }
-  // 刷新节列表放到卡上（台账 B8）：以前只有节进度区块头有，多账号时要先切账号再点
   html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) + "','" +
-    esc(c.course_value || "") +
-    '\')" title="重新读这个账号的整个课程（含翻页），约 1 分钟">刷新节列表</button>';
-  // 管理：编辑 / 启停 / 删除（都不切账号）
+    esc(c.course_value || "") + '\')" title="重读这门课的节列表（约 1 分钟）">刷新</button>';
   html += '<button class="mini" onclick="openAccount(\'' + esc(c.label) +
-    '\')" title="改端口 / 日额度 / 显示名 / 凭据">✎ 编辑</button>';
+    '\')" title="改端口 / 日额度 / 学校等 / 凭据">✎</button>';
   html += '<button class="mini" onclick="toggleAccount(\'' + esc(c.label) + "'," +
     (c.enabled ? "false" : "true") + ')" title="' +
-    (c.enabled ? "停用后不参与调度（手动仍可跑）" : "重新启用") + '">' +
+    (c.enabled ? "停用（不参与调度）" : "重新启用") + '">' +
     (c.enabled ? "停用" : "启用") + "</button>";
   html += '<button class="mini danger" onclick="deleteAccount(\'' + esc(c.label) +
-    '\')" title="只删账号表里这一条，登录态快照与 profile 目录保留">删除</button>';
-  html += "</div></div>";
+    '\')" title="只删账号表里这一条，快照与 profile 保留">删除</button>';
+  html += "</td></tr>";
   return html;
+}
+
+function renderBatchBar(shown) {
+  const box = el("acct-batch");
+  if (!box) return;
+  const n = SEL.size;
+  if (!n) {
+    box.innerHTML = '<span class="muted">勾选左侧复选框可批量操作（' +
+      shown.length + " 个账号可见）</span>";
+    return;
+  }
+  box.innerHTML = '<b>已选 ' + n + ' 个</b>' +
+    '<button class="mini primary" onclick="batchAction(\'start\')">开始学习</button>' +
+    '<button class="mini" onclick="batchAction(\'stop\')">停止</button>' +
+    '<button class="mini" onclick="batchAction(\'enable\')">启用</button>' +
+    '<button class="mini" onclick="batchAction(\'disable\')">停用</button>' +
+    '<button class="mini danger" onclick="batchAction(\'delete\')">删除</button>' +
+    '<button class="mini" onclick="clearSel()">取消选择</button>';
 }
 
 function renderAccounts(state) {
   const cards = state.cards || [];
-  el("accounts-meta").textContent = cards.length > 1 ? cards.length + " 个账号" : "";
-  let html = "";
-  // 多账号时先给一行「合计」：单看每张卡无法回答“今天总共学了多少”
-  if (cards.length > 1) {
-    const tot = cards.reduce((a, c) => {
-      const t = c.today || {}, lim = c.limits || {};
-      a.sections += Number(t.sections) || 0;
-      a.minutes += Number(t.minutes) || 0;
-      if (!c.enabled) a.off += 1;
-      else if (c.job) a.running += 1;
-      else if (Number(lim.sections) > 0 && t.left_sections === 0) a.full += 1;
-      return a;
-    }, { sections: 0, minutes: 0, off: 0, running: 0, full: 0 });
-    html += '<div class="row" style="margin-bottom:10px">' +
+  const accounts = state.accounts || [];
+  const shown = visibleCards(state);
+  el("accounts-meta").textContent = cards.length
+    ? (shown.length === cards.length ? cards.length + " 个账号"
+       : shown.length + " / " + cards.length + " 个账号")
+    : "";
+  renderBatchBar(shown);
+
+  // 选中集合里已不存在的账号（被删了）要清掉，否则批量会带着幽灵代号去请求
+  for (const lab of [...SEL]) {
+    if (!cards.some((c) => c.label === lab)) SEL.delete(lab);
+  }
+
+  if (!cards.length) {
+    el("accounts").innerHTML = '<div class="empty">还没有账号——点右上角「＋ 新增账号」，' +
+      "或检查 data/accounts.local.json / data/account.local.json。</div>";
+    return;
+  }
+  if (!shown.length) {
+    el("accounts").innerHTML = '<div class="empty">没有符合筛选条件的账号——' +
+      "点「清空」恢复全部。</div>";
+    return;
+  }
+
+  // 多账号时给一行「合计」：单看每行无法回答"今天总共学了多少"
+  const tot = shown.reduce((a, c) => {
+    const t = c.today || {}, lim = c.limits || {};
+    a.sections += Number(t.sections) || 0;
+    a.minutes += Number(t.minutes) || 0;
+    a[acctStatus(c)] = (a[acctStatus(c)] || 0) + 1;
+    return a;
+  }, { sections: 0, minutes: 0, off: 0, running: 0, full: 0, idle: 0 });
+  let head = "";
+  if (shown.length > 1 || cards.length > 1) {
+    head = '<div class="row" style="margin-bottom:8px">' +
       '<span class="tag t-ai">合计 ' + tot.sections + " 节 · " +
       Math.round(tot.minutes) + " 分钟</span>" +
-      '<span class="tag t-learn">运行中 ' + tot.running + "</span>" +
-      '<span class="tag t-none">空闲 ' + (cards.length - tot.running - tot.off) + "</span>" +
+      '<span class="tag t-learn">运行中 ' + (tot.running || 0) + "</span>" +
+      '<span class="tag t-none">空闲 ' + (tot.idle || 0) + "</span>" +
       (tot.full ? '<span class="tag t-low">额度用完 ' + tot.full + "</span>" : "") +
       (tot.off ? '<span class="tag t-none">停用 ' + tot.off + "</span>" : "") +
-      '<span class="muted">额度按账号合计；多门课共用一个池子</span></div>';
+      "</div>";
   }
-  html += cards.length
-    ? '<div class="cards">' + cards.map(c => acctCard(c, state.label)).join("") + "</div>"
-    : '<div class="empty">还没有账号——点右上角「＋ 新增账号」，或检查 ' +
-      "data/accounts.local.json / data/account.local.json。</div>";
+  const allChecked = shown.length > 0 && shown.every((c) => SEL.has(c.label));
+  const rows = shown.map((c) => acctTr(
+    c, accounts.find((a) => a.label === c.label) || null, state.label)).join("");
+  let html = head + '<div class="table-wrap" style="max-height:none">' +
+    '<table class="acct-tbl"><thead><tr>' +
+    '<th style="width:30px"><input type="checkbox" id="acct-all"' +
+    (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
+    '<th class="num" style="width:38px">#</th>' +
+    "<th>账号</th>" +
+    '<th style="width:84px">端口</th>' +
+    '<th style="width:92px">状态</th>' +
+    '<th style="width:150px">今日</th>' +
+    '<th style="width:92px">课程</th>' +
+    '<th style="width:120px">登录</th>' +
+    '<th style="width:260px">操作</th>' +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
   if (!state.accounts_file) {
     html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
       "（data/account.local.json）。点「＋ 新增账号」会自动建 data/accounts.local.json，" +
       "一条账号一个 port / profile。</div>";
   }
-  const mine = (state.jobs || []).find(j => j.label === state.label);
+  const mine = (state.jobs || []).find((j) => j.label === state.label);
   if (mine && mine.tail && mine.tail.length) {
     html += "<pre>" + esc(mine.tail.join("\n")) + "</pre>";
   }
   el("accounts").innerHTML = html;
 }
+
+// ---------------------------------------------------------------- 悬停详情
+// 鼠标划到行上 → 浮层出现在行右侧（空间不够就放左侧）；移开自动隐藏。
+// 浮层 `pointer-events:none`：它不拦鼠标，所以"移开行"一定触发 mouseout，不会卡住。
+function acctDetailHtml(c, accRow) {
+  const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
+  const snap = c.snapshot || {};
+  const pf = (accRow && accRow.profile_fields) || {};
+  const cf = (accRow && accRow.custom_fields) || {};
+  const L = (k, v) => v === undefined || v === null || String(v).trim() === "" ? ""
+    : '<div><span class="dk">' + esc(k) + "</span>" + esc(v) + "</div>";
+  let h = '<div><b>' + esc(c.display || c.label) + "</b>" +
+    '<span class="dk" style="margin-left:8px">' + esc(c.label) + "@" + esc(c.port) +
+    "</span></div>";
+  h += '<div class="sep"></div>';
+  h += L("序号", pf.seq) + L("学校", pf.school) + L("专业", pf.major) +
+    L("年级", pf.grade) + L("学号", pf.student_id);
+  const cfKeys = Object.keys(cf).filter((k) => String(cf[k] || "").trim() !== "");
+  if (cfKeys.length) {
+    h += '<div class="sep"></div>' +
+      cfKeys.map((k) => L(k, cf[k])).join("");
+  }
+  h += '<div class="sep"></div>';
+  h += L("今日", (t.sections || 0) + " / " + (Number(lim.sections) > 0 ? lim.sections : "不限") +
+    " 节 · " + Math.round(Number(t.minutes) || 0) + " / " +
+    (Number(lim.minutes) > 0 ? lim.minutes : "不限") + " 分");
+  h += L("课程", sec.total ? (c.course || "未命名") + " " + sec.done + "/" + sec.total +
+    " 节（读于 " + (sec.read_at || "?") + "）" : "还没读过节列表");
+  h += L("登录快照", snap.saved ? (snap.at || "") + " · " + (snap.cookies || 0) + " 条"
+    : "无");
+  h += L("账号密码", c.credentials ? "已配置（可自动重登）" : "未配置（掉线即停）");
+  h += L("凭据文件", "data/accounts.local.json");
+  if (c.job) h += L("正在跑", c.job.kind + " · 起于 " + c.job.since);
+  return h;
+}
+
+function showAcctDetail(label) {
+  const box = el("acct-detail");
+  const row = document.querySelector('tr[data-label="' + label + '"]');
+  if (!box || !row) return;
+  const c = ((STATE && STATE.cards) || []).find((x) => x.label === label);
+  if (!c) return;
+  const accRow = ((STATE && STATE.accounts) || []).find((a) => a.label === label) || null;
+  box.innerHTML = acctDetailHtml(c, accRow);
+  box.hidden = false;
+  const r = row.getBoundingClientRect();
+  const bw = box.offsetWidth, bh = box.offsetHeight;
+  let x = r.right + 10;
+  if (x + bw > window.innerWidth - 8) x = Math.max(8, r.left - bw - 10);
+  let y = r.top;
+  if (y + bh > window.innerHeight - 8) y = Math.max(8, window.innerHeight - bh - 8);
+  box.style.left = x + "px";
+  box.style.top = y + "px";
+}
+
+function hideAcctDetail() {
+  const box = el("acct-detail");
+  if (box) box.hidden = true;
+}
+
+// ---------------------------------------------------------------- 选择 / 筛选 / 批量
+function syncSel() {
+  const shown = visibleCards(STATE || {});
+  renderBatchBar(shown);
+  const all = el("acct-all");
+  if (all) all.checked = shown.length > 0 && shown.every((c) => SEL.has(c.label));
+}
+
+function clearSel() {
+  SEL.clear();
+  load();
+}
+
+async function batchAction(action) {
+  const labels = [...SEL];
+  if (!labels.length) return;
+  const CN = { start: "开始学习", stop: "停止", enable: "启用",
+               disable: "停用", delete: "删除" };
+  if (action === "delete") {
+    if (!confirm("删除选中的 " + labels.length + " 个账号？\n\n" +
+      labels.join("、") + "\n\n只删账号表里这些条目；登录态快照与 profile 目录会保留。")) {
+      return;
+    }
+  } else if (!confirm("对选中的 " + labels.length + " 个账号执行「" +
+      CN[action] + "」？")) {
+    return;
+  }
+  const body = { labels: labels, action: action, confirm: true };
+  if (action === "start") body.max_sections = 3;
+  const data = await apiPost("/api/accounts/batch", body);
+  toast(data.message || data.error || "已提交", !data.ok);
+  if (data.ok && action === "delete") SEL.clear();
+  load();
+}
+
+function quickFilter(kind) {
+  const s = el("acct-status"), p = el("acct-port"), c = el("acct-cred");
+  if (s) s.value = ""; if (p) p.value = ""; if (c) c.value = "";
+  if (kind === "running" && s) s.value = "running";
+  else if (kind === "full" && s) s.value = "full";
+  else if (kind === "dead" && p) p.value = "dead";
+  else if (kind === "noconf" && c) c.value = "no";
+  readFilter();
+  load();
+}
+
+function clearFilter() {
+  const q = el("acct-q");
+  if (q) q.value = "";
+  for (const id of ["acct-status", "acct-port", "acct-cred"]) {
+    const e = el(id);
+    if (e) e.value = "";
+  }
+  readFilter();
+  load();
+}
+
+function readFilter() {
+  FILTER.q = (el("acct-q") || {}).value || "";
+  FILTER.status = (el("acct-status") || {}).value || "";
+  FILTER.port = (el("acct-port") || {}).value || "";
+  FILTER.cred = (el("acct-cred") || {}).value || "";
+}
+
 
 function pick(label) {
   if (!label || label === LABEL) return;
@@ -999,6 +1254,7 @@ async function load() {
     const state = await r.json();
     STATE = state;
     LABEL = state.label || "";
+    readFilter();                 // 工具栏是静态的，每次重绘前把筛选条件读回来
     renderAccountsSelect(state);
     renderAccounts(state);
     renderBrowser(state);
@@ -1018,6 +1274,52 @@ el("sections").addEventListener("toggle", (e) => {
   if (d) SEC_OPEN[d.dataset.blk] = d.open;
 }, true);
 el("account").addEventListener("change", (e) => { LABEL = e.target.value; load(); });
+
+// ---------------------------------------------------------------- 账号表：事件绑定
+// 全部用**事件委托**挂在 #accounts 上：表格每 4 秒整块重绘，直接绑到行/按钮上会随重绘丢失。
+// ⚠ 行点击也走这里（不在 <tr> 上写 onclick）——否则行内复选框的点击会先冒泡到 <tr>
+//    触发"切账号"，或者为了挡它而在 <td> 上加 stopPropagation，反过来把这里的委托也挡掉。
+el("accounts").addEventListener("click", (e) => {
+  const all = e.target.closest("#acct-all");
+  if (all) {                                     // 全选 / 全不选（只影响"当前可见"）
+    const shown = visibleCards(STATE || {});
+    if (all.checked) shown.forEach((c) => SEL.add(c.label));
+    else shown.forEach((c) => SEL.delete(c.label));
+    renderAccounts(STATE || {});
+    return;
+  }
+  const cb = e.target.closest(".acct-pick");
+  if (cb) {                                      // 单行勾选
+    const lab = cb.dataset.label;
+    if (cb.checked) SEL.add(lab); else SEL.delete(lab);
+    renderBatchBar(visibleCards(STATE || {}));
+    const all2 = el("acct-all");
+    const shown = visibleCards(STATE || {});
+    if (all2) all2.checked = shown.length > 0 && shown.every((c) => SEL.has(c.label));
+    return;
+  }
+  if (e.target.closest("button")) return;        // 行内按钮（学习/停止/✎/删除…）自己处理
+  const tr = e.target.closest("tr[data-label]");
+  if (tr) pick(tr.dataset.label);                // 点行的空白处 = 切换账号
+});
+el("accounts").addEventListener("mouseover", (e) => {
+  const tr = e.target.closest("tr[data-label]");
+  if (tr) showAcctDetail(tr.dataset.label);
+});
+el("accounts").addEventListener("mouseout", (e) => {
+  const tr = e.target.closest("tr[data-label]");
+  if (tr) hideAcctDetail();
+});
+// 表格本身滚走 / 页面切走时把浮层收掉，免得留在原地
+el("accounts").addEventListener("scroll", hideAcctDetail, true);
+window.addEventListener("scroll", hideAcctDetail, true);
+
+// 工具栏（静态 DOM，不随轮询重绘，所以搜索框不会掉焦点）
+el("acct-q").addEventListener("input", () => { readFilter(); renderAccounts(STATE || {}); });
+for (const id of ["acct-status", "acct-port", "acct-cred"]) {
+  el(id).addEventListener("change", () => { readFilter(); renderAccounts(STATE || {}); });
+}
+
 setInterval(load, 4000);
 load();
 </script>

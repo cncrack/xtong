@@ -69,31 +69,97 @@ class TestSectionsLayout(unittest.TestCase):
         self.assertIn("#ops td:nth-child(-n+3){white-space:nowrap}", PAGE)
 
 
-class TestAccountCards(unittest.TestCase):
-    """多账号总览卡片（点卡片 = 把下面四个区块切到该账号）。"""
+class TestAccountTable(unittest.TestCase):
+    """账号表格（用户 2026-10-30 提议：表格 + 多选批量 + 搜索筛选，替代卡片）。
 
-    def test_card_grid_and_current_highlight_styles(self):
-        self.assertIn(".cards{display:grid", PAGE)
-        self.assertIn(".acct.cur{", PAGE)          # 当前账号要能一眼看出来
+    为什么改：卡片每张 ~222px 高，20 个账号要 2300px；表格每行 ~44px、20 个约 1040px，
+    能在固定区滚动，而且列对齐才能横向比较。
+    """
 
-    def test_card_renders_into_accounts_slot(self):
-        self.assertIn("function acctCard(", PAGE)
+    def test_table_present_and_current_row_highlighted(self):
+        self.assertIn("table.acct-tbl", PAGE)
+        self.assertIn("table.acct-tbl tbody tr.cur{", PAGE)   # 当前账号一眼看出
+        self.assertIn("function acctTr(", PAGE)
         self.assertIn('el("accounts").innerHTML', PAGE)
         self.assertIn("state.cards || []", PAGE)
 
-    def test_card_actions_do_not_also_switch_account(self):
-        # 卡片整体 onclick 切账号；卡内按钮若冒泡就会“点停止→顺手切账号”
-        self.assertIn('class="acct-actions" onclick="event.stopPropagation()"', PAGE)
+    def test_row_actions_do_not_also_switch_account(self):
+        # 行点击（切账号）与行内按钮/复选框都在**同一个委托**里分流：
+        # 按钮先判 `closest("button")` 直接 return，复选框走勾选分支，剩下才 pick。
+        # ⚠ 早期版本在 <td> 上写 stopPropagation 挡冒泡，结果把委托自己也挡掉了（多选失灵）。
+        self.assertIn('class="c-ops"', PAGE)
+        self.assertIn('class="acct-pick"', PAGE)
+        self.assertIn('if (e.target.closest("button")) return;', PAGE)
+        self.assertNotIn('class="c-ops" onclick="event.stopPropagation()"', PAGE)
 
     def test_switching_account_forces_sections_rebuild(self):
-        # 两个账号的数据签名可能撞车，靠 state.label 参与签名不可能完全区分
-        # （read_at/行数/完成数都一样时）→ 切账号时直接清签名强制重建
+        # 两个账号的数据签名可能撞车 → 切账号时直接清签名强制重建
         self.assertIn("SEC_SIG = \"\";", PAGE)
         self.assertIn("function pick(", PAGE)
 
-    def test_card_buttons_present(self):
-        for fn in ("function startStudy(", "function stopJob("):
+    def test_row_buttons_present(self):
+        for fn in ("function startStudy(", "function stopJob(", "function refreshSectionsFor("):
             self.assertIn(fn, PAGE)
+
+    # ---------------------------------------------------------------- 多选与批量
+
+    def test_multi_select_survives_poll_rebuild(self):
+        """选中集合必须记在 JS 里：表格每 4 秒整块重绘，靠 DOM 会丢。"""
+        self.assertIn("const SEL = new Set()", PAGE)
+        self.assertIn('closest(".acct-pick")', PAGE)
+        self.assertIn('id="acct-all"', PAGE)          # 表头全选
+
+    def test_batch_actions_cover_all_five(self):
+        """用户要求批量：开始/停止/启用/停用/删除。"""
+        for act in ("start", "stop", "enable", "disable", "delete"):
+            self.assertIn("batchAction(\\'" + act + "\\')", PAGE)
+        self.assertIn("/api/accounts/batch", PAGE)
+
+    def test_batch_delete_asks_twice(self):
+        # 批量删除不可逆：前端先 confirm，后端再要 confirm 标记
+        self.assertIn("删除选中的 ", PAGE)
+        self.assertIn("confirm: true", PAGE)
+
+    # ---------------------------------------------------------------- 搜索与筛选
+
+    def test_search_and_filters_present(self):
+        for eid in ("acct-q", "acct-status", "acct-port", "acct-cred"):
+            self.assertIn('id="' + eid + '"', PAGE)
+        self.assertIn("function visibleCards(", PAGE)
+        self.assertIn("function readFilter(", PAGE)
+
+    def test_search_covers_profile_and_custom_fields(self):
+        """搜索要能搜学校/专业/年级/学号/自定义字段，不只搜名字。"""
+        self.assertIn("function acctSearchText(", PAGE)
+        for key in ("pf.school", "pf.major", "pf.grade", "pf.student_id"):
+            self.assertIn(key, PAGE)
+        self.assertIn("Object.values(cf).join", PAGE)
+
+    def test_quick_filter_chips_and_clear(self):
+        self.assertIn("function quickFilter(", PAGE)
+        self.assertIn("function clearFilter(", PAGE)
+        self.assertIn("quickFilter('running')", PAGE)
+        self.assertIn("quickFilter('noconf')", PAGE)
+
+    def test_toolbar_is_static_so_search_keeps_focus(self):
+        """工具栏放在轮询重绘的容器**外面**，否则每 4 秒搜索框掉一次焦点。"""
+        i_tools = PAGE.index('class="acct-tools"')
+        i_slot = PAGE.index('<div id="accounts"></div>')
+        self.assertLess(i_tools, i_slot)
+
+    # ---------------------------------------------------------------- 悬停详情
+
+    def test_hover_detail_panel(self):
+        self.assertIn('id="acct-detail"', PAGE)
+        self.assertIn("function showAcctDetail(", PAGE)
+        self.assertIn("function hideAcctDetail(", PAGE)
+        # 浮层不拦鼠标 → 移开一定触发 mouseout，不会卡住
+        self.assertIn("pointer-events:none", PAGE)
+
+    def test_hover_uses_event_delegation(self):
+        """表格每 4 秒重绘，事件必须委托在容器上，直接绑行会随重绘丢失。"""
+        self.assertIn('el("accounts").addEventListener("mouseover"', PAGE)
+        self.assertIn('el("accounts").addEventListener("mouseout"', PAGE)
 
 
 class TestTypography(unittest.TestCase):
@@ -108,35 +174,33 @@ class TestTypography(unittest.TestCase):
         self.assertIn("table{width:100%;border-collapse:collapse;font-size:14px}", PAGE)
 
     def test_key_numbers_are_emphasized(self):
-        self.assertIn(".kv .v b{font-size:16px", PAGE)      # 卡片里的“今日 x 节”
+        self.assertIn("table.acct-tbl td.c-today b{font-size:15px", PAGE)  # 今日节数
         self.assertIn(".bar .lab b{", PAGE)                # 进度条上的完成数
         self.assertIn("'</span><span><b>'", PAGE)
 
-    def test_account_cards_fill_the_row_when_few(self):
-        # auto-fill 会在账号少时留下空轨道，卡片只占左边一小块（实测 1 个账号时只占 1/3 宽）
-        self.assertIn("repeat(auto-fit,minmax(280px,1fr))", PAGE)
-        self.assertNotIn("repeat(auto-fill,minmax(320px,1fr))", PAGE)
-
-    def test_kv_key_column_is_fixed_so_cards_align(self):
-        self.assertIn("grid-template-columns:64px 1fr", PAGE)
+    def test_table_columns_are_aligned(self):
+        # 表格的价值就在列对齐：今日数字用等宽数字、操作列右对齐不折行
+        self.assertIn("table.acct-tbl td.c-today b{font-size:15px", PAGE)
+        self.assertIn("table.acct-tbl td.c-ops{white-space:nowrap", PAGE)
 
 
 class TestLayoutBalance(unittest.TestCase):
-    """左右两列的高度平衡（用户 2026-10-30：“账号多了左边变长、右边不动，很不协调”）。
+    """账号区的空间占用（用户 2026-10-30 两次追问）。
 
-    实测（1440 宽、注入假账号）：
-    - 修前：6 个账号 → 左 1512px / 右 396px，**差 1116px**，文档 2232px；
-    - 修后：左 = 右（差 0），文档稳定在 ~1500px。
+    第一轮问题：卡片视图下账号多了左边一直变长、右边浏览器区不动 → 实测 6 个账号差 1116px。
+    第二轮方案（用户提议）：**账号区改成表格**——表格行矮且能滚动，问题从根上消失，
+    所以原来那套"两列等高"的补丁不再需要（`align-items:stretch` 与 6+6 已撤掉）。
     """
 
-    def test_two_columns_stretch_to_equal_height(self):
-        # `align-items:stretch` 让同一行两张卡等高，右侧不再空一大片
-        self.assertIn("main{align-items:stretch}", PAGE)
-
-    def test_both_columns_capped_so_page_does_not_grow_forever(self):
+    def test_accounts_area_capped_so_page_does_not_grow_forever(self):
         # 账号特别多时在卡内滚动，而不是把整页拉到 2000px+
         self.assertIn("max-height:calc(100vh - 120px)", PAGE)
-        self.assertIn("#sec-accounts>#accounts,#sec-browser>#browser{overflow:auto", PAGE)
+        self.assertIn("#sec-accounts>#accounts{overflow:auto", PAGE)
+
+    def test_accounts_table_takes_full_width(self):
+        # 表格 9 列约 940px，挤到 6 栏（600px）会折行 → 整行独占
+        self.assertNotIn("#sec-accounts{grid-column:span 6}", PAGE)
+        self.assertIn("#sec-accounts{max-height:calc(100vh - 120px)", PAGE)
 
     def test_browser_card_is_compact(self):
         # 原来 6 行竖表把浏览器卡撑到 396px；改成短项并排 + 长项单行截断
@@ -155,11 +219,12 @@ class TestAccountAdminUI(unittest.TestCase):
         self.assertIn("function openAccount(", PAGE)
         self.assertIn("function saveAccount(", PAGE)
 
-    def test_card_has_edit_toggle_delete_buttons(self):
+    def test_row_has_edit_toggle_delete_buttons(self):
         for fn in ("openAccount(", "toggleAccount(", "deleteAccount("):
-            self.assertIn(fn, PAGE, f"卡片上缺 {fn} 入口")
-        self.assertIn("✎ 编辑", PAGE)
-        self.assertIn("✎ 编辑</button>", PAGE)
+            self.assertIn(fn, PAGE, f"账号行缺 {fn} 入口")
+        # 表格列窄，按钮文案压到最短：✎ / 停用 / 删除
+        self.assertIn('title="改端口 / 日额度 / 学校等 / 凭据">✎</button>', PAGE)
+        self.assertIn('"停用（不参与调度）"', PAGE)
 
     def test_password_is_never_prefilled(self):
         # 面板拿不到密码（后端只回布尔），回填等于自欺；这里钉死“永远清空”
