@@ -145,6 +145,29 @@ class TestAccountCards(unittest.TestCase):
         self.assertEqual(self._cards()[1]["sections"],
                          {"done": 0, "total": 0, "read_at": ""})
 
+    # ---------------------------------------------------------------- 序号兜底
+    def test_seq_falls_back_without_collision_and_without_writing(self):
+        """老账号（从单账号文件迁移的 `default`）没有 seq，表格 `#` 列不能空着。
+
+        三条约束：
+        ① 兜底值**不能与用户手填的序号撞车**（实测踩过：`default` 兜底成 1，
+           而夹具里 `yi` 手填 1 → 两行都显示 #1）；
+        ② 只算**显示值、不写盘**（写盘会把"看一眼"变成"改数据"）；
+        ③ 用户手填的序号不许被覆盖。
+        """
+        p = self.root / "data" / "accounts.local.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["accounts"][1]["seq"] = 1          # yi 手填 1
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        rows = self.client.get("/api/state").json()["accounts"]
+        seqs = [r["profile_fields"]["seq"] for r in rows]
+        self.assertEqual(rows[1]["profile_fields"]["seq"], 1)   # 手填的保留
+        self.assertEqual(len(set(seqs)), len(seqs), f"序号重复：{seqs}")
+        # 文件里仍然没有给 jia 写入 seq（证明没写盘）
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        self.assertNotIn("seq", raw["accounts"][0])
+
     # ---------------------------------------------------------------- B1：按课程分文件
     def test_legacy_cache_still_readable(self):
         """升级前的老文件 `sections_<代号>.json` 必须还能读到，不能“升级即空白”。"""

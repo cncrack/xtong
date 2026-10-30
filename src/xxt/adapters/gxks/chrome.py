@@ -20,9 +20,15 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import selectors
+
+#: **绕过系统代理**的 opener：本机 `127.0.0.1` 永远不该走代理。
+#: 不加这个的话，系统代理（v2rayN/xray）开着时 `urllib` 会把本机探活也发给代理，
+#: 每次都卡满 timeout（2026-10-30 实测：`/api/state` 从 ~30ms 变成 6078ms）。
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # 与 `core/stealth.py::LAUNCH_ARGS` 保持同一口径：只去掉自动化开关，不动别的
 #
@@ -97,14 +103,50 @@ def launch_argv(chrome: str | Path, *, port: int, profile: str | Path,
     return argv
 
 
-def port_alive(port: int, *, timeout: float = 1.0) -> bool:
-    """调试端口是否活着。只打 `127.0.0.1`，**不访问平台**（零外网请求）。"""
+def port_alive(port: int, *, timeout: float = 0.5) -> bool:
+    """调试端口是否活着。只打 `127.0.0.1`，**不访问平台**（零外网请求）。
+
+    两件实测出来的事：
+
+    ① **必须显式绕过系统代理**：系统代理（v2rayN/xray）开着时，`urllib` 默认会把
+       `http://127.0.0.1:<port>/...` **也发给代理**。本机地址永远不该走代理。
+    ② **不能假设"已关闭端口会被立刻拒绝"**：本机实测 `connect(127.0.0.1, 已关闭端口)`
+       是 **TimeoutError（约 1 秒）**，不是 ConnectionRefused —— 回环包被防火墙规则
+       （`codex_sandbox_offline_block_loopback_tcp` 等全局 Block）丢掉了。
+       所以单次探测最坏就是**一个 timeout**，默认取 0.5 秒
+       （活着的 CDP 端口在本机是 0.0ms 握手 + 几十 ms 响应，0.5s 足够宽松）。
+    """
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/json/version",
-                                    timeout=timeout) as resp:
+        with _DIRECT.open(f"http://127.0.0.1:{int(port)}/json/version",
+                          timeout=timeout) as resp:
             return resp.status == 200
     except Exception:                                      # noqa: BLE001  连不上就是没起
         return False
+
+
+def ports_alive(ports: list[int], *, timeout: float = 0.5) -> dict[int, bool]:
+    """**并发**探活多个端口，返回 `{端口: 是否活着}`。
+
+    为什么必须并发：单次探测最坏是一个 timeout（见 `port_alive` 的 ②），
+    串行时 N 个账号就是 N × timeout —— 实测 5 个账号把 `/api/state` 拖到 **6078ms**，
+    而面板每 4 秒轮询一次，界面等于一直在等。
+    并发后总耗时约等于**一次** timeout，账号再多也不会线性变慢。
+    """
+    uniq = sorted({int(p) for p in ports})
+    if not uniq:
+        return {}
+    if len(uniq) == 1:
+        return {uniq[0]: port_alive(uniq[0], timeout=timeout)}
+    out: dict[int, bool] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
+        futures = {pool.submit(port_alive, p, timeout=timeout): p for p in uniq}
+        for fut in as_completed(futures):
+            port = futures[fut]
+            try:
+                out[port] = bool(fut.result())
+            except Exception:                              # noqa: BLE001
+                out[port] = False
+    return out
 
 
 def wait_alive(port: int, seconds: float = 20.0, interval: float = 0.5) -> bool:

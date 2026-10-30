@@ -25,16 +25,20 @@ import urllib.request
 API = "http://127.0.0.1:8300"
 SHOW = ("school", "dept", "cls")  # 只回显这三项（学号等属个人信息，不回显）
 
+# 打的是**本机**面板，必须绕过系统代理：代理（v2rayN/xray）开着时 `urllib` 会把
+# `http://127.0.0.1:...` 也发给代理，每次调用白等 timeout（本文件是 20 秒）。
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=20) as r:
+    with _DIRECT.open(url, timeout=20) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def _post(url: str, timeout: int = 180) -> dict:
     req = urllib.request.Request(url, method="POST", data=b"{}",
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _DIRECT.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 

@@ -24,7 +24,6 @@ import argparse
 import os
 import subprocess
 import sys
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -32,21 +31,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
+from xxt.adapters.gxks import chrome as gchrome  # noqa: E402
 from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 
 RUN_SCRIPT = ROOT / "scripts" / "run_gxks.py"
 CHROME_HINT = ('chrome.exe --remote-debugging-port={port} '
                '--user-data-dir="{profile}"')
 
-
-def port_alive(port: int, timeout: float = 2.0) -> bool:
-    """CDP 端口是否在线（只读 `/json/version`，不碰页面）。"""
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version",
-                                    timeout=timeout) as r:
-            return 200 <= getattr(r, "status", 200) < 300
-    except Exception:                                      # noqa: BLE001
-        return False
+# 端口探活统一用 `gchrome.port_alive`：这里原来有一份自己的副本，
+# 而它**没绕过系统代理** —— 代理开着时每个账号白等 2 秒超时（5 个账号 10 秒）。
+# 一处定义、多处复用，才不会再出现"改了一边忘了另一边"。
+port_alive = gchrome.port_alive
 
 
 def run_one(acc: gaccounts.Account, *, course: int | None, max_sections: int,

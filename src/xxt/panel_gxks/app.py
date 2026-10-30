@@ -147,10 +147,28 @@ def _account(settings: Settings, label: str) -> gaccounts.Account:
 
 def _account_rows() -> list[dict[str, Any]]:
     """面板展示用账号信息。**绝不返回 name / pw**。"""
+    accounts = gaccounts.load_accounts()
+    # 序号兜底：老账号（从单账号文件迁移来的 `default`）没有 seq，表格 `#` 列会空一格。
+    # 取**尚未被占用的最小正整数**（不能直接用行号：会和用户手填的序号撞车——
+    # 实测 `default` 兜底成 1、而 `test` 手填的就是 1，两行都显示 #1）。
+    # ⚠ 只算显示值、**不写盘**：写盘会把"看一眼"变成"改数据"，还会覆盖用户手填的序号。
+    taken = set()
+    for acc in accounts:
+        try:
+            val = int(acc.extra.get("seq") or 0)
+        except (TypeError, ValueError):
+            val = 0
+        if val > 0:
+            taken.add(val)
+    free = (n for n in range(1, 10_000) if n not in taken)
+
     rows = []
-    for acc in gaccounts.load_accounts():
+    for acc in accounts:
         # 单账号回落时 label 是 `default`，直接显示给人看等于没名字
         display = acc.display or ("主账号" if acc.label == "default" else acc.label)
+        profile = {k: acc.extra.get(k, "") for k in gaccounts.ACCOUNT_FIELDS}
+        if not profile.get("seq"):
+            profile["seq"] = next(free)
         rows.append({
             "label": acc.label,
             "display": display,
@@ -163,9 +181,7 @@ def _account_rows() -> list[dict[str, Any]]:
             # 凭据只回布尔：面板不回显密码，回显即泄露
             "has_credentials": acc.configured,
             # 预置描述字段（序号/学校/专业/年级/学号）+ 用户自定义字段
-            "profile_fields": {
-                k: acc.extra.get(k, "") for k in gaccounts.ACCOUNT_FIELDS
-            },
+            "profile_fields": profile,
             "custom_fields": {
                 k: v for k, v in acc.extra.items()
                 if k not in gaccounts.ACCOUNT_FIELDS
@@ -213,16 +229,24 @@ def _pick_sections_cache(debug_dir: Path, label: str,
     return {}, ""
 
 
-def _account_cards(settings: Settings) -> list[dict[str, Any]]:
+def _account_cards(settings: Settings, *,
+                   alive: dict[int, bool] | None = None) -> list[dict[str, Any]]:
     """多账号总览：每个账号一张卡的数据。
 
     只读**本地**东西——账本、`sections_*.json` 缓存、登录态快照、TCP 探活，
     不发任何平台请求（最小访问原则）。凭据只回“有没有”，绝不回值。
+
+    `alive` 允许调用方把**已经探好的**端口结果传进来，避免同一请求里探两遍
+    （`/api/state` 既要卡片又要浏览器区，两个地方都要端口状态）。
     """
     accounts = gaccounts.load_accounts()
     jobs = {j["label"]: j for j in _jobs_snapshot()}
     debug_dir = settings.data_dir / "debug"
     ledger_path = _ledger_path(settings)
+    # 端口探活**一次并发做完**再进循环：串行时 N 个账号最坏 N × timeout，
+    # 实测 5 个账号把 `/api/state` 拖到 6078ms（面板每 4 秒轮询一次，界面一直卡在等）
+    if alive is None:
+        alive = gchrome.ports_alive([a.port for a in accounts])
     out: list[dict[str, Any]] = []
     for acc in accounts:
         today = gledger.today_totals(ledger_path, acc.label)
@@ -240,7 +264,7 @@ def _account_cards(settings: Settings) -> list[dict[str, Any]]:
             "display": acc.display or ("主账号" if acc.label == "default" else acc.label),
             "enabled": acc.enabled,
             "port": acc.port,
-            "port_alive": gchrome.port_alive(acc.port),
+            "port_alive": bool(alive.get(acc.port)),
             # 账号表里该账号自己的 name/pw；旧版全局 account.local.json 在多账号下会全部假 “已配”
             "credentials": bool(acc.configured),
             "limits": {"sections": acc.daily_sections, "minutes": acc.daily_minutes},
@@ -287,8 +311,13 @@ def _kill_pid(pid: int) -> str:
         return f"停止失败：{exc}"
 
 
-def _browser_state(settings: Settings, label: str) -> dict[str, Any]:
-    """浏览器/会话的**本地**状态：只探本地调试端口，**不访问平台**。"""
+def _browser_state(settings: Settings, label: str,
+                   alive: bool | None = None) -> dict[str, Any]:
+    """浏览器/会话的**本地**状态：只探本地调试端口，**不访问平台**。
+
+    `alive` 允许调用方把已探好的结果传进来（`/api/state` 会一次性并发探活所有端口，
+    这里再探一遍就是重复劳动，而且每次都要等一个 timeout）。
+    """
     acc = gaccounts.find_by_label(gaccounts.load_accounts(), label)
     backend = gbrowser.backend_of(settings)
     chrome = gchrome.find_chrome()
@@ -305,7 +334,8 @@ def _browser_state(settings: Settings, label: str) -> dict[str, Any]:
         "chrome": str(chrome) if chrome else "",
         "chrome_ok": chrome is not None,
         "port": acc.port if acc else 0,
-        "port_alive": gchrome.port_alive(acc.port) if acc else False,
+        "port_alive": (bool(alive) if alive is not None
+                       else (gchrome.port_alive(acc.port) if acc else False)),
         "profile_set": bool(acc and acc.profile),
         "profile": str(cdp_dir) if cdp_dir else "",
         "profile_name": (Path(acc.profile).name if acc and acc.profile
@@ -399,13 +429,17 @@ def create_app(settings: Settings) -> FastAPI:
             ops = gxks_ops.recent_ops(db, account_label=label or None, limit=60)
         finally:
             db.close()
+        # 端口探活**一次并发做完**，卡片与浏览器区共用同一份结果。
+        # 不共用的话这个接口要探两轮，而单次探测最坏就是一个 timeout（见 chrome.port_alive）。
+        alive = gchrome.ports_alive([r["port"] for r in rows])
+        cur_port = next((r["port"] for r in rows if r["label"] == label), None)
         # B1：节列表按课程分开存；`course` 给了就读那一份，没给就读该账号最新的一份
         sections, sections_course = (_pick_sections_cache(debug_dir, label, course)
                                      if label else ({}, ""))
         return {
             "ok": True,
             "accounts": rows,
-            "cards": _account_cards(settings),
+            "cards": _account_cards(settings, alive=alive),
             "accounts_file": gaccounts.default_path().exists(),
             "label": label,
             "course": sections_course,
@@ -413,7 +447,8 @@ def create_app(settings: Settings) -> FastAPI:
             "jobs": _jobs_snapshot(),
             "sections": sections or None,
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
-            "browser": _browser_state(settings, label) if label else None,
+            "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
+                        if label else None),
             "ops": ops,
         }
 

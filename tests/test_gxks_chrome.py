@@ -12,6 +12,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -95,6 +96,68 @@ class TestPortAlive(unittest.TestCase):
 
     def test_wait_alive_gives_up_quickly(self):
         self.assertFalse(gchrome.wait_alive(_free_port(), seconds=0, interval=0.01))
+
+    def test_port_alive_bypasses_system_proxy(self):
+        """本机探活**必须**绕过系统代理：代理开着时 `urllib` 会把 `127.0.0.1` 也发给代理。
+
+        ⚠ 注意这条只验"绕代理"这个正确性要求，**不**声称绕代理就能变快 ——
+        实测慢的真因是"已关闭端口的回环包被防火墙丢掉 → 等到超时"（见下一条）。
+        """
+        import inspect
+        src = inspect.getsource(gchrome.port_alive)
+        self.assertIn("_DIRECT", src, "port_alive 没有用绕过代理的 opener")
+        self.assertIn("ProxyHandler({})", inspect.getsource(gchrome))
+
+    def test_port_alive_respects_its_timeout(self):
+        """⚠ 不能假设"已关闭端口会被立刻拒绝"。
+
+        本机实测 `connect(127.0.0.1, 已关闭端口)` 是 **TimeoutError（约 1 秒）**，
+        不是 ConnectionRefused —— 回环包被防火墙规则丢掉了
+        （`codex_sandbox_offline_block_loopback_tcp` 等全局 Block）。
+        所以这里只要求：**不超过 timeout + 余量**，并如实返回 False。
+        """
+        port = _free_port()
+        t0 = time.monotonic()
+        self.assertFalse(gchrome.port_alive(port, timeout=0.5))
+        spent = time.monotonic() - t0
+        self.assertLess(spent, 0.9, f"探活耗时 {spent:.2f}s，超出 timeout 余量")
+
+
+class TestPortsAliveConcurrent(unittest.TestCase):
+    """并发探活：N 个账号的总耗时应该约等于**一次** timeout，而不是 N 倍。"""
+
+    def test_empty_and_single(self):
+        self.assertEqual(gchrome.ports_alive([]), {})
+        port = _free_port()
+        self.assertEqual(gchrome.ports_alive([port]), {port: False})
+
+    def test_dedups_ports(self):
+        port = _free_port()
+        self.assertEqual(set(gchrome.ports_alive([port, port, port])), {port})
+
+    def test_mixed_alive_and_dead(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Quiet)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            dead = _free_port()
+            got = gchrome.ports_alive([server.server_port, dead], timeout=2)
+            self.assertTrue(got[server.server_port])
+            self.assertFalse(got[dead])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_many_dead_ports_are_probed_concurrently(self):
+        """6 个死端口 × 0.5s：串行要 ≥3 秒，并发应该 <1.5 秒。"""
+        ports = [_free_port() for _ in range(6)]
+        t0 = time.monotonic()
+        got = gchrome.ports_alive(ports, timeout=0.5)
+        spent = time.monotonic() - t0
+        self.assertEqual(len(got), 6)
+        self.assertFalse(any(got.values()))
+        self.assertLess(spent, 1.5,
+                        f"6 个端口探活用了 {spent:.2f}s —— 看起来还是串行")
 
 
 class TestStart(unittest.TestCase):
