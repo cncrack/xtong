@@ -114,11 +114,36 @@ class TestTypography(unittest.TestCase):
 
     def test_account_cards_fill_the_row_when_few(self):
         # auto-fill 会在账号少时留下空轨道，卡片只占左边一小块（实测 1 个账号时只占 1/3 宽）
-        self.assertIn("repeat(auto-fit,minmax(300px,1fr))", PAGE)
+        self.assertIn("repeat(auto-fit,minmax(280px,1fr))", PAGE)
         self.assertNotIn("repeat(auto-fill,minmax(320px,1fr))", PAGE)
 
     def test_kv_key_column_is_fixed_so_cards_align(self):
         self.assertIn("grid-template-columns:64px 1fr", PAGE)
+
+
+class TestLayoutBalance(unittest.TestCase):
+    """左右两列的高度平衡（用户 2026-10-30：“账号多了左边变长、右边不动，很不协调”）。
+
+    实测（1440 宽、注入假账号）：
+    - 修前：6 个账号 → 左 1512px / 右 396px，**差 1116px**，文档 2232px；
+    - 修后：左 = 右（差 0），文档稳定在 ~1500px。
+    """
+
+    def test_two_columns_stretch_to_equal_height(self):
+        # `align-items:stretch` 让同一行两张卡等高，右侧不再空一大片
+        self.assertIn("main{align-items:stretch}", PAGE)
+
+    def test_both_columns_capped_so_page_does_not_grow_forever(self):
+        # 账号特别多时在卡内滚动，而不是把整页拉到 2000px+
+        self.assertIn("max-height:calc(100vh - 120px)", PAGE)
+        self.assertIn("#sec-accounts>#accounts,#sec-browser>#browser{overflow:auto", PAGE)
+
+    def test_browser_card_is_compact(self):
+        # 原来 6 行竖表把浏览器卡撑到 396px；改成短项并排 + 长项单行截断
+        self.assertIn(".binfo{display:grid", PAGE)
+        self.assertIn(".bi-line{display:flex", PAGE)
+        self.assertIn('class="binfo"', PAGE)
+        self.assertIn('class="bi-line"', PAGE)
 
 
 class TestAccountAdminUI(unittest.TestCase):

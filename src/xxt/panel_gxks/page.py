@@ -32,14 +32,22 @@ main{max-width:1280px;margin:0 auto;padding:16px 18px 60px;
      display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;align-items:start}
 section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
         border-radius:12px;padding:16px 20px;box-shadow:var(--shadow)}
-/* 宽屏：账号区与浏览器区各占一半 */
+/* 宽屏：账号区与浏览器区各占一半。
+   `align-items:stretch` 让同一行的两张卡**等高**——账号多时右侧不再空一大片；
+   浏览器卡内容少，靠 `.section-body` 的 `justify-content:space-between` 把内容摊开。 */
 @media (min-width:1000px){
+  main{align-items:stretch}
   #sec-accounts{grid-column:span 6}
   #sec-browser{grid-column:span 6}
+  /* 两列都限高：账号特别多时在卡内滚动，而不是把整页拉到 2000px+ */
+  #sec-accounts,#sec-browser{max-height:calc(100vh - 120px);display:flex;
+                             flex-direction:column;min-height:320px}
+  #sec-accounts>#accounts,#sec-browser>#browser{overflow:auto;flex:1 1 auto}
 }
 /* 账号卡片：每账号一张，点卡片切换下面四个区块。
-   用 auto-fit 而不是 auto-fill：账号少时卡片撑满整行，不会只占左边一小块、右边空一片。 */
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+   用 auto-fit 而不是 auto-fill：账号少时卡片撑满整行，不会只占左边一小块、右边空一片。
+   窄列（6 栏约 600px）下每行放 1~2 张，避免卡片被压到 300px 以下折行。 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
 .acct{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff;
       cursor:pointer;transition:border-color .12s,box-shadow .12s}
 .acct:hover{border-color:#c7d7ee;box-shadow:0 2px 8px rgba(16,24,40,.06)}
@@ -55,6 +63,18 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
 /* 重点数字（今日已完成节数）拉大加重，扫一眼就能看到 */
 .kv .v b{font-size:16px;color:var(--accent);font-variant-numeric:tabular-nums}
 .acct-actions{display:flex;gap:6px;flex-wrap:wrap}
+/* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
+   原来 6 行竖表把整张卡撑到 396px，右侧一长条空白（实测 6 个账号时差 1116px）。 */
+.binfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+       gap:8px 14px;margin:2px 0 8px}
+.binfo .bi{display:flex;flex-direction:column;gap:2px;min-width:0}
+.binfo .k{color:var(--dim);font-size:12.5px;white-space:nowrap}
+.binfo .v{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bi-line{display:flex;gap:10px;font-size:13.5px;padding:4px 0;
+         border-top:1px dashed var(--line);min-width:0}
+.bi-line .k{color:var(--dim);white-space:nowrap;flex:0 0 84px}
+.bi-line .v{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap}
 select,button{font:inherit;border:1px solid var(--line);border-radius:6px;
               background:#fff;padding:5px 12px;cursor:pointer;
               transition:background .12s,border-color .12s}
@@ -679,7 +699,7 @@ function renderBrowser(state) {
   const b = state.browser || {};
   const s = b.session || null;
   const managed = b.backend === "managed";
-  let html = '<div class="row" style="margin-bottom:6px">' +
+  let html = '<div class="row" style="margin-bottom:8px">' +
     '<span class="tag ' + (managed ? "t-ai" : "t-bank") + '">' +
     (managed ? "managed · 程序自起（容器形态）" : "cdp · 连你已开的 Chrome") + "</span>" +
     '<span class="tag ' + (b.port_alive ? "t-done" : "t-none") + '">端口 ' +
@@ -688,26 +708,41 @@ function renderBrowser(state) {
     (s ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">页面上' +
       (s.logged_in ? "已登录" : "未登录") + "</span>" : "") +
     "</div>";
-  const rows = [
-    ["Chrome", b.chrome_ok ? esc(b.chrome) : "没找到（装 Chrome，或设环境变量 XXT_GXKS_CHROME）"],
-    ["user-data-dir", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认：账号表未配）")
-      : "—"],
-    ["managed profile", managed ? (b.managed_profile ? "已建" : "未建（首跑 = 未登录）") : "不适用"],
-    ["登录态快照", (b.state && b.state.saved)
-      ? esc(b.state.at) + " · " + esc(b.state.cookies) + " 条 cookie" +
-        (b.state.session_level && b.state.session_level.length
-          ? "（全是会话级，关浏览器即失 → 靠这份文件恢复）" : "")
-      : "未存（先点「检查会话」或「重新登录」）"],
-    ["账号密码", b.credentials ? "已配置（可自动重登）"
-      : "未配置（data/account.local.json 里没有可用 name/pw）"],
-    ["上次检查", s ? esc(s.checked_at) + " · " + (s.logged_in ? "已登录" : "未登录") +
-      (s.navigated ? "（本次导航了）" : "（零新请求）") + " · " + esc(s.url || "") : "没查过"],
+  // 紧凑双列：原来 6 行竖表占了整张卡，右边一长条空白。
+  // 现在短项并排（Chrome / profile / 凭据），长项（快照、上次检查）独占一行。
+  const short = [
+    ["Chrome", b.chrome_ok ? esc(b.chrome) : "没找到（设 XXT_GXKS_CHROME）"],
+    ["profile", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认）") : "—"],
+    ["账号密码", b.credentials ? "已配置" : "未配置（掉线即停）"],
   ];
-  html += '<table><tbody>' + rows.map(r =>
-    "<tr><th>" + esc(r[0]) + "</th><td class=muted>" + (r[1] || "") + "</td></tr>"
-  ).join("") + "</tbody></table>";
+  let grid = '<div class="binfo">';
+  for (const [k, v] of short) {
+    grid += '<div class="bi"><span class="k">' + esc(k) + '</span>' +
+      '<span class="v">' + (v || "—") + "</span></div>";
+  }
+  grid += "</div>";
+  html += grid;
+  // 长项：各自一行，但值截断 + title 看全文（避免把卡撑高）
+  const long = [];
+  if (b.state && b.state.saved) {
+    long.push(["登录态快照", esc(b.state.at) + " · " + esc(b.state.cookies) + " 条" +
+      (b.state.session_level && b.state.session_level.length ? "（会话级）" : "")]);
+  } else {
+    long.push(["登录态快照", "未存（先点「检查会话」）"]);
+  }
+  long.push(["上次检查", s
+    ? esc(s.checked_at) + " · " + (s.logged_in ? "已登录" : "未登录") +
+      (s.navigated ? "（导航了）" : "（零请求）")
+    : "没查过"]);
   if (managed) {
-    html += '<div class="muted" style="margin-top:6px">managed 后端不靠外部 Chrome：' +
+    long.push(["managed", b.managed_profile ? "profile 已建" : "profile 未建（首跑 = 未登录）"]);
+  }
+  for (const [k, v] of long) {
+    html += '<div class="bi-line"><span class="k">' + esc(k) + '</span>' +
+      '<span class="v" title="' + v + '">' + v + "</span></div>";
+  }
+  if (managed) {
+    html += '<div class="muted" style="margin-top:8px;line-height:1.5">managed 后端不靠外部 Chrome：' +
       "浏览器由脚本自己起。要人工看窗口/点交卷，请把 config/settings.local.toml 的 " +
       "browser_backend 改回 cdp。</div>";
   }

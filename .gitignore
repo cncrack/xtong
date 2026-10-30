@@ -29,6 +29,9 @@ Thumbs.db
 pytest-of-*/
 tmp*/
 
+# Chrome 启动时偶尔会在 cwd 落一份调试日志（不是我们的产物）
+debug.log
+
 # P3 构建产物
 build/
 dist/
