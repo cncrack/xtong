@@ -309,15 +309,24 @@ class TestLayout20261031(unittest.TestCase):
         """列宽显式给定，账号列吃余量；操作列压成 1% 自适应。"""
         self.assertIn('<th style="min-width:96px">账号</th>', PAGE)
         self.assertIn('<th style="width:1%">操作</th>', PAGE)
-        for w in ("width:80px", "width:68px", "width:104px", "width:82px"):
+        # 2026-11-02：删掉「端口」「状态」两列（与右侧浏览器区重复），
+        # 空间给「今日」「课程」
+        for w in ("width:132px", "width:76px", "width:82px"):
             self.assertIn(w, PAGE)
+        # ⚠ 只能看账号表的表头：`>状态</th>` 在「节进度」表里也有，直接搜全页会误报
+        head = PAGE.split('table class="acct-tbl"', 1)[1].split("</thead>", 1)[0]
+        self.assertNotIn(">端口</th>", head)
+        self.assertNotIn(">状态</th>", head)
+        self.assertIn(">今日</th>", head)
+        self.assertIn(">课程</th>", head)
 
     def test_column_budget_leaves_room_for_name(self):
         """2026-11-02 实测修正：8+4 时账号列只剩 255px，改 9+3 后 414px。
 
         固定列合计必须留够空间，否则账号名被压到下限、表格出横向滚动。
         """
-        fixed = 26 + 36 + 80 + 68 + 104 + 56 + 82      # ☐ # 端口 状态 今日 课程 登录
+        # 2026-11-02：删掉端口/状态两列后的固定列合计
+        fixed = 26 + 36 + 132 + 76 + 82                 # ☐ 序号 今日 课程 登录
         inner = 1280 - 36                               # main 内宽
         col = (inner - 14 * 11) / 12
         content9 = col * 8 + 14 * 7 - 40                # span9 减左右内边距
@@ -338,9 +347,8 @@ class TestLayout20261031(unittest.TestCase):
         self.assertIn("function hl(", PAGE)
         self.assertIn('<mark class=\\"hit\\">', PAGE)
         self.assertIn("mark.hit{background:#fff3bf", PAGE)
-        # 名称与端口用上高亮（副标题小字已在 2026-11-02 移除，改由详情卡展示）
+        # 名称用上高亮（副标题小字、端口列均在 2026-11-02 移除）
         self.assertIn("hl(nameTxt, q)", PAGE)
-        self.assertIn("hl(c.port, q)", PAGE)
 
     def test_highlight_escapes_before_wrapping(self):
         """先转义再包 <mark>：不能把用户的查询当 HTML 注入。"""
@@ -929,11 +937,14 @@ class TestLayoutBalance(unittest.TestCase):
         self.assertIn("height:82vh", PAGE)
 
     def test_browser_card_is_compact(self):
-        # 原来 6 行竖表把浏览器卡撑到 396px；改成短项并排 + 长项单行截断
-        self.assertIn(".binfo{display:grid", PAGE)
+        """浏览器信息用「路径整行 + 其余单行」的紧凑排法（2026-11-02 重排）。
+
+        账号密码已移到「浏览器」那一行当标签，所以 .binfo 栅格被移除了。
+        """
         self.assertIn(".bi-line{display:flex", PAGE)
-        self.assertIn('class="binfo"', PAGE)
         self.assertIn('class="bi-line"', PAGE)
+        self.assertIn('class="bi-line path"', PAGE)   # 路径整行、可换行
+        self.assertIn('id="b-cred"', PAGE)            # 账号密码标签占位
 
 
 class TestAccountAdminUI(unittest.TestCase):

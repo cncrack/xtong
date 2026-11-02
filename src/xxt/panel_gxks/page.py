@@ -360,10 +360,20 @@ table.acct-tbl td.c-today{white-space:nowrap;overflow:hidden;text-overflow:ellip
 .ai-testmsg.bad{color:var(--bad);background:#fdf2f1;padding:7px 9px;
                 border:1px solid #f0c0bb}
 .ai-hint{color:var(--dim);font-size:12px;line-height:1.5;margin-top:8px}
+/* 状态圆点（替代被删掉的「状态」列）：★不占列宽，放在账号名前 */
+table.acct-tbl .sdot{display:inline-block;width:7px;height:7px;border-radius:50%;
+  margin-right:5px;vertical-align:middle;background:#d9dce1}
+table.acct-tbl .sdot.running{background:#3fb27f;box-shadow:0 0 0 2px #e3f4ec}
+table.acct-tbl .sdot.full{background:#f2b45c;box-shadow:0 0 0 2px #fdf1e0}
+table.acct-tbl .sdot.off{background:#c3c8d0}
 /* 会话行末尾的登录状态（用户 2026-11-02：放到「会话」那一行）：
    不参与等宽分配，靠右紧贴按钮。 */
-.b-login{flex:0 0 auto;display:flex;align-items:center;margin-left:2px}
-.b-login .tag{font-size:12px;padding:2px 8px;white-space:nowrap}
+.b-login{flex:0 0 auto;display:flex;align-items:center;margin-left:2px;
+          min-width:0;overflow:hidden}
+.b-login .tag{font-size:12px;padding:2px 8px;white-space:nowrap;
+              overflow:hidden;text-overflow:ellipsis;max-width:110px}
+/* 标签真的放不下时（极窄），按钮先收缩，标签最后才省略 */
+.bgrp .bgrp-btn{min-width:56px}
 
 /* 浏览器状态标签：三枚排成一行不换行（用户 2026-11-02 截图要求）。
    右栏内容约 365px，三枚约 300px，够放；真的不够时横向裁切而不是折行。 */
@@ -484,7 +494,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Y</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Z</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -576,6 +586,8 @@ button.mini{padding:3px 9px;font-size:13px}
         title="用本账号的端口与 profile 目录拉起 Chrome">启动</button>
       <button id="btn-bstop" class="bgrp-btn danger" onclick="post('/api/browser/stop')"
         title="只停面板自己拉起的那个 Chrome">停止</button>
+      <!-- 账号密码状态放在浏览器这一行（用户 2026-11-02 建议），与「已登录」在会话行对称 -->
+      <span class="b-login" id="b-cred"></span>
     </div>
     <div class="bgrp">
       <span class="bgrp-lab">会话</span>
@@ -917,13 +929,15 @@ function acctTr(c, accRow, cur) {
   const q = (FILTER.q || "").trim();
   const nameTxt = c.display || c.label;
   // 账号格子只放名字（用户 2026-11-02：「这些小字是否可以不要，会撑开列宽」）。
-  // 学校/专业/年级改由右侧「账号详情」承担，避免两处重复。
-  html += '<td class="c-name"><b>' + hl(nameTxt, q) + "</b></td>";
+  // 端口/状态两列已删（与右侧「浏览器与会话」重复）；
+  // 但「谁在跑」必须一眼看得出，所以用名字前的彩色圆点保留，不占列宽。
+  // 复用函数开头已算好的 st（acctStatus(c)），不要重复声明
+  const dotTitle = { running: "运行中", full: "额度用完", off: "已停用",
+                     idle: "空闲" }[st] || st;
+  html += '<td class="c-name"><span class="sdot ' + st + '" title="' + dotTitle +
+    '"></span><b>' + hl(nameTxt, q) + "</b></td>";
   // 端口列强制单行（用户 2026-11-02：「端口里面的内容显示一行显示」）：
   // 端口号 + 活/停 标签本来在 66px 里会折成两行，现在列宽加到 84 且 nowrap。
-  html += '<td class="c-port">' + hl(c.port, q) + " " + (c.port_alive
-    ? '<span class="tag t-done">活</span>' : '<span class="tag t-none">停</span>') + "</td>";
-  html += "<td>" + acctStatusTag(c) + "</td>";
   // 今日列：118px 里塞「12/10 节 ▮▮ + 480 分」会折行 → 分改成只有数字，
   // 单位「分」进 title（悬停可看全），保住单行。
   html += '<td class="c-today" title="今日 ' + esc(t.sections || 0) + " 节 · " +
@@ -1060,10 +1074,8 @@ function renderAccounts(state) {
     (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
     '<th class="num" style="width:36px">序号</th>' +
     '<th style="min-width:96px">账号</th>' +
-    '<th style="width:80px">端口</th>' +
-    '<th style="width:68px">状态</th>' +
-    '<th style="width:104px">今日</th>' +
-    '<th style="width:56px">课程</th>' +
+    '<th style="width:132px">今日</th>' +
+    '<th style="width:76px">课程</th>' +
     '<th style="width:82px">登录</th>' +
     '<th style="width:1%">操作</th>' +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
@@ -1544,17 +1556,15 @@ function renderBrowser(state, browser, label) {
   }
   // 紧凑双列：原来 6 行竖表占了整张卡，右边一长条空白。
   // 现在短项并排（Chrome / profile / 凭据），长项（快照、上次检查）独占一行。
-  // 短项并排；长路径单独整行（用户 2026-11-02：「信息显示不全」「如何排列优化」）
-  const short = [
-    ["账号密码", b.credentials ? "已配置" : "未配置（掉线即停）"],
-  ];
-  let grid = '<div class="binfo">';
-  for (const [k, v] of short) {
-    grid += '<div class="bi"><span class="k">' + esc(k) + '</span>' +
-      '<span class="v">' + (v || "—") + "</span></div>";
+  // 「账号密码」改为浏览器行的标签（见下面写 b-cred 占位）；
+  // 这里只剩路径等长项，不再有并排短项。
+  const credBox = el("b-cred");
+  if (credBox) {
+    credBox.innerHTML = '<span class="tag ' +
+      (b.credentials ? "t-done" : "t-low") + '" title="' +
+      (b.credentials ? "已配账号密码：掉线可自动重登" : "未配账号密码：掉线即停") +
+      '">' + (b.credentials ? "已配密码" : "无密码") + "</span>";
   }
-  grid += "</div>";
-  html += grid;
   // 长项：各自一行，但值截断 + title 看全文（避免把卡撑高）
   const long = [];
   if (b.state && b.state.saved) {
