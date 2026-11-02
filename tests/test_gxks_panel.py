@@ -83,6 +83,14 @@ class TestGxksPanel(unittest.TestCase):
         for real in ("pw-A-123", "s1001"):
             self.assertNotIn(real, r.text, f"回包里出现了真实的凭据值 {real}")
 
+    def test_index_forbids_caching(self):
+        """面板 HTML 必须禁缓存（2026-11-02 踩坑：用户反复看到旧页面，
+        误以为功能没实现；真因是浏览器按启发式缓存了 HTML）。"""
+        r = self.client.get("/")
+        cc = r.headers.get("cache-control", "")
+        self.assertIn("no-store", cc)
+        self.assertIn("no-cache", cc)
+
     def test_state_rejects_unknown_label(self):
         r = self.client.get("/api/state?label=nobody")
         self.assertEqual(r.status_code, 400)

@@ -427,8 +427,18 @@ def create_app(settings: Settings) -> FastAPI:
     debug_dir = settings.data_dir / "debug"
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return PAGE
+    def index() -> HTMLResponse:
+        # ⚠ 必须显式禁缓存（2026-11-02 用户反复"看不到新功能"的真因）：
+        # 面板页面没有静态资源、没有指纹文件名，浏览器会按启发式规则缓存 HTML。
+        # 结果每次改完页面，用户不清缓存就一直在看旧版本——排查时极易误判成"没实现"。
+        return HTMLResponse(
+            content=PAGE,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     @app.get("/api/state")
     def state(label: str = "", course: str = "") -> dict:
