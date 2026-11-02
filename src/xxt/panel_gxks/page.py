@@ -307,9 +307,20 @@ table.acct-tbl td.c-today{white-space:nowrap;overflow:hidden;text-overflow:ellip
   letter-spacing:.05em;margin:10px 0 5px;padding:3px 8px;
   background:#eef2f7;border-left:3px solid var(--accent);border-radius:3px}
 .acct-detail .dsec:first-child{margin-top:0}
-.acct-detail .dl{display:flex;gap:8px;padding:2px 0;align-items:baseline}
-.acct-detail .dk{flex:0 0 62px;color:var(--dim);white-space:nowrap}
-.acct-detail .dv{flex:1 1 auto;min-width:0;word-break:break-all}
+/* 「标签：值」网格：(标签宽自适应|值占其余)，同一组内标签左对齐成一列 */
+.acct-detail .dgrid{display:grid;grid-template-columns:max-content minmax(0,1fr);
+                    gap:3px 6px;padding:2px 0}
+/* 两个短字段一行（年级/学号、自动重登/正在跑） */
+.acct-detail .dgrid2{display:grid;
+                     grid-template-columns:max-content minmax(0,1fr) max-content minmax(0,1fr);
+                     gap:3px 6px;padding:2px 0}
+@media (max-width:620px){
+  .acct-detail .dgrid2{grid-template-columns:max-content minmax(0,1fr)}
+}
+/* 标签：加粗、暗色、自动补冒号（用户：「字段要加粗，比如 学校：泉州信息工程学院」） */
+.acct-detail .dk{color:var(--dim);font-weight:700;white-space:nowrap}
+.acct-detail .dk::after{content:"：";font-weight:400}
+.acct-detail .dv{min-width:0;word-break:break-all;color:var(--txt)}
 .acct-detail .row2{display:flex;gap:0;flex-wrap:wrap}
 .acct-detail b{color:var(--txt)}
 .acct-detail .sep{border-top:1px dashed var(--line);margin:6px 0}
@@ -359,6 +370,10 @@ table.acct-tbl td.c-today{white-space:nowrap;overflow:hidden;text-overflow:ellip
 .bi-line .k{color:var(--dim);white-space:nowrap;flex:0 0 84px}
 .bi-line .v{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
             white-space:nowrap}
+/* 路径行（Chrome / profile）：整行 + 换行显示，避免被截成 "...\Google\C..." */
+.bi-line.path{align-items:flex-start}
+.bi-line.path .v{white-space:normal;overflow:visible;text-overflow:clip;
+                 word-break:break-all;line-height:1.4}
 select,button{font:inherit;border:1px solid var(--line);border-radius:6px;
               background:#fff;padding:5px 12px;cursor:pointer;
               transition:background .12s,border-color .12s}
@@ -455,7 +470,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02T</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02U</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -1055,32 +1070,44 @@ function renderAccounts(state) {
 // 「账号详情里面的内容如果在账号列表中有的就不需要显示」）。
 // 列表已有 → 详情卡不再重复：显示名、端口、状态、今日 N/M 节、课程 done/total、快照时间。
 // 这里只留列表装不下的：学校/专业/年级/学号、自定义字段、能否自动重登、正在跑。
+// 账号详情：**只显示列表里看不到的信息**（用户 2026-11-02：
+// 「在列表中有的，在这里面是否要显示……有些不要两个都显示」）。
+// 格式（同日第二次要求）：`标签：值`，标签加粗+暗色，短字段两个一行。
 function acctDetailHtml(c, accRow) {
   const pf = (accRow && accRow.profile_fields) || {};
   const cf = (accRow && accRow.custom_fields) || {};
-  const L = (k, v) => v === undefined || v === null || String(v).trim() === ""
-    ? "" : '<div class="dl"><span class="dk">' + esc(k) + "</span>" +
-          '<span class="dv">' + esc(v) + "</span></div>";
+  const has = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  // 单元格：标签 + 值（CSS 用网格对齐，标签自带冒号）
+  const cell = (k, v) => '<span class="dk">' + esc(k) + '</span>'
+    + '<span class="dv">' + esc(v) + "</span>";
+  const row = (k, v) => (has(v)
+    ? '<div class="dgrid">' + cell(k, v) + "</div>" : "");
   let h = "";
 
-  // ① 档案：列表里已经不显示了（会撑宽账号列），只在这里给出
-  const prof = L("学校", pf.school) + L("专业", pf.major) +
-    L("年级", pf.grade) + L("学号", pf.student_id);
+  // ① 档案：长字段各占一行，年级/学号短、并成一行
+  let prof = "";
+  if (has(pf.school)) prof += row("学校", pf.school);
+  if (has(pf.major)) prof += row("专业", pf.major);
+  if (has(pf.grade) || has(pf.student_id)) {
+    prof += '<div class="dgrid2">'
+      + (has(pf.grade) ? cell("年级", pf.grade) : "")
+      + (has(pf.student_id) ? cell("学号", pf.student_id) : "")
+      + "</div>";
+  }
   if (prof) h += '<div class="dsec">档案</div>' + prof;
 
   // ② 自定义字段：列表完全看不到
-  const cfKeys = Object.keys(cf).filter((k) => String(cf[k] || "").trim() !== "");
+  const cfKeys = Object.keys(cf).filter((k) => has(cf[k]));
   if (cfKeys.length) {
-    h += '<div class="dsec">自定义字段</div>' +
-      cfKeys.map((k) => L(k, cf[k])).join("");
+    h += '<div class="dsec">自定义字段</div><div class="dgrid">'
+      + cfKeys.map((k) => cell(k, cf[k])).join("") + "</div>";
   }
 
-  // ③ 凭据与运行态：列表只有一个 ⚠ 图标或状态词
-  h += '<div class="dsec">凭据与运行</div>';
-  h += L("自动重登", c.credentials ? "可以（已配账号密码）" : "不能（掉线即停）");
-  h += L("正在跑", c.job ? ((c.job.kind || "") + " · 起于 " + (c.job.since || ""))
-                        : "空闲");
-
+  // ③ 凭据与运行态：两个短项并一行
+  h += '<div class="dsec">凭据与运行</div><div class="dgrid2">'
+    + cell("自动重登", c.credentials ? "可以" : "不能（掉线即停）")
+    + cell("正在跑", c.job ? (c.job.kind || "运行中") : "空闲")
+    + "</div>";
   return h;
 }
 
@@ -1488,9 +1515,8 @@ function renderBrowser(state, browser, label) {
     "</div>";
   // 紧凑双列：原来 6 行竖表占了整张卡，右边一长条空白。
   // 现在短项并排（Chrome / profile / 凭据），长项（快照、上次检查）独占一行。
+  // 短项并排；长路径单独整行（用户 2026-11-02：「信息显示不全」「如何排列优化」）
   const short = [
-    ["Chrome", b.chrome_ok ? esc(b.chrome) : "没找到（设 XXT_GXKS_CHROME）"],
-    ["profile", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认）") : "—"],
     ["账号密码", b.credentials ? "已配置" : "未配置（掉线即停）"],
   ];
   let grid = '<div class="binfo">';
@@ -1514,6 +1540,15 @@ function renderBrowser(state, browser, label) {
     : "没查过"]);
   if (managed) {
     long.push(["managed", b.managed_profile ? "profile 已建" : "profile 未建（首跑 = 未登录）"]);
+  }
+  // 路径类：整行 + 允许换行，不再被 ellipsis 截断
+  const paths = [
+    ["Chrome", b.chrome_ok ? esc(b.chrome) : "没找到（设 XXT_GXKS_CHROME）"],
+    ["profile", b.profile ? esc(b.profile) + (b.profile_set ? "" : "（默认）") : "—"],
+  ];
+  for (const [k, v] of paths) {
+    html += '<div class="bi-line path"><span class="k">' + esc(k) + '</span>' +
+      '<span class="v" title="' + v + '">' + v + "</span></div>";
   }
   for (const [k, v] of long) {
     html += '<div class="bi-line"><span class="k">' + esc(k) + '</span>' +
