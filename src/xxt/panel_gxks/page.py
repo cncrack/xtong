@@ -2073,9 +2073,26 @@ function renderSections(state) {
   const need = rows.reduce((a, r) => a + numv(r.required_minutes), 0);
   const played = rows.reduce((a, r) => a + numv(r.done_minutes), 0);
   const doneRows = rows.filter(r => r.state === "done");
-  const todoRows = rows.filter(r => r.state !== "done")
-    .sort((a, b) => (b.state === "learning") - (a.state === "learning") ||
-                    numv(a.idx) - numv(b.idx));
+  // ⚠ 排序**不能用 `idx`**（2026-11-03 用户实拍：待学区乱序）：
+  // 缓存里的 `idx` 是**每页重新从 0 编号**的（见 `gxks_sections._slim(raw, page)`），
+  // 所以第 2 页的 idx 又是 0,1,2… → 跨页交错 → 排成 3.4、4.5、3.5、4.6、3.6…
+  //
+  // 平台真实顺序 = 节名里的**章节号**（"3.4 当代中国军事思想" → 3.4），
+  // 这是用户认的顺序（先 3.x 再 4.x）。没有章节号时退回节 ID（实测连号递增），
+  // 再没有才用 idx。
+  const orderKey = (r) => {
+    const m = String(r.name || "").match(/(\d+)\.(\d+)/);
+    if (m) return parseInt(m[1], 10) * 10000 + parseInt(m[2], 10);
+    const id = parseInt(r.platform_chapter_id, 10);
+    if (Number.isFinite(id)) return id;
+    return 1e9 + numv(r.idx);
+  };
+  const byOrder = (a, b) => orderKey(a) - orderKey(b);
+  // ⚠ 「学习中」**不置顶**：置顶会把一节从它的章节位置挪走，待学区顺序又乱了
+  // （用户 2026-11-03：「待学区里面的内容不是按顺序排列的吗？」）。
+  // 「正在学」靠行首的琥珀色状态条 + 「学习中」标签表达，位置不动。
+  const todoRows = rows.filter(r => r.state !== "done").sort(byOrder);
+  const doneRowsOrdered = doneRows.slice().sort(byOrder);
   const todoLeft = todoRows.reduce((a, r) =>
     a + Math.max(0, numv(r.required_minutes) - numv(r.done_minutes)), 0);
 
@@ -2113,7 +2130,7 @@ function renderSections(state) {
     '<span class="sum">' + doneRows.length + " 节 · " +
     doneRows.reduce((a, r) => a + numv(r.required_minutes), 0) +
     ' 分钟</span></summary><div class="body">' +
-    (doneRows.length ? secTableHtml(doneRows, false)
+    (doneRows.length ? secTableHtml(doneRowsOrdered, false)
       : '<div class="empty">还没有学完的节。</div>') +
     "</div></details>";
   html += "</div>";
