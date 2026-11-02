@@ -563,9 +563,19 @@ def create_app(settings: Settings) -> FastAPI:
         proc = gchrome.start(chrome, port=acc.port, profile=profile,
                              url=gchrome.default_start_url())
         if not gchrome.port_alive(acc.port):
+            # 2026-11-02 实测：面板若跑在**非交互会话**（后台作业/服务）里，
+            # 由它拉起的 Chrome 可能拿不到桌面、直接退出 → 端口永远起不来。
+            # 所以错误信息要直接给出**可复制的命令行**，让用户在自己的
+            # PowerShell 窗口里手动起一次（cdp 后端本来就是"连你已开的 Chrome"）。
+            cmd = (f'"{chrome}" --remote-debugging-port={acc.port} '
+                   f'--user-data-dir="{profile}" --no-first-run '
+                   f'--no-default-browser-check --no-proxy-server')
             return {"ok": False,
-                    "error": f"Chrome 起来了但调试端口 {acc.port} 没响应：这个 profile 可能已被"
-                             "另一个不带调试端口的 Chrome 打开——先把该账号的 Chrome 全部关掉再点一次"}
+                    "error": f"Chrome 起来了但调试端口 {acc.port} 没响应。"
+                             "两种常见原因：① 该 profile 已被另一个**不带调试端口**的 "
+                             f"Chrome 占用；② 面板跑在非交互会话里，Chrome 拿不到桌面。\n"
+                             f"解决：关掉该账号的 Chrome，然后在**你自己的 PowerShell 窗口**里手动执行：\n"
+                             f"{cmd}"}
         with _BROWSER_LOCK:
             _BROWSERS[acc.label] = {"pid": proc.pid, "since": time.strftime("%H:%M:%S"),
                                     "port": acc.port, "profile": str(profile)}
