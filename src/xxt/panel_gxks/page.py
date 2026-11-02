@@ -293,6 +293,10 @@ table.acct-tbl td.c-ops button{margin-left:3px;padding:2px 7px}
 table.acct-tbl td.c-port{white-space:nowrap}
 /* 今日列的数字与迷你条必须同行：折行会让整行高度从 44px 涨到 66px */
 table.acct-tbl td.c-today{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 「近24h」标注：跨零点时补一个**独立小字行**（不塞进 nowrap 的主行，
+   否则列被撑宽或被 ellipsis 截掉）。主行保持单行，小字另起一行。 */
+table.acct-tbl td.c-today .c-r24{display:block;margin-top:1px;
+  font-size:11.5px;color:var(--dim);line-height:1.2}
 /* 行内小进度条：30px 宽足够看出"快满了" */
 .mini-bar{display:inline-block;width:34px;height:6px;border-radius:99px;
   background:#eef0f3;overflow:hidden;vertical-align:middle;margin-left:5px}
@@ -1035,13 +1039,26 @@ function acctTr(c, accRow, cur) {
   // 单位「分」进 title（悬停可看全），保住单行。
   // 今日 = 「已完成 / 日上限 节」+ 迷你进度条 + 「今日分钟数 分」
   // 补上单位，避免只看到 0/10 ▬ 0 不知道是什么（用户 2026-11-02 问过）
-  html += '<td class="c-today" title="今日已学 ' + esc(t.sections || 0) + " 节 / 上限 " +
+  //
+  // ⚠ 跨零点（2026-11-03）：夜里连播会跨零点，「今日」按墙钟日算会少算
+  // 跨过去的那几节，用户看着别扭（实测 22:44 开跑学 3 节，显示「2 节」）。
+  // ⇒ 主数字仍用**今日**（额度口径，必须准），旁边补一个「近24h」小字
+  //    （⊇ 今日 → 显示更保守，绝不会让人多刷）。
+  const r24 = c.recent24 || {};
+  const r24s = Number(r24.sections) || 0;
+  const tSec = Number(t.sections) || 0;
+  const r24Extra = r24s > tSec ? r24s - tSec : 0;
+  html += '<td class="c-today" title="今日已学 ' + esc(tSec) + " 节 / 上限 " +
     (secLim > 0 ? esc(secLim) + " 节" : "不限") + " · 共 " +
-    esc(Math.round(Number(t.minutes) || 0)) + ' 分钟">' +
-    "<b>" + esc(t.sections || 0) + "</b>/" +
+    esc(Math.round(Number(t.minutes) || 0)) + " 分钟" +
+    (r24Extra ? "　·　近 24 小时共 " + esc(r24s) + " 节 / " +
+      esc(Math.round(Number(r24.minutes) || 0)) + " 分钟（含跨零点前学的）" : "") + '">' +
+    "<b>" + esc(tSec) + "</b>/" +
     (secLim > 0 ? esc(secLim) : "不限") + " 节" +
-    miniBar(Number(t.sections) || 0, secLim > 0 ? secLim : Math.max(1, Number(t.sections) || 1)) +
-    '<span class="muted">' + esc(Math.round(Number(t.minutes) || 0)) + " 分</span></td>";
+    miniBar(tSec, secLim > 0 ? secLim : Math.max(1, tSec || 1)) +
+    '<span class="muted">' + esc(Math.round(Number(t.minutes) || 0)) + " 分</span>" +
+    (r24Extra ? '<span class="c-r24" title="近 24 小时共 ' + esc(r24s) +
+      ' 节（含跨零点前学的）">近24h ' + esc(r24s) + " 节</span>" : "") + "</td>";
   html += '<td class="muted">' + (sec.total
     ? esc(sec.done) + "/" + esc(sec.total) + " 节"
     : "—") + "</td>";
@@ -1092,13 +1109,18 @@ function renderBatchBar(shown) {
     const t = c.today || {};
     a.sections += Number(t.sections) || 0;
     a.minutes += Number(t.minutes) || 0;
+    const r = c.recent24 || {};
+    a.r24sections += Number(r.sections) || 0;
     const s = acctStatus(c);
     a[s] = (a[s] || 0) + 1;
     return a;
-  }, { sections: 0, minutes: 0, off: 0, running: 0, full: 0, idle: 0 });
+  }, { sections: 0, minutes: 0, r24sections: 0, off: 0, running: 0, full: 0, idle: 0 });
 
-  let html = '<span class="tag t-ai">合计 ' + tot.sections + " 节 · " +
-    Math.round(tot.minutes) + " 分钟</span>" +
+  let html = '<span class="tag t-ai" title="今日（按自然日，额度按它算）">合计 ' +
+    tot.sections + " 节 · " + Math.round(tot.minutes) + " 分钟</span>" +
+    (tot.r24sections > tot.sections
+      ? '<span class="tag t-learn" title="近 24 小时（滑动窗口）：夜里连播跨零点时，' +
+        '这一趟学的节数在这里">近24h ' + tot.r24sections + " 节</span>" : "") +
     '<span class="tag t-learn">运行中 ' + (tot.running || 0) + "</span>" +
     '<span class="tag t-none">空闲 ' + (tot.idle || 0) + "</span>" +
     (tot.full ? '<span class="tag t-low">额度用完 ' + tot.full + "</span>" : "") +

@@ -288,6 +288,8 @@ def _account_cards(settings: Settings, *,
     out: list[dict[str, Any]] = []
     for acc in accounts:
         today = gledger.today_totals(ledger_path, acc.label)
+        # 近 24 小时（展示用）：刷课常跨零点，用户要看到「这一趟学了几节」（2026-11-03）
+        recent = gledger.recent_totals(ledger_path, acc.label, hours=24)
         cached, cached_course = _pick_sections_cache(debug_dir, acc.label)
         summary = cached.get("summary") or {}
         course = next((r.get("category") for r in cached.get("rows") or []
@@ -310,6 +312,10 @@ def _account_cards(settings: Settings, *,
                       "left_sections": left,
                       # 按课程拆分只作展示（A1：额度按账号合计，不按课程分池）
                       "by_course": today.get("courses") or {}},
+            # 近 24 小时（展示口径）：跨零点的刷课能看出「这一趟学了几节」。
+            # ⚠ **不用于额度判定**（额度必须按墙钟日，见 ledger.recent_totals 的说明）。
+            "recent24": {"sections": recent["sections"], "minutes": recent["minutes"],
+                         "hours": recent["hours"]},
             "snapshot": snap,
             "course": course,
             "course_value": cached_course,      # 缓存对应的课程 value（多课程时区分用）

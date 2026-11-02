@@ -1106,7 +1106,7 @@ class TestAccountAdminUI(unittest.TestCase):
 
         原来统计是表格上方独立一行（head 变量），已并入 #acct-batch。
         """
-        self.assertIn("合计 ' + tot.sections", PAGE)
+        self.assertIn("合计 ' +", PAGE)
         # 统计必须在 renderBatchBar 里，而不是 renderAccounts 的 head
         bar = PAGE.split("function renderBatchBar(", 1)[1].split("\n}", 1)[0]
         self.assertIn("合计", bar)

@@ -139,6 +139,58 @@ def today_totals(path: str | Path | None = None, account: str = "",
     }
 
 
+def recent_totals(path: str | Path | None = None, account: str = "",
+                  hours: int = 24) -> dict:
+    """**近 N 小时**的合计（显示用，与「今日」口径并存）。
+
+    ## 为什么需要它（2026-11-03 用户提的）
+
+    刷课常在夜里连续跑，**跨零点**时用户会觉得「今日 2 节」不对
+    （实测：22:44 开跑，1301 学完于 23:20 算 11-02，1302/1303 算 11-03 → 显示 2 节，
+    但用户心里是「我这一趟学了 3 节」）。
+
+    ## 为什么**记账**不能改成会话口径
+
+    额度是安全刹车，改成「整趟记一天」会**虚高额度** → 可能真的超刷 → 账号风险：
+    - 全记开始日：11-02 那天的额度只扣了后半天学的，早上的额度白给 → 11-02 还能再刷 10 节；
+    - 全记结束日：11-02 学的 1 节记到 11-03 → 11-02 一节没扣 → 更危险。
+
+    所以**记账仍按墙钟日**（`today_totals`），这里只提供**展示口径**。
+
+    ## 安全性
+
+    近 24 小时 ⊇ 今日（按墙钟日）→ 展示的「已学」只会**偏多**，
+    换算成剩余额度就是**偏保守**，不会让人多刷。
+
+    ⚠ 24 小时是滑动窗口，与「自然日」不同口径，**不可直接相加**（同一节可能两边都算到）。
+    """
+    hours = max(1, int(hours or 24))
+    now = datetime.now()
+    since = now.timestamp() - hours * 3600
+    keys: set[tuple[str, str]] = set()
+    ids: set[str] = set()
+    minutes = 0.0
+    for row in read_rows(path):
+        if account and row.get("account") != account:
+            continue
+        try:
+            at = datetime.fromisoformat(str(row.get("at") or ""))
+        except ValueError:
+            continue
+        if at.timestamp() < since:
+            continue
+        row_course = str(row.get("course") or "")
+        if row.get("result") == "done":
+            keys.add((row_course, str(row.get("section_id"))))
+            ids.add(str(row.get("section_id")))
+        try:
+            minutes += float(row.get("minutes") or 0)
+        except (TypeError, ValueError):
+            continue
+    return {"hours": hours, "sections": len(keys), "minutes": round(minutes, 1),
+            "section_ids": sorted(ids)}
+
+
 def quota_left(account: str, *, sections_limit: int, minutes_limit: int,
                path: str | Path | None = None, day: str | None = None,
                course: str | None = None) -> dict:
