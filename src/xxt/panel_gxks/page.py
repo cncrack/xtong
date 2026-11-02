@@ -21,6 +21,36 @@ header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var
        border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9;
        box-shadow:0 1px 3px rgba(16,24,40,.05)}
 h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.01em}
+/* 账号切换器（2026-11-02）：头部原来的 <select> 账号一多就长得没法用，
+   改成「当前账号按钮 + 可搜索弹层」，列表限高滚动。 */
+.asw{position:relative;flex:0 0 auto}
+.asw-btn{display:flex;align-items:center;gap:7px;max-width:220px;
+         border:1px solid var(--line);border-radius:7px;background:#fff;
+         padding:5px 10px;font:inherit;font-size:13.5px;cursor:pointer}
+.asw-btn:hover{border-color:var(--accent);color:var(--accent);background:#f5f9ff}
+.asw-btn #asw-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                   min-width:0;font-weight:600}
+.asw-caret{color:var(--dim);font-size:11px;flex:0 0 auto}
+.asw-pop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;width:250px;
+         background:var(--card);border:1px solid var(--line);border-radius:10px;
+         box-shadow:0 8px 24px rgba(16,24,40,.16);padding:8px}
+.asw-pop input{width:100%;box-sizing:border-box;font:inherit;font-size:13px;
+               border:1px solid var(--line);border-radius:6px;padding:6px 9px;
+               margin-bottom:6px}
+.asw-list{max-height:320px;overflow:auto}
+.asw-item{display:flex;align-items:center;gap:8px;width:100%;border:0;
+          border-radius:6px;background:none;padding:7px 9px;cursor:pointer;
+          text-align:left;font:inherit;font-size:13.5px}
+.asw-item:hover{background:#f0f6ff}
+.asw-item.cur{background:#eaf2ff;font-weight:700;color:var(--accent)}
+.asw-item .asw-name{flex:1 1 auto;min-width:0;overflow:hidden;
+                    text-overflow:ellipsis;white-space:nowrap}
+.asw-item .asw-label{flex:0 0 auto;color:var(--dim);font-size:11.5px}
+.asw-empty{color:var(--dim);font-size:12.5px;padding:8px 9px}
+@media (max-width:760px){
+  .asw-btn{max-width:140px}
+  .asw-pop{position:fixed;left:10px;right:10px;width:auto;top:58px}
+}
 h2{font-size:15px;margin:0 0 12px;color:var(--txt);font-weight:700;letter-spacing:.02em;
    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 h2::before{content:"";width:4px;height:15px;border-radius:2px;background:var(--accent);
@@ -427,8 +457,20 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Q</span></h1>
-  <select id="account"></select>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02R</span></h1>
+  <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
+       改成「当前账号按钮 + 可搜索弹层」。 -->
+  <div class="asw" id="asw">
+    <button type="button" class="asw-btn" id="asw-btn" onclick="toggleAsw()"
+            aria-haspopup="listbox" aria-expanded="false" title="切换账号（可搜索）">
+      <span id="asw-name">—</span><span class="asw-caret">▾</span>
+    </button>
+    <div class="asw-pop" id="asw-pop" hidden>
+      <input id="asw-q" type="search" placeholder="搜索代号 / 显示名…"
+             autocomplete="off" oninput="renderAswList()">
+      <div class="asw-list" id="asw-list" role="listbox"></div>
+    </div>
+  </div>
   <span class="muted" id="pager"></span>
   <span style="flex:1"></span>
   <span class="muted" id="clock"></span>
@@ -1166,7 +1208,7 @@ function readFilter() {
 function pick(label) {
   if (!label || label === LABEL) return;
   LABEL = label;
-  el("account").value = label;
+  // 切换器由 renderAccountsSelect 刷新，这里不用手动改 select
   SEC_SIG = "";          // 换账号必须重建节进度（不同账号的签名可能撞车）
   load();
 }
@@ -1939,16 +1981,67 @@ function renderOps(state) {
   el("ops").innerHTML = html + "</tbody></table></div>";
 }
 
+// 账号切换器：缓存账号列表，供弹层过滤用
+let ASW_LIST = [];
+
 function renderAccountsSelect(state) {
-  const sel = el("account");
-  const list = state.accounts || [];
-  if (sel.dataset.sig !== list.map(a => a.label).join(",")) {
-    sel.innerHTML = list.map(a =>
-      '<option value="' + esc(a.label) + '">' + esc(a.display || a.label) +
-      "</option>").join("");
-    sel.dataset.sig = list.map(a => a.label).join(",");
+  ASW_LIST = state.accounts || [];
+  const cur = ASW_LIST.find((a) => a.label === state.label) || null;
+  const nameEl = el("asw-name");
+  if (nameEl) nameEl.textContent = cur ? (cur.display || cur.label) : "—";
+  const btn = el("asw-btn");
+  if (btn) btn.title = "当前：" + (cur ? (cur.display || cur.label) : "—") + "（可搜索切换）";
+  // 弹层开着时同步刷新列表（轮询会更新卡片状态）
+  if (!el("asw-pop") || !el("asw-pop").hidden) renderAswList();
+}
+
+function toggleAsw() {
+  const pop = el("asw-pop");
+  if (!pop) return;
+  const open = pop.hidden;
+  pop.hidden = !open;
+  const btn = el("asw-btn");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    const q = el("asw-q");
+    if (q) { q.value = ""; q.focus(); }
+    renderAswList();
   }
-  sel.value = state.label || (list[0] && list[0].label) || "";
+}
+
+function closeAsw() {
+  const pop = el("asw-pop");
+  if (pop) pop.hidden = true;
+  const btn = el("asw-btn");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function renderAswList() {
+  const box = el("asw-list");
+  if (!box) return;
+  const q = ((el("asw-q") || {}).value || "").trim().toLowerCase();
+  const rows = ASW_LIST.filter((a) => {
+    if (!q) return true;
+    return (a.label || "").toLowerCase().includes(q)
+      || String(a.display || "").toLowerCase().includes(q);
+  });
+  if (!rows.length) {
+    box.innerHTML = '<div class="asw-empty">没有匹配的账号</div>';
+    return;
+  }
+  box.innerHTML = rows.map((a) => {
+    const cur = a.label === LABEL ? " cur" : "";
+    return '<button type="button" class="asw-item' + cur + '" role="option"'
+      + ' aria-selected="' + (cur ? "true" : "false") + '"'
+      + ' onclick="pickFromAsw(\'' + esc(a.label) + '\')">'
+      + '<span class="asw-name">' + esc(a.display || a.label) + "</span>"
+      + '<span class="asw-label">' + esc(a.label) + "</span></button>";
+  }).join("");
+}
+
+function pickFromAsw(label) {
+  closeAsw();
+  pick(label);
 }
 
 async function loadAi() {
@@ -2001,7 +2094,14 @@ el("sections").addEventListener("toggle", (e) => {
   const d = e.target.closest("details[data-blk]");
   if (d) SEC_OPEN[d.dataset.blk] = d.open;
 }, true);
-el("account").addEventListener("change", (e) => { LABEL = e.target.value; load(); });
+// 点弹层外面 / 按 Esc 关闭账号切换器
+document.addEventListener("click", (e) => {
+  const box = el("asw");
+  if (box && !box.contains(e.target)) closeAsw();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAsw();
+});
 
 // ---------------------------------------------------------------- 账号表：事件绑定
 // 全部用**事件委托**挂在 #accounts 上：表格每 4 秒整块重绘，直接绑到行/按钮上会随重绘丢失。

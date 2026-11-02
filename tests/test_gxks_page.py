@@ -416,6 +416,53 @@ class TestLayout20261102(unittest.TestCase):
         self.assertNotIn('class="split"', view)
 
 
+class TestAccountSwitcher(unittest.TestCase):
+    """头部账号切换器（用户 2026-11-02 截图：「账号多的时候这个列表就很长」）。
+
+    方案：不用 <select>（账号一多就长得没法用），改成
+    「当前账号按钮 + 可搜索弹层 + 限高滚动」。
+    保留切换入口，同时不把表格的搜索搬上来（两者目的不同：
+    头部 = 切到某个账号；表格搜索 = 筛选正在看的这张表）。
+    """
+
+    def test_no_long_select_anymore(self):
+        self.assertNotIn('<select id="account"></select>', PAGE)
+
+    def test_switcher_markup(self):
+        for eid in ("asw", "asw-btn", "asw-name", "asw-pop", "asw-q", "asw-list"):
+            self.assertIn(f'id="{eid}"', PAGE)
+
+    def test_has_search_box(self):
+        self.assertIn('id="asw-q"', PAGE)
+        self.assertIn('oninput="renderAswList()"', PAGE)
+        self.assertIn("function renderAswList(", PAGE)
+
+    def test_list_is_height_capped_and_scrolls(self):
+        """关键：列表必须限高滚动，否则账号多时又把弹层撑得很长。"""
+        body = PAGE.split(".asw-list{", 1)[1].split("}", 1)[0]
+        self.assertIn("max-height:320px", body)
+        self.assertIn("overflow:auto", body)
+
+    def test_filters_by_label_and_display(self):
+        body = PAGE.split("function renderAswList(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("a.label", body)
+        self.assertIn("a.display", body)
+
+    def test_closes_on_outside_click_and_esc(self):
+        self.assertIn("function closeAsw(", PAGE)
+        self.assertIn("if (box && !box.contains(e.target)) closeAsw();", PAGE)
+        self.assertIn('if (e.key === "Escape") closeAsw();', PAGE)
+
+    def test_picking_switches_account(self):
+        body = PAGE.split("function pickFromAsw(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("closeAsw()", body)
+        self.assertIn("pick(label)", body)
+
+    def test_mobile_uses_fixed_panel(self):
+        block = PAGE.split("@media (max-width:760px){", 1)[1]
+        self.assertIn(".asw-pop{position:fixed", block)
+
+
 class TestStickyTableHeader(unittest.TestCase):
     """账号列表的表头要吸顶（用户 2026-11-02：「列标题固定在最上面，像表格冻结」）。
 
