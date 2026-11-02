@@ -420,6 +420,18 @@ def _db_path(settings: Settings) -> Path:
     return settings.data_dir / "gxks_questions.db"
 
 
+def app_factory() -> FastAPI:
+    """**无参**工厂：给 uvicorn 的 `reload=True` 用（2026-11-03）。
+
+    uvicorn 在 reload 模式下按导入字符串重新 import 并**无参**调用工厂，
+    而 `create_app(settings)` 需要参数 → 直接传它会报
+    `create_app() missing 1 required positional argument`。
+    这里在子进程里重新加载配置，保证热重载后读到的是最新配置。
+    """
+    from ..config import Settings
+    return create_app(Settings())
+
+
 def create_app(settings: Settings) -> FastAPI:
     from .page import PAGE
 
@@ -992,13 +1004,56 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
+def ensure_local_temp(settings: Settings) -> pathlib.Path:
+    """把临时目录指向 `data/tmp`（返回该路径）。
+
+    Playwright 会在系统临时目录里 `mkdtemp` 放 artifacts；受限会话下这一点
+    会被拒绝（EPERM），表现为「连上了但拿不到结果」。项目内的目录一定可写，
+    而且不污染用户临时区。
+    """
+    import os
+    import tempfile
+
+    d = settings.data_dir / "tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    os.environ["TEMP"] = str(d)
+    os.environ["TMP"] = str(d)
+    tempfile.tempdir = str(d)
+    return d
+
+
 def serve(settings: Settings) -> int:
-    """启动独立面板（uvicorn 阻塞直到 Ctrl+C）。"""
+    """启动独立面板（uvicorn 阻塞直到 Ctrl+C）。
+
+    ## 热重载默认开（2026-11-03 用户定）
+
+    用户原话：「为什么会经常出现这个是旧面板新代码的情况，不能一次性解决吗」
+    —— 根因是 Python 进程启动时把 `page.PAGE` 等模块载入内存，之后改磁盘文件
+    不会刷新已运行的进程，所以每次改代码都得手动重启面板，否则看到的一直是旧页面。
+
+    这里开 uvicorn 的 `reload=True`：改代码自动重启**主进程**，页面永远是最新。
+    对挂机刷课**没有影响** —— 刷课是独立子进程（`_spawn_script` 起的），
+    面板重启不碰它；日志是追加写文件，重连后尾巴照旧。
+
+    `panel.reload` 可关（默认 `True`）：只在排查"到底是新代码还是旧代码"时
+    才值得关掉，日常一律开着。
+    """
     import uvicorn
+
+    ensure_local_temp(settings)          # 必须在任何 Playwright 调用之前
 
     panel = settings.raw.get("panel", {})
     host = str(panel.get("host", "127.0.0.1"))
     port = int(panel.get("port", 8301))
-    print(f"[OK] 第二平台面板：http://{host}:{port}（Ctrl+C 停止）")
-    uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
+    reload_on = bool(panel.get("reload", True))
+    print(f"[OK] 第二平台面板：http://{host}:{port}（Ctrl+C 停止）"
+          + ("；已开热重载：改代码自动生效，不用手动重启" if reload_on else "；热重载已关"))
+    if reload_on:
+        # reload 必须传**导入字符串**，不能传 app 实例；源码目录随 settings 走
+        src_dir = str(Path(__file__).resolve().parents[2])
+        uvicorn.run("xxt.panel_gxks.app:app_factory", factory=True,
+                    host=host, port=port, log_level="warning",
+                    reload=True, reload_dirs=[src_dir])
+    else:
+        uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
     return 0

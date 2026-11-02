@@ -78,7 +78,9 @@ def list_all(debug_dir: Path, label: str) -> list[Path]:
 def update_row(debug_dir: Path, label: str, course: str | int | None,
                section_id: str | int, *, done_minutes: int | float | None = None,
                state: str | None = None, state_text: str | None = None,
-               practice_ready: bool | None = None) -> bool:
+               practice_ready: bool | None = None,
+               name: str = "", required_minutes: int | float | None = None,
+               idx: int | None = None, category: str = "") -> bool:
     """把某一节的最新状态**本地回写**进缓存，返回是否写成功。
 
     为什么要它（用户 2026-11-02）：节列表缓存只有 `gxks_sections.py`（人工点
@@ -87,8 +89,11 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
 
     原则：
     - **零平台请求** —— 只改本地文件，符合最小访问原则；
-    - 只更新**已存在**的缓存文件里的**已有行**（找不到文件或该节 → 返回 False，
-      绝不凭空造一份缓存，那样会盖掉"还没读过节列表"的真实状态）；
+    - 优先更新**已存在**的缓存文件里的**已有行**；
+    - 该节不在任何缓存里时（2026-11-03 用户踩到：今天刷的是**另一门课**，
+      老缓存里根本没有这些节 → 全部静默跳过、面板永远停在 10-30 的旧数据），
+      **新建/追加**一份该课程的缓存。否则"动态更新"对新课程完全无效；
+    - 新建时只写本次刷到的节，`summary` 按已有行算，不伪造未知节；
     - 原子写（先 .tmp 再 replace），面板 4 秒一轮询不会读到半截 JSON；
     - `read_at` 追加「本地回写」标记：它同时是面板 `SEC_SIG` 的一部分，
       变了面板才会重建表格（动态更新的开关）。
@@ -98,9 +103,10 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
     from datetime import datetime
 
     sid = str(section_id)
+    debug_dir = Path(debug_dir)
     target: Path | None = None
     data: dict | None = None
-    for cand in read_paths(Path(debug_dir), label, course):
+    for cand in read_paths(debug_dir, label, course):
         if not cand.exists():
             continue
         try:
@@ -111,8 +117,34 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
         if any(str(r.get("platform_chapter_id")) == sid for r in rows):
             target, data = cand, loaded
             break
+
     if target is None or data is None:
-        return False
+        # 该节不在任何缓存里 → 追加到「本课程」那份；连文件都没有就新建。
+        # 只写本次已知的这一行（不伪造其他节），summary 由这一行算出。
+        target = path(debug_dir, label, course)
+        data = {"ok": True, "label": label, "read_at": "",
+                "course": str(course or ""), "rows": [], "summary": {}}
+        if target.exists():
+            try:
+                data = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {"ok": True, "label": label, "read_at": "",
+                        "course": str(course or ""), "rows": [], "summary": {}}
+        data.setdefault("rows", [])
+        if name:                       # 没有节名就不写行（宁可空着也不写无意义数据）
+            data["rows"].append({
+                "idx": idx if idx is not None else len(data["rows"]),
+                "name": name,
+                "platform_chapter_id": sid,
+                "required_minutes": int(required_minutes or 0),
+                "done_minutes": int(done_minutes or 0),
+                "state": state or "learning",
+                "state_text": state_text or "",
+                "practice_locked": False,
+                "done_on_platform": state == "done",
+                "category": category or str(course or ""),
+                "practice_ready": bool(practice_ready),
+            })
 
     rows = data["rows"]
     changed = False

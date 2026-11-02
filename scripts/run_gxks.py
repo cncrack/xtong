@@ -288,12 +288,18 @@ def main() -> int:
                 return
             r = ev.get("row") or {}
             try:
+                # 带上 name/required_minutes/idx/category：新课程的节不在老缓存里时
+                # 要靠这些字段**新建**一份缓存行，否则面板永远看不到这节课（2026-11-03）
                 gcache.update_row(Path("data/debug"), acc_label, args.course,
                                   section,
                                   done_minutes=r.get("done_minutes"),
                                   state=r.get("state"),
                                   state_text=r.get("state_text"),
-                                  practice_ready=r.get("practice_ready"))
+                                  practice_ready=r.get("practice_ready"),
+                                  name=str(r.get("name") or row.get("name") or ""),
+                                  required_minutes=r.get("required_minutes"),
+                                  idx=r.get("idx"),
+                                  category=str(r.get("category") or ""))
             except Exception as exc:                          # noqa: BLE001
                 print(f"[WARN] 回写节缓存失败（不影响播放）：{type(exc).__name__}")
 
