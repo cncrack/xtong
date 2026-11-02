@@ -853,6 +853,19 @@ class TestRunLogBlock(unittest.TestCase):
         body = PAGE.split("function renderRunLog(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("当前没有运行中的任务", body)
 
+    def test_sec_lists_scroll_inside_body(self):
+        """待学/已完成列表太长用内部滚动条，不分页（2026-11-03 用户问题）。
+
+        为什么滚动不是分页：这页 4 秒轮询整块重绘，分页需要维护页码状态，
+        轮询会重置页码 → 体验很差；滚动条零状态、桌面/移动都能用。
+        """
+        self.assertIn("max-height:min(52vh,420px)", PAGE)
+        self.assertIn("overflow-y:auto", PAGE)
+        # 滚动条方案不依赖页码状态；折叠态还原仍由 SEC_OPEN 负责，没被破坏
+        self.assertIn('SEC_OPEN[d.dataset.blk]', PAGE)
+        # 窄屏也配了（>=440px 横滑，列不压扁）
+        self.assertIn("table{min-width:440px}", PAGE)
+
 
 class TestBrowserCardPerAccount(unittest.TestCase):
     """浏览器与会话**按账号区分**（用户 2026-11-02 提问后核实并落地）。

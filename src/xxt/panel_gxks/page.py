@@ -123,6 +123,9 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
   h1{font-size:16px}
   h2{font-size:14px}
   section{padding:12px;border-radius:10px}
+  /* 窄屏节列表也保持滚动条，只是表格最小宽收窄（仍够横滑看全关键列） */
+  details.blk>.body{max-height:50vh}
+  details.blk>.body .table-wrap table{min-width:440px}
   /* TAB 条：可横向滑动，不换行 */
   .pagetabs{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
   .pagetabs button{padding:7px 14px;font-size:13px}
@@ -466,7 +469,14 @@ details.blk>summary::before{content:"\25B8";color:var(--dim);font-size:11px}
 details.blk[open]>summary::before{content:"\25BE"}
 details.blk.todo>summary{background:#fffaf2;color:var(--warn)}
 details.blk>summary .sum{margin-left:auto;color:var(--dim);font-size:13px}
-details.blk>.body{padding:8px 10px 10px}
+/* 两个列表很长时的纵向滚动（2026-11-03 用户问「待学/已完成太长怎么办」）。
+   加滚动条、不分页：分页要维护页码状态，而这页 4 秒轮询重绘会重置翻页。
+   高度取 min 一屏一半高度——并排两列时各占一半，窄屏堆叠时也一致不拉长整页。
+   表格 min-width 保证列不压扁 → 纵向条 + 窄屏横向条可并存。 */
+details.blk>.body{padding:8px 10px 10px;max-height:min(52vh,420px);overflow-y:auto;
+                  scrollbar-width:thin}
+details.blk>.body .table-wrap{max-height:none;overflow:visible;border:0;border-radius:0}
+details.blk>.body .table-wrap table{min-width:520px}
 .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12.5px;
      border:1px solid transparent;white-space:nowrap}
 .t-done{background:#e6f4ef;color:var(--ok);border-color:#c6e6da}
