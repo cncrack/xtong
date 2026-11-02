@@ -387,6 +387,19 @@ class GxksDriver:
         except Exception:                                  # noqa: BLE001
             return []
 
+    def current_course(self) -> str:
+        """读**当前选中**的课程 value（没有课程维度的账号返回 ""）。
+
+        为什么要它（2026-11-03 用户发现）：节列表缓存按课程分文件存
+        （`sections_<代号>_<课程value>.json`），刷课脚本回写时必须知道自己在
+        哪门课下 —— 否则回写进 `sections_<代号>.json`（老文件），
+        面板读的是 `sections_<代号>_32.json`，两边永远对不上。
+        """
+        for c in self.list_courses():
+            if c.get("selected"):
+                return str(c.get("value") or "")
+        return ""
+
     def select_course(self, value: str | int) -> bool:
         """切到指定课程并**回读校验**；校验不过返回 False。
 

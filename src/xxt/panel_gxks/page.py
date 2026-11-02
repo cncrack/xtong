@@ -774,6 +774,32 @@ button.mini{padding:3px 9px;font-size:13px}
           <button class="primary" type="button" onclick="saveAccount()">保存</button>
         </div>
       </form>
+
+      <!-- 面板设置（2026-11-03 用户问「panel.reload 配置项在页面哪里」→ 直接放页面上）
+           ⚠ 用 section 而不是 .fcard：账号设置是**三栏**布局（.form-cols 里 3 张 fcard），
+           多插一张 fcard 会破坏三栏结构（回归测试 test_three_cards 会红）。 -->
+      <section style="margin-top:16px;padding:14px 16px;border:1px solid var(--line);
+                      border-radius:12px;background:var(--card)">
+        <h3 style="margin:0 0 8px">面板设置</h3>
+        <div class="fld">
+          <label for="f-reload">热重载</label>
+          <span><input id="f-reload" type="checkbox" checked> 改代码后自动重启面板</span>
+          <div class="hint">
+            开着：改代码后面板自动重启、页面立刻最新，不用手动重启进程。<br>
+            对挂机刷课<b>无影响</b>（刷课是独立子进程，面板重启不碰它）。<br>
+            关掉：面板只在启动时读一次代码 —— 这正是 2026-11-03「改了代码页面却没变」的根因。
+          </div>
+        </div>
+        <div class="fld">
+          <label for="f-poll">刷新间隔</label>
+          <span><input id="f-poll" type="number" min="1" max="60" step="1" value="4"> 秒</span>
+          <div class="hint">面板每隔几秒拉一次数据（4 秒是默认值）。调大能省资源，调小更实时。</div>
+        </div>
+        <div class="form-actions">
+          <span class="sp"></span>
+          <button type="button" onclick="savePanelSettings()">保存面板设置</button>
+        </div>
+      </section>
   </section>
 
   <!-- ------------------------------------------------ 视图 3：AI 模型（整行全宽） -->
@@ -2370,7 +2396,55 @@ for (const id of ["acct-status", "acct-port", "acct-cred"]) {
   el(id).addEventListener("change", () => { readFilter(); renderAccounts(STATE || {}); });
 }
 
-setInterval(load, 4000);
+// 轮询间隔可配（面板设置里改，默认 4 秒）。改完要重建定时器才生效。
+let POLL_MS = 4000;
+let POLL_TIMER = null;
+function setPoll(ms) {
+  POLL_MS = Math.max(1, Math.min(60, Number(ms) || 4)) * 1000;
+  if (POLL_TIMER) clearInterval(POLL_TIMER);
+  POLL_TIMER = setInterval(load, POLL_MS);
+  const c = el("clock");
+  if (c) c.textContent = c.textContent.replace(/每 \d+ 秒刷新/,
+    "每 " + (POLL_MS / 1000) + " 秒刷新");
+}
+
+// 面板设置：热重载开关 + 刷新间隔（2026-11-03 用户要求放到页面上）
+async function loadPanelSettings() {
+  try {
+    const r = await fetch("/api/panel/settings");
+    const d = await r.json();
+    const s = (d && d.settings) || {};
+    const rel = el("f-reload"), poll = el("f-poll");
+    if (rel) rel.checked = s.reload !== false;
+    if (poll) poll.value = s.poll_seconds || 4;
+    if (s.poll_seconds && s.poll_seconds * 1000 !== POLL_MS) {
+      setPoll(s.poll_seconds);
+    }
+  } catch (e) { /* 读不到就用默认值 */ }
+}
+
+async function savePanelSettings() {
+  const rel = el("f-reload"), poll = el("f-poll");
+  const body = {
+    reload: !!(rel && rel.checked),
+    poll_seconds: Math.max(1, Math.min(60, Number(poll && poll.value) || 4)),
+  };
+  try {
+    const r = await fetch("/api/panel/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)});
+    const d = await r.json();
+    if (d && d.ok) {
+      setPoll(body.poll_seconds);
+      toast(d.message || "已保存");
+    } else {
+      toast((d && d.error) || "保存失败");
+    }
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+
+setPoll(4000);
+loadPanelSettings();
 load();
 </script>
 </body>

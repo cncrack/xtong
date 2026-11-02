@@ -33,6 +33,7 @@ from ..adapters.gxks import sections_cache
 from ..config import Settings
 from ..store import gxks_ai_config
 from ..store import gxks_ops
+from ..store import gxks_panel_settings
 from ..store.schema_gxks import open_question_bank
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -1040,6 +1041,27 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": ok, "provider": want, "model": model,
                 "message": msg, "error": "" if ok else msg}
 
+    # ---------------------------------------------------------- 面板设置
+    @app.get("/api/panel/settings")
+    def panel_settings_get() -> dict:
+        """面板设置（热重载开关、刷新间隔）。
+
+        页面上的「账号设置 → 面板设置」读写的就是这里（2026-11-03 用户要求）。
+        """
+        return {"ok": True,
+                "settings": gxks_panel_settings.load(_db_path(settings))}
+
+    @app.post("/api/panel/settings")
+    def panel_settings_save(body: dict) -> dict:
+        """保存面板设置。只有 `reload` 需要重启面板才生效（它决定启动方式）。"""
+        items = {k: body.get(k) for k in ("reload", "poll_seconds")
+                 if k in body}
+        saved = gxks_panel_settings.save(_db_path(settings), items)
+        _record(settings, "", "panel-settings",
+                "保存面板设置：" + "、".join(f"{k}={v}" for k, v in saved.items()))
+        return {"ok": True, "settings": saved,
+                "message": "已保存（热重载开关需重启面板才生效）"}
+
     return app
 
 
@@ -1084,7 +1106,15 @@ def serve(settings: Settings) -> int:
     panel = settings.raw.get("panel", {})
     host = str(panel.get("host", "127.0.0.1"))
     port = int(panel.get("port", 8301))
+    # 页面上的开关（数据库 meta）优先于 toml：用户能在界面上改，改完重启即生效。
+    # toml 的 panel.reload 作为默认值来源，数据库里没有才用它。
     reload_on = bool(panel.get("reload", True))
+    try:
+        db_reload = gxks_panel_settings.load(_db_path(settings)).get("reload")
+        if db_reload is not None:
+            reload_on = bool(db_reload)
+    except Exception:                                       # noqa: BLE001
+        pass                                                # 读不到就用 toml 的值
     print(f"[OK] 第二平台面板：http://{host}:{port}（Ctrl+C 停止）"
           + ("；已开热重载：改代码自动生效，不用手动重启" if reload_on else "；热重载已关"))
     if reload_on:

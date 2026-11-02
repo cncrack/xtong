@@ -218,6 +218,10 @@ def main() -> int:
 
     code = 0
     course_ready = not args.course        # 只需切一次课程
+    # 回写节缓存要用**当前课程 value**（缓存按课分文件：`sections_<代号>_<value>.json`）。
+    # 用户没指定 --course 时从页面读当前选中的那门（2026-11-03：不读就会写错文件，
+    # 面板读的是 `sections_default_32.json`，脚本却写进 `sections_default.json`，两边永远对不上）。
+    course_value = str(args.course or "")
     for idx in range(1, args.max_sections + 1):
         spent_h = (time.monotonic() - started) / 3600
         if spent_h >= args.max_total_hours:
@@ -244,6 +248,11 @@ def main() -> int:
                 break
             course_ready = True
             print(f"已切到课程 {args.course}")
+        if not course_value:
+            # 切换后（或本就在这门课时）读当前选中课程 —— 缓存按课分文件，必须对上
+            course_value = drv.current_course()
+            if course_value:
+                print(f"当前课程 value={course_value}（节缓存回写按它分文件）")
         # **逐页找节**（Q27）：列表 1/4 共 36 节，只在当前页挑会误报“没有未完成的节”。
         # 找到后 find_section 会停在该节所在页——`read_row` 的回读靠当前页。
         row = drv.find_section(wanted)
@@ -290,7 +299,7 @@ def main() -> int:
             try:
                 # 带上 name/required_minutes/idx/category：新课程的节不在老缓存里时
                 # 要靠这些字段**新建**一份缓存行，否则面板永远看不到这节课（2026-11-03）
-                gcache.update_row(Path("data/debug"), acc_label, args.course,
+                gcache.update_row(Path("data/debug"), acc_label, course_value,
                                   section,
                                   done_minutes=r.get("done_minutes"),
                                   state=r.get("state"),
