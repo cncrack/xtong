@@ -73,3 +73,78 @@ def list_all(debug_dir: Path, label: str) -> list[Path]:
             if p.name == f"sections_{label}.json"
             or p.name.startswith(f"sections_{label}_")]
     return sorted(hits, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def update_row(debug_dir: Path, label: str, course: str | int | None,
+               section_id: str | int, *, done_minutes: int | float | None = None,
+               state: str | None = None, state_text: str | None = None,
+               practice_ready: bool | None = None) -> bool:
+    """把某一节的最新状态**本地回写**进缓存，返回是否写成功。
+
+    为什么要它（用户 2026-11-02）：节列表缓存只有 `gxks_sections.py`（人工点
+    「刷新节列表」）会写，刷课脚本播完不回写 → 面板的节进度表停在几天前的旧数据，
+    「待学 / 已完成」两个分区不会随学习动。
+
+    原则：
+    - **零平台请求** —— 只改本地文件，符合最小访问原则；
+    - 只更新**已存在**的缓存文件里的**已有行**（找不到文件或该节 → 返回 False，
+      绝不凭空造一份缓存，那样会盖掉"还没读过节列表"的真实状态）；
+    - 原子写（先 .tmp 再 replace），面板 4 秒一轮询不会读到半截 JSON；
+    - `read_at` 追加「本地回写」标记：它同时是面板 `SEC_SIG` 的一部分，
+      变了面板才会重建表格（动态更新的开关）。
+    """
+    import json
+    import os
+    from datetime import datetime
+
+    sid = str(section_id)
+    target: Path | None = None
+    data: dict | None = None
+    for cand in read_paths(Path(debug_dir), label, course):
+        if not cand.exists():
+            continue
+        try:
+            loaded = json.loads(cand.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = loaded.get("rows") or []
+        if any(str(r.get("platform_chapter_id")) == sid for r in rows):
+            target, data = cand, loaded
+            break
+    if target is None or data is None:
+        return False
+
+    rows = data["rows"]
+    changed = False
+    for r in rows:
+        if str(r.get("platform_chapter_id")) != sid:
+            continue
+        if done_minutes is not None and r.get("done_minutes") != int(done_minutes):
+            r["done_minutes"] = int(done_minutes)
+            changed = True
+        if state and r.get("state") != state:
+            r["state"] = state
+            changed = True
+        if state_text is not None:
+            r["state_text"] = state_text
+        if practice_ready is not None:
+            r["practice_ready"] = bool(practice_ready)
+        break
+
+    # summary 与 gxks_sections.py 的口径保持一致
+    data["summary"] = {
+        "sections": len(rows),
+        "done": sum(1 for r in rows if r.get("state") == "done"),
+        "practice_ready": sum(1 for r in rows if r.get("practice_ready")),
+        "practice_locked": sum(1 for r in rows if r.get("practice_locked")),
+        "minutes_done": sum(int(r.get("done_minutes") or 0) for r in rows),
+        "minutes_required": sum(int(r.get("required_minutes") or 0) for r in rows),
+    }
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    base = str(data.get("read_at") or "")
+    data["read_at"] = f"{base.split('（本地回写')[0].strip()}（本地回写 {stamp}）" if base else f"本地回写 {stamp}"
+
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    return True

@@ -42,6 +42,7 @@ from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import netcheck  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
+from xxt.adapters.gxks import sections_cache as gcache  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
 
 
@@ -124,6 +125,32 @@ def main() -> int:
         return 2
     page = session.page
     drv = gdriver.GxksDriver(page)
+
+    # ---- 自动注入登录态快照（用户 2026-11-02：「记录登录信息，后期自己登陆」）----
+    # 本站 cookie 全是会话级，Chrome 一关就清空；靠 data/storage_state_gxks_<标签>.json
+    # 把票注回去。零密码、零平台请求。
+    _settings = Settings(root=find_project_root())
+    _state_file = gbrowser.state_path(_settings, acc_label)
+    _snap = gbrowser.state_summary(_state_file)
+    _restored = 0
+    if _snap.get("saved"):
+        try:
+            _restored = gbrowser.restore_cookies(session, _state_file)
+            print(f"[OK] 已注入登录态快照（{_restored} 条 cookie，"
+                  f"{_snap.get('at', '?')} 存的）")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"[WARN] 注入登录态失败（{type(exc).__name__}: {exc}）→ 按未登录处理")
+    else:
+        print("[WARN] 没有登录态快照 → 若未登录，请先在面板点「检查会话」存一份")
+    if _restored:
+        # 注入后**只在本地**判一次：如果还停在登录页，说明票已作废
+        try:
+            page.goto(selectors.MAIN_PAGE, wait_until="commit", timeout=45000)
+            page.wait_for_timeout(2000)
+        except Exception:                                     # noqa: BLE001
+            pass
+        if gdriver.at_login_page(page.url):
+            print("[WARN] 注入后仍在登录页 —— 那张票可能已作废，需要在面板「重新登录」")
 
     wanted = [s.strip() for s in args.sections.split(",")] if args.sections else None
     tag = f"{args.label}_" if args.label else ""
@@ -252,9 +279,27 @@ def main() -> int:
 
         log_path = Path("data/debug") / f"watch_gxks_{tag}{section}_{datetime.now():%Y%m%d-%H%M%S}.jsonl"
         on_event, close_log = wg.make_printer(log_path)
+        # 每次 progress 都**本地回写**节缓存（用户 2026-11-02：节进度要随学习动态更新）。
+        # 零平台请求：只改 data/debug/sections_*.json；面板 4 秒轮询自然读到新值。
+        # 失败不打断播放（回写只是展示用，真数据在平台与账本里）。
+        def _on_event(ev: dict) -> None:
+            on_event(ev)
+            if ev.get("kind") != "progress":
+                return
+            r = ev.get("row") or {}
+            try:
+                gcache.update_row(Path("data/debug"), acc_label, args.course,
+                                  section,
+                                  done_minutes=r.get("done_minutes"),
+                                  state=r.get("state"),
+                                  state_text=r.get("state_text"),
+                                  practice_ready=r.get("practice_ready"))
+            except Exception as exc:                          # noqa: BLE001
+                print(f"[WARN] 回写节缓存失败（不影响播放）：{type(exc).__name__}")
+
         out = drv.watch(section, interval=args.interval, max_seconds=args.max_hours * 3600,
                         read_progress_every=args.progress_every, margin_minutes=args.margin,
-                        on_event=on_event)
+                        on_event=_on_event)
         close_log()
 
         final = out.get("last_row") or {}
@@ -317,6 +362,13 @@ def main() -> int:
                "不限" if mins_limit <= 0 else mins_limit)
         print(f"今日累计：{q['sections']} 节 / {q['minutes']:.0f} 分钟"
               f"（额度 {lim[0]} 节 / {lim[1]} 分钟）")
+    # 收尾时滚动刷新登录态快照（用户 2026-11-02：「记录登录信息，后期自己登陆」）
+    # 票随时可能被服务端换掉；跑完再存一次，下次开跑注入的就是最新那张。
+    try:
+        _saved = gbrowser.save_state(session, _state_file)
+        print(f"[OK] 已刷新登录态快照（{_saved.get('cookies', 0)} 条 cookie）")
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[WARN] 刷新登录态快照失败（{type(exc).__name__}）")
     session.close()
     return code
 

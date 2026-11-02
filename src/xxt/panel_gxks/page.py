@@ -282,7 +282,9 @@ table.acct-tbl td.c-today b{font-size:15px;color:var(--accent);
 /* 操作列：图标按钮组，单行不折行（折行会让行高翻倍）。
    9 栏下操作列约 200px，4 个图标 + 间距 ≈ 150px，放得下；
    若将来加按钮，优先缩图标间距而不是允许折行。 */
-table.acct-tbl td.c-ops{white-space:nowrap;text-align:right}
+/* 操作列不裁剪：按钮被 ellipsis 截掉会露出半个、且悬停会误激活（用户 2026-11-02） */
+table.acct-tbl td.c-ops{white-space:nowrap;text-align:right;overflow:visible}
+table.acct-tbl th.c-ops{overflow:visible}
 table.acct-tbl td.c-ops button{margin-left:3px;padding:2px 7px}
 /* 端口列单行：端口号 + 活/停 标签不折行（用户 2026-11-02 明确要求） */
 table.acct-tbl td.c-port{white-space:nowrap}
@@ -437,6 +439,12 @@ tr.s-learn td:first-child{box-shadow:inset 3px 0 0 #f2c272}
 tr.s-none td:first-child{box-shadow:inset 3px 0 0 #d9dce1}
 /* 多课程/多章节时的分组小标题行 */
 tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
+/* 日志记录区的子标题（运行日志 / 操作记录） */
+.ops-sub{font-size:12.5px;font-weight:700;color:var(--txt);margin:12px 0 6px;
+         padding-bottom:4px;border-bottom:1px dashed var(--line);
+         letter-spacing:.04em}
+.ops-sub:first-of-type{margin-top:2px}
+#runlog pre{margin:0}
 /* 操作记录的前三列（时间/动作/结果）不折行，把余量全留给详情 */
 #ops td:nth-child(-n+3){white-space:nowrap}
 /* 两条进度条（节数 / 学时）：纯 div，不引图表库 */
@@ -502,7 +510,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Z3</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Z4</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -594,6 +602,8 @@ button.mini{padding:3px 9px;font-size:13px}
         title="用本账号的端口与 profile 目录拉起 Chrome">启动</button>
       <button id="btn-bstop" class="bgrp-btn danger" onclick="post('/api/browser/stop')"
         title="只停面板自己拉起的那个 Chrome">停止</button>
+      <button id="btn-bcopy" class="mini" type="button" onclick="copyChromeCmd()"
+        title="复制该账号的 Chrome 启动命令（面板在非交互会话里无法启动 GUI 程序时用）">复制命令</button>
       <!-- 账号密码状态放在浏览器这一行（用户 2026-11-02 建议），与「已登录」在会话行对称 -->
       <span class="b-login" id="b-cred"></span>
     </div>
@@ -638,7 +648,16 @@ button.mini{padding:3px 9px;font-size:13px}
     <div id="work"></div>
   </section>
 
-  <section id="sec-ops"><h2>操作记录</h2><div id="ops"></div></section>
+  <!-- 日志记录（用户 2026-11-02：「操作记录是不是要改为日志记录」+
+       「黑色的刷课进程记录要不要放在这块区域单独一块」）：
+       上半 = 当前账号任务的运行日志（4 秒轮询实时尾巴）；下半 = 操作记录表。 -->
+  <section id="sec-ops">
+    <h2>日志记录</h2>
+    <div class="ops-sub">运行日志 <span class="muted" id="runlog-meta"></span></div>
+    <div id="runlog"></div>
+    <div class="ops-sub">操作记录</div>
+    <div id="ops"></div>
+  </section>
   </section>
 
   <!-- ------------------------------------------------ 视图 2：账号设置（整行全宽） -->
@@ -974,11 +993,11 @@ function acctTr(c, accRow, cur) {
     html += '<button class="mini danger" onclick="stopJob(\'' + esc(c.label) +
       '\')" title="停止这个账号的学习任务">停止</button>';
   } else if (!c.enabled) {
-    html += '<button class="mini" disabled title="账号已停用；先点「启用」">已停用</button>';
+    html += '<button class="mini" disabled title="账号已停用；先点「启用」">停用中</button>';
   } else if (!c.port_alive) {
-    html += '<button class="mini" disabled title="先点上方「启动浏览器」">浏览器没开</button>';
+    html += '<button class="mini" disabled title="先点上方「启动浏览器」">未启动</button>';
   } else if (left <= 0) {
-    html += '<button class="mini" disabled title="今日额度已用完（账本按账号统计）">额度用完</button>';
+    html += '<button class="mini" disabled title="今日额度已用完（账本按账号统计）">额度满</button>';
   } else {
     const n = left === Infinity ? 3 : Math.min(3, left);
     html += '<button class="mini primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
@@ -1084,21 +1103,20 @@ function renderAccounts(state) {
     '<th style="width:28px"><input type="checkbox" id="acct-all"' +
     (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
     '<th style="width:46px">序号</th>' +
-    '<th style="width:20%">账号</th>' +
-    '<th style="width:26%">今日</th>' +
-    '<th style="width:13%">课程</th>' +
-    '<th style="width:12%">登录</th>' +
-    '<th style="width:20%">操作</th>' +
+    '<th style="width:18%">账号</th>' +
+    '<th style="width:22%">今日</th>' +
+    '<th style="width:11%">课程</th>' +
+    '<th style="width:11%">登录</th>' +
+    '<th style="width:26%">操作</th>' +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
   if (!state.accounts_file) {
     html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
       "（data/account.local.json）。点「＋ 新增账号」会自动建 data/accounts.local.json，" +
       "一条账号一个 port / profile。</div>";
   }
-  const mine = (state.jobs || []).find((j) => j.label === state.label);
-  if (mine && mine.tail && mine.tail.length) {
-    html += "<pre>" + esc(mine.tail.join("\n")) + "</pre>";
-  }
+  // 运行日志不再塞在这里（用户 2026-11-02：「黑色的刷课进程记录，
+  // 要不要放在操作记录这块区域中单独一块」）→ 见 renderRunLog，
+  // 已移到底部「日志记录」区，账号表保持干净。
   el("accounts").innerHTML = html;
 }
 
@@ -1527,6 +1545,30 @@ async function deleteAccount(label) {
   const data = await apiPost("/api/accounts/delete", { label: label, confirm: true });
   toast(data.message || data.error || "已提交", !data.ok);
   load();
+}
+
+// 复制该账号的 Chrome 启动命令（用户 2026-11-02：面板在非交互会话里
+// 无法启动 GUI 程序 —— Python 里 Popen 会被沙箱终止、经 PowerShell 也不行。
+// 所以给一个一键复制的命令行，用户在自己的 PowerShell 窗口粘一下即可。）
+async function copyChromeCmd() {
+  const b = (STATE && STATE.browser) || {};
+  const chrome = b.chrome || "chrome.exe";
+  const port = b.port || "";
+  const profile = b.profile || "";
+  if (!port || !profile) {
+    toast("还没拿到端口 / profile，稍等刷新后再试", true);
+    return;
+  }
+  const cmd = '"' + chrome + '" --remote-debugging-port=' + port
+    + ' --user-data-dir="' + profile + '"'
+    + " --no-first-run --no-default-browser-check --no-proxy-server";
+  try {
+    await navigator.clipboard.writeText(cmd);
+    toast("已复制启动命令，粘到你的 PowerShell 窗口执行即可");
+  } catch (e) {
+    // 非 https / 无剪贴板权限时退化为弹窗手动复制
+    window.prompt("复制下面这条命令到 PowerShell 执行：", cmd);
+  }
 }
 
 // 按**指定账号**渲染浏览器区（悬停预览用）；不传 label 就用当前选中账号。
@@ -2048,6 +2090,34 @@ function renderOps(state) {
   el("ops").innerHTML = html + "</tbody></table></div>";
 }
 
+// 运行日志（用户 2026-11-02：「黑色的刷课进程记录……单独一块」）。
+// 数据来自 state.jobs[].tail —— 后端已经在读日志文件的尾巴，这里只负责展示。
+// 当前选中账号的任务优先显示；其他账号的任务折叠在后面，避免多任务时刷屏。
+function renderRunLog(state) {
+  const box = el("runlog"), meta = el("runlog-meta");
+  if (!box) return;
+  const jobs = (state && state.jobs) || [];
+  if (!jobs.length) {
+    box.innerHTML = '<div class="empty">当前没有运行中的任务（刷课 / 做练习 / 刷新节列表的实时输出会显示在这里）。</div>';
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const cur = jobs.find((j) => j.label === state.label) || jobs[0];
+  if (meta) {
+    meta.textContent = "· " + (cur.label || "") + "（" + (cur.kind || "") +
+      " 起于 " + (cur.since || "?") + "，每 4 秒刷新）";
+  }
+  const tail = (cur.tail || []);
+  box.innerHTML = "<pre>" + (tail.length ? esc(tail.join("\n")) : "（日志还没写出内容）") +
+    "</pre>";
+  if (jobs.length > 1) {
+    const others = jobs.filter((j) => j !== cur)
+      .map((j) => j.label + "·" + (j.kind || "")).join("、");
+    box.innerHTML += '<div class="muted" style="margin-top:4px">还有其他任务在跑：' +
+      esc(others) + "（点对应账号行可看它的日志）</div>";
+  }
+}
+
 // 账号切换器：缓存账号列表，供弹层过滤用
 let ASW_LIST = [];
 
@@ -2159,6 +2229,7 @@ async function load() {
     renderAi(state);
     renderSections(state);
     renderWork(state);
+    renderRunLog(state);
     renderOps(state);
     el("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }) +
       " · 每 4 秒刷新";

@@ -314,8 +314,12 @@ class TestLayout20261031(unittest.TestCase):
         head = PAGE.split('table class="acct-tbl"', 1)[1].split("</thead>", 1)[0]
         self.assertIn('>账号</th>', head)
         self.assertIn('>操作</th>', head)
-        for w in ("width:20%", "width:26%", "width:13%", "width:12%"):
+        # 2026-11-02 二次调整：操作列 20%→26%（原来放不下「未启动」+4 个图标，
+        # 被 ellipsis 截断；余量从今日/课程/登录等比让出）
+        for w in ("width:18%", "width:22%", "width:11%", "width:26%"):
             self.assertIn(w, head)
+        self.assertIn("table.acct-tbl td.c-ops{white-space:nowrap;"
+                      "text-align:right;overflow:visible}", PAGE)
         self.assertIn("table.acct-tbl{table-layout:fixed}", PAGE)
         # ⚠ 只能看账号表的表头：`>状态</th>` 在「节进度」表里也有
         self.assertNotIn(">端口</th>", head)
@@ -342,11 +346,11 @@ class TestLayout20261031(unittest.TestCase):
         inner = 1280 - 36                               # main 内宽
         col = (inner - 14 * 11) / 12
         table = col * 8 + 14 * 7 - 40                   # 账号表可用宽度
-        account_col = table * 0.20                      # 账号列 20%
+        account_col = table * 0.18                      # 账号列 18%
         self.assertGreaterEqual(account_col, 120,        # 放得下「林鑫阳」+ 状态圆点
                                 f"账号列只有 {account_col:.0f}px，会挤")
-        today_col = table * 0.26
-        self.assertGreaterEqual(today_col, 170,
+        today_col = table * 0.22
+        self.assertGreaterEqual(today_col, 150,
                                 f"今日列只有 {today_col:.0f}px，单位可能被截断")
 
     # ③ 右侧浏览器与会话
@@ -819,6 +823,35 @@ class TestCancelButtonWorks(unittest.TestCase):
         """newAccount 不能调 resetAccountForm（后者会切回列表，方向相反）。"""
         body = PAGE.split("function newAccount(", 1)[1].split("\n}", 1)[0]
         self.assertNotIn("resetAccountForm()", body)
+
+
+class TestRunLogBlock(unittest.TestCase):
+    """运行日志独立成块（用户 2026-11-02：「黑色的刷课进程记录，
+    要不要一起放在操作记录这块区域中单独一块」+「操作记录改为日志记录」）。"""
+
+    def test_ops_section_renamed_to_log(self):
+        ops = PAGE.split('<section id="sec-ops">', 1)[1].split("</section>", 1)[0]
+        self.assertIn("<h2>日志记录</h2>", PAGE.split('id="sec-ops"', 1)[1][:120])
+        # 两个子块：运行日志 + 操作记录
+        self.assertIn('id="runlog"', ops)
+        self.assertIn('id="ops"', ops)
+        self.assertIn("运行日志", ops)
+        self.assertIn("操作记录", ops)
+
+    def test_runlog_rendered_by_own_function(self):
+        self.assertIn("function renderRunLog(", PAGE)
+        # 必须进 load() 的渲染链，否则 4 秒轮询不会刷新
+        body = PAGE.split("async function load(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("renderRunLog(state)", body)
+
+    def test_tail_no_longer_inside_account_table(self):
+        """黑色 pre 不再塞在账号表下面（用户要求单独一块）。"""
+        body = PAGE.split("function renderAccounts(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertNotIn("mine.tail", body)
+
+    def test_empty_state_when_no_job(self):
+        body = PAGE.split("function renderRunLog(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("当前没有运行中的任务", body)
 
 
 class TestBrowserCardPerAccount(unittest.TestCase):
