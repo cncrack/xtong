@@ -360,6 +360,18 @@ table.acct-tbl td.c-today{white-space:nowrap;overflow:hidden;text-overflow:ellip
 .ai-testmsg.bad{color:var(--bad);background:#fdf2f1;padding:7px 9px;
                 border:1px solid #f0c0bb}
 .ai-hint{color:var(--dim);font-size:12px;line-height:1.5;margin-top:8px}
+/* 会话行末尾的登录状态（用户 2026-11-02：放到「会话」那一行）：
+   不参与等宽分配，靠右紧贴按钮。 */
+.b-login{flex:0 0 auto;display:flex;align-items:center;margin-left:2px}
+.b-login .tag{font-size:12px;padding:2px 8px;white-space:nowrap}
+
+/* 浏览器状态标签：三枚排成一行不换行（用户 2026-11-02 截图要求）。
+   右栏内容约 365px，三枚约 300px，够放；真的不够时横向裁切而不是折行。 */
+.b-tags{display:flex;gap:5px;align-items:center;flex-wrap:nowrap;
+        overflow:hidden;margin:0 0 8px}
+.b-tags .tag{flex:0 0 auto;font-size:12px;padding:2px 8px;white-space:nowrap}
+/* 第一枚（cdp / managed）允许收缩并省略，保证后两枚始终可见 */
+.b-tags .tag:first-child{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 /* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
    原来 6 行竖表把整张卡撑到 396px，右侧一长条空白（实测 6 个账号时差 1116px）。 */
 .binfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
@@ -472,7 +484,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02W</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Y</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -573,6 +585,8 @@ button.mini{padding:3px 9px;font-size:13px}
         title="把本账号的登录态快照注入当前 Chrome（零密码）">恢复登录</button>
       <button id="btn-rlogin" class="bgrp-btn" onclick="reloginSession()"
         title="用本账号的账号密码填表登录一次；遇验证码立即停、转人工">重新登录</button>
+      <!-- 登录状态放在会话这一行（用户 2026-11-02 要求，语义也属于"会话"） -->
+      <span class="b-login" id="b-login"></span>
     </div>
     <div id="browser"></div>
 
@@ -1512,15 +1526,22 @@ function renderBrowser(state, browser, label) {
   el("browser-meta").textContent = card
     ? "· " + (card.display || card.label) + "（端口 " + (b.port || "?") + "）"
     : "";
-  let html = '<div class="row" style="margin-bottom:8px">' +
+  // 三枚标签排一行（用户 2026-11-02 截图要求），见 .b-tags
+  let html = '<div class="b-tags">' +
     '<span class="tag ' + (managed ? "t-ai" : "t-bank") + '">' +
     (managed ? "managed · 程序自起（容器形态）" : "cdp · 连你已开的 Chrome") + "</span>" +
     '<span class="tag ' + (b.port_alive ? "t-done" : "t-none") + '">端口 ' +
     esc(b.port) + (b.port_alive ? " 活着" : " 未监听") + "</span>" +
     (b.started_by_panel ? '<span class="tag t-learn">面板启动 · ' + esc(b.since) + "</span>" : "") +
-    (s ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">页面上' +
-      (s.logged_in ? "已登录" : "未登录") + "</span>" : "") +
     "</div>";
+  // 登录状态写到「会话」行末尾的占位里（用户 2026-11-02：「可以把已登录放在这一行」）
+  const loginBox = el("b-login");
+  if (loginBox) {
+    loginBox.innerHTML = s
+      ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">' +
+        (s.logged_in ? "已登录" : "未登录") + "</span>"
+      : "";
+  }
   // 紧凑双列：原来 6 行竖表占了整张卡，右边一长条空白。
   // 现在短项并排（Chrome / profile / 凭据），长项（快照、上次检查）独占一行。
   // 短项并排；长路径单独整行（用户 2026-11-02：「信息显示不全」「如何排列优化」）

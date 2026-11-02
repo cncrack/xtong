@@ -507,6 +507,54 @@ class TestAccountSwitcher(unittest.TestCase):
         self.assertIn("Date.now() - ASW_OPENED_AT < 200", PAGE)
 
 
+class TestLoginTagOnSessionRow(unittest.TestCase):
+    """「已登录」放在会话那一行（用户 2026-11-02：「可以把已登录放在这一行」）。
+
+    语义上也更合理：登录状态属于「会话」，与检查/恢复/重登同类。
+    """
+
+    def test_placeholder_in_session_row(self):
+        # 会话行的 bgrp 里要有 b-login 占位
+        m = PAGE.split('class="bgrp-lab">会话', 1)
+        self.assertEqual(len(m), 2, "找不到会话行")
+        seg = m[1].split("</div>", 1)[0]
+        self.assertIn('id="b-login"', seg)
+
+    def test_login_rendered_into_placeholder(self):
+        body = PAGE.split("function renderBrowser(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn('el("b-login")', body)
+        self.assertIn('s.logged_in ? "已登录" : "未登录"', body)
+
+    def test_not_in_tags_row_anymore(self):
+        """登录标签不应再渲染进 .b-tags 那一行。"""
+        seg = PAGE.split("let html = '<div class=\"b-tags\">'", 1)
+        self.assertEqual(len(seg), 2, "找不到 b-tags 渲染")
+        head = seg[1].split(";", 1)[0]
+        self.assertNotIn("logged_in", head)
+
+    def test_tag_text_is_short(self):
+        self.assertNotIn('"页面上"', PAGE)
+
+
+class TestBrowserTagsOneLine(unittest.TestCase):
+    """浏览器状态标签排一行（用户 2026-11-02 截图：「这三个一行显示」）。"""
+
+    def test_tags_use_dedicated_nowrap_row(self):
+        self.assertIn('class="b-tags"', PAGE)
+        body = PAGE.split(".b-tags{", 1)[1].split("}", 1)[0]
+        self.assertIn("flex-wrap:nowrap", body)
+        self.assertIn("overflow:hidden", body)
+
+    def test_first_tag_can_shrink(self):
+        """第一枚（cdp/managed）允许省略，保证后面「端口」「登录」始终可见。"""
+        self.assertIn(".b-tags .tag:first-child{flex:0 1 auto", PAGE)
+
+    def test_login_text_shortened(self):
+        """用户：「把页面上已登录，直接改为已登录」。"""
+        self.assertNotIn('"页面上"', PAGE)
+        self.assertIn('(s.logged_in ? "已登录" : "未登录")', PAGE)
+
+
 class TestIdHasMatchingClass(unittest.TestCase):
     """通用防护：id 元素若被 class 选择器样式化，就必须带那个 class。
 
