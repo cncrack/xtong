@@ -338,9 +338,8 @@ class TestLayout20261031(unittest.TestCase):
         self.assertIn("function hl(", PAGE)
         self.assertIn('<mark class=\\"hit\\">', PAGE)
         self.assertIn("mark.hit{background:#fff3bf", PAGE)
-        # 名称、副标题（学校/专业）、端口都要用上高亮
+        # 名称与端口用上高亮（副标题小字已在 2026-11-02 移除，改由详情卡展示）
         self.assertIn("hl(nameTxt, q)", PAGE)
-        self.assertIn("hl(sub, q)", PAGE)
         self.assertIn("hl(c.port, q)", PAGE)
 
     def test_highlight_escapes_before_wrapping(self):
@@ -414,6 +413,41 @@ class TestLayout20261102(unittest.TestCase):
         self.assertIn('id="acct-form"', view)
         # 表单必须直接属于整页视图，不能被 .split 包成半宽
         self.assertNotIn('class="split"', view)
+
+
+class TestInfoShownOnlyOnce(unittest.TestCase):
+    """一处信息只在一个地方显示（用户 2026-11-02）。
+
+    用户原话：「在列表中有的，在这里面是否要显示，还是说在这显示的，
+    在列表中不要显示，有些不要两个都显示」。
+
+    划分：
+      列表 = 横向对比（账号名/端口/状态/今日/课程/快照时间）
+      详情卡 = 列表装不下的细项（学校/专业/年级/学号/自定义/凭据/运行态）
+    """
+
+    def test_row_has_no_school_subtitle(self):
+        """账号格子里不要再有「学校·专业·年级」小字（会把列宽撑开）。"""
+        body = PAGE.split("function acctTr(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertNotIn('class="sub"', body)
+        self.assertNotIn("const sub =", body)
+
+    def test_detail_keeps_profile_fields(self):
+        """小字去掉后，学校/专业/年级/学号必须由详情卡承担。"""
+        body = PAGE.split("function acctDetailHtml(", 1)[1].split("\nfunction ", 1)[0]
+        for k in ("学校", "专业", "年级", "学号"):
+            self.assertIn(k, body, f"详情卡缺 {k}")
+
+    def test_detail_drops_list_duplicates(self):
+        """今日节数/时长/课程进度列表列已有 → 详情卡不再重复。"""
+        body = PAGE.split("function acctDetailHtml(", 1)[1].split("\nfunction ", 1)[0]
+        for k in ("今日节数", "今日时长", "这门课", "凭据文件"):
+            self.assertNotIn(k, body, f"详情卡不该再显示 {k}（列表已有或恒定值）")
+
+    def test_detail_keeps_credential_and_job(self):
+        body = PAGE.split("function acctDetailHtml(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("自动重登", body)
+        self.assertIn("正在跑", body)
 
 
 class TestAccountSwitcher(unittest.TestCase):

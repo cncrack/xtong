@@ -267,8 +267,6 @@ table.acct-tbl tbody tr.cur{background:#f0f6ff;
   box-shadow:inset 3px 0 0 var(--accent)}
 table.acct-tbl tbody tr.off{opacity:.55}
 table.acct-tbl td.c-name b{font-size:14.5px}
-table.acct-tbl td.c-name .sub{color:var(--dim);font-size:12px;display:block;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
 table.acct-tbl td.c-today b{font-size:15px;color:var(--accent);
   font-variant-numeric:tabular-nums}
 /* 操作列：图标按钮组，单行不折行（折行会让行高翻倍）。
@@ -457,7 +455,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02R</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02S</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -879,8 +877,6 @@ function acctTr(c, accRow, cur) {
   const secLim = Number(lim.sections) || 0;
   const left = t.left_sections === null || t.left_sections === undefined
     ? Infinity : Number(t.left_sections) || 0;
-  const sub = [pf.school, pf.major, pf.grade].map((v) => String(v || "").trim())
-    .filter(Boolean).join(" · ");
   let html = '<tr class="' + (active ? "cur " : "") + (c.enabled ? "" : "off") +
     '" data-label="' + esc(c.label) + '">';
   html += '<td><input type="checkbox" class="acct-pick"' +
@@ -889,9 +885,9 @@ function acctTr(c, accRow, cur) {
   // 搜索命中处高亮：用户搜"甲"时能直接看出这行为什么被筛出来
   const q = (FILTER.q || "").trim();
   const nameTxt = c.display || c.label;
-  html += '<td class="c-name"><b>' + hl(nameTxt, q) + "</b>" +
-    (sub ? '<span class="sub" title="' + esc(sub) + '">' + hl(sub, q) + "</span>" : "") +
-    "</td>";
+  // 账号格子只放名字（用户 2026-11-02：「这些小字是否可以不要，会撑开列宽」）。
+  // 学校/专业/年级改由右侧「账号详情」承担，避免两处重复。
+  html += '<td class="c-name"><b>' + hl(nameTxt, q) + "</b></td>";
   // 端口列强制单行（用户 2026-11-02：「端口里面的内容显示一行显示」）：
   // 端口号 + 活/停 标签本来在 66px 里会折成两行，现在列宽加到 84 且 nowrap。
   html += '<td class="c-port">' + hl(c.port, q) + " " + (c.port_alive
@@ -1057,10 +1053,9 @@ function renderAccounts(state) {
 // 浮层 `pointer-events:none`：它不拦鼠标，所以"移开行"一定触发 mouseout，不会卡住。
 // 账号详情：**只显示列表里看不到的信息**（用户 2026-11-02：
 // 「账号详情里面的内容如果在账号列表中有的就不需要显示」）。
-// 列表已有 → 不重复：显示名、代号、端口、序号、今日 N/M 节、课程 done/total、登录快照时间。
-// 这里只留列表装不下的：档案细项、学号、自定义字段、凭据与运行态、额度口径。
+// 列表已有 → 详情卡不再重复：显示名、端口、状态、今日 N/M 节、课程 done/total、快照时间。
+// 这里只留列表装不下的：学校/专业/年级/学号、自定义字段、能否自动重登、正在跑。
 function acctDetailHtml(c, accRow) {
-  const t = c.today || {}, lim = c.limits || {}, sec = c.sections || {};
   const pf = (accRow && accRow.profile_fields) || {};
   const cf = (accRow && accRow.custom_fields) || {};
   const L = (k, v) => v === undefined || v === null || String(v).trim() === ""
@@ -1068,7 +1063,7 @@ function acctDetailHtml(c, accRow) {
           '<span class="dv">' + esc(v) + "</span></div>";
   let h = "";
 
-  // ① 档案：列表里只有一行被截断的小字，这里完整给出
+  // ① 档案：列表里已经不显示了（会撑宽账号列），只在这里给出
   const prof = L("学校", pf.school) + L("专业", pf.major) +
     L("年级", pf.grade) + L("学号", pf.student_id);
   if (prof) h += '<div class="dsec">档案</div>' + prof;
@@ -1083,22 +1078,9 @@ function acctDetailHtml(c, accRow) {
   // ③ 凭据与运行态：列表只有一个 ⚠ 图标或状态词
   h += '<div class="dsec">凭据与运行</div>';
   h += L("自动重登", c.credentials ? "可以（已配账号密码）" : "不能（掉线即停）");
-  h += L("凭据文件", "data/accounts.local.json");
   h += L("正在跑", c.job ? ((c.job.kind || "") + " · 起于 " + (c.job.since || ""))
                         : "空闲");
 
-  // ④ 额度口径：列表只有「今日 N/M 节」，这里补剩余与时长
-  const secLim = Number(lim.sections) || 0;
-  const minLim = Number(lim.minutes) || 0;
-  h += '<div class="dsec">额度口径</div>';
-  h += L("今日节数", (t.sections || 0) + " / " + (secLim > 0 ? secLim : "不限") +
-    (t.left_sections === null || t.left_sections === undefined
-      ? "" : "（剩 " + t.left_sections + "）"));
-  h += L("今日时长", Math.round(Number(t.minutes) || 0) + " / " +
-    (minLim > 0 ? minLim : "不限") + " 分钟");
-  if (sec.total) {
-    h += L("这门课", (c.course || "未命名") + " " + sec.done + "/" + sec.total + " 节");
-  }
   return h;
 }
 
