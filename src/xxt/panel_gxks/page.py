@@ -63,7 +63,11 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
                          border-top:1px solid var(--line)}
   /* 表格自己不要再套一层滚动：外层 #accounts 已经在滚了，
      两层 max-height 叠起来会让高度计算失真（这是重叠的诱因之一）。 */
-  .split-main>#accounts .table-wrap{max-height:none}
+  /* 表头吸顶（用户 2026-11-02：「列标题要固定在最上面，像表格冻结一样」）：
+   .table-wrap 必须 overflow:visible —— 否则它自己成了滚动容器（又从不滚动），
+   thead 的 sticky 就永远不生效。让 #accounts 当唯一的滚动容器。 */
+  .split-main>#accounts .table-wrap{overflow:visible;max-height:none;
+                                    border:0;border-radius:0}
   /* 节进度的待学/已完成并排 */
   #sec-sections .sec-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;
                           align-items:start}
@@ -77,6 +81,56 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
 @media (max-width:999px){
   #sec-sections .sec-cols{display:grid;grid-template-columns:1fr;gap:12px}
 }
+/* ================================================================ 移动端适配
+   约定：**任何界面改动都要在 375px 宽下可用**（见 AGENTS.md「移动端可用」）。
+   断点：760px 以下按手机处理；1000px 以上才启用左右分栏。 */
+@media (max-width:760px){
+  body{font-size:14px}
+  main{padding:10px 10px 40px;gap:10px}
+  header{padding:8px 10px;gap:8px;flex-wrap:wrap}
+  h1{font-size:16px}
+  h2{font-size:14px}
+  section{padding:12px;border-radius:10px}
+  /* TAB 条：可横向滑动，不换行 */
+  .pagetabs{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .pagetabs button{padding:7px 14px;font-size:13px}
+  /* 账号视图：取消固定高度，右栏堆到下方 */
+  #view-accounts .split{display:flex;flex-direction:column;height:auto;
+                        min-height:0;max-height:none;gap:10px}
+  .split-main,.split-side{overflow:visible;padding:12px}
+  .split-main>#accounts{max-height:62vh}
+  /* 账号表：允许横滑，列不被压扁（9 列塞进 375px 必然要滑） */
+  table.acct-tbl{min-width:680px}
+  table.acct-tbl th,table.acct-tbl td{padding:5px 6px}
+  /* 右栏里浏览器信息与详情不再限制高度 */
+  .split-side>#browser,.split-side>#acct-side{max-height:none;min-height:0;flex:0 0 auto}
+  /* 工具条：搜索独占一行，其余换行 */
+  .acct-tools{flex-wrap:wrap;gap:6px}
+  .acct-tools input[type=search]{flex:1 1 100%;min-width:0}
+  .acct-tools select{flex:1 1 auto;min-width:0}
+  .chips{flex-wrap:wrap}
+  /* 批量条：允许换行（手机上按钮多） */
+  .acct-batch{flex-wrap:wrap}
+  /* 表单与 AI：全部单列 */
+  .form-cols{grid-template-columns:1fr}
+  .ai-wrap{grid-template-columns:1fr}
+  .sec-cols{grid-template-columns:1fr}
+  /* 按钮放大到手指可点 */
+  button{padding:8px 12px}
+  button.mini{padding:6px 10px;font-size:13px}
+  .acct-batch button{font-size:13px}
+  /* 表格类区块可横滑 */
+  #sec-sections,#sec-work,#sec-ops{overflow-x:auto}
+  #sec-sections .table-wrap,#sec-work .table-wrap,#sec-ops .table-wrap{max-height:none}
+}
+/* 超窄屏（旧手机/分屏）：再收一档 */
+@media (max-width:420px){
+  main{padding:8px 8px 32px}
+  section{padding:10px}
+  .pagetabs button{padding:6px 10px;font-size:12.5px}
+  h1{font-size:15px}
+}
+
 /* ---------------------------------------------------------------- 整页级 TAB
    用户 2026-11-02：「账号设置与AI模型这两个标签页是要占整个区域的，不是只显示账号与任务
    列表区域的」「页面的设计太低级感了」。所以：
@@ -117,13 +171,20 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
            gap:14px;align-items:start}
 @media (max-width:1100px){.form-cols{grid-template-columns:1fr 1fr}}
 @media (max-width:760px){.form-cols{grid-template-columns:1fr}}
-.fcard{margin:0;padding:14px 16px;background:#fafbfc;
-       border:1px solid var(--line);border-radius:10px}
+/* ⚠ 必须写 grid-column:auto —— 基础规则里有 section{grid-column:span 12}，
+   而 .fcard 是 <section>；不覆盖就会每张卡占满整行 → 三栏退化成上下堆叠。
+   这就是「看不到 3 栏效果」的原因。阴影也要清掉（section 自带）。 */
+.fcard{grid-column:auto;margin:0;padding:12px 14px;background:#fafbfc;
+       border:1px solid var(--line);border-radius:10px;box-shadow:none}rder-radius:10px;box-shadow:none}
 .fcard h3{font-size:12.5px;font-weight:700;color:var(--txt);margin:0 0 10px;
           padding-bottom:7px;border-bottom:1px solid var(--line);
           letter-spacing:.04em}
-.fcard .fld{grid-template-columns:84px 1fr;gap:5px 10px;margin-bottom:9px;font-size:13.5px}
-.fcard .fld .hint{grid-column:2;font-size:12px}
+.fcard .fld{grid-template-columns:78px 1fr;gap:3px 8px;margin-bottom:7px;font-size:13px}
+/* 说明压到 11.5px / 行高 1.3：7 条说明是卡片偏高的主因（用户："信息长了"） */
+.fcard .fld .hint{grid-column:2;font-size:11.5px;line-height:1.3}
+.fcard input[type=text],.fcard input[type=number],.fcard input[type=password]{
+  padding:5px 8px;font-size:13px}
+.fcard .row{gap:5px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 26px;align-items:start}
 @media (max-width:860px){.form-grid{grid-template-columns:1fr}}
 .form-grid .fld{grid-template-columns:110px 1fr}
@@ -366,7 +427,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02N</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Q</span></h1>
   <select id="account"></select>
   <span class="muted" id="pager"></span>
   <span style="flex:1"></span>
@@ -506,22 +567,22 @@ button.mini{padding:3px 9px;font-size:13px}
             <div class="fld">
             <label for="f-label">代号</label>
             <input id="f-label" type="text" placeholder="jia" autocomplete="off">
-            <div class="hint">只允许 a-z 0-9 _ -，用作文件名与日志标签；真名填「显示名」</div>
+            <div class="hint">小写字母 / 数字 / _ / -，当文件名用</div>
           </div>
           <div class="fld">
             <label for="f-display">显示名</label>
             <input id="f-display" type="text" placeholder="甲同学" autocomplete="off">
-            <div class="hint">只用于界面展示，不会写进文件名</div>
+            <div class="hint">只用于界面展示</div>
           </div>
           <div class="fld">
             <label for="f-seq">序号</label>
             <input id="f-seq" type="number" min="1" placeholder="自动生成">
-            <div class="hint">自动生成（1/2/3…），可改；只作展示与排序</div>
+            <div class="hint">自动生成，可改</div>
           </div>
           <div class="fld">
             <label for="f-school">学校</label>
             <input id="f-school" type="text" placeholder="示范学院" autocomplete="off">
-            <div class="hint">非必填；真名一律用代号</div>
+            <div class="hint">非必填</div>
           </div>
           <div class="fld">
             <label for="f-major">专业</label>
@@ -536,7 +597,7 @@ button.mini{padding:3px 9px;font-size:13px}
           <div class="fld">
             <label for="f-student">学号</label>
             <input id="f-student" type="text" placeholder="2602220131" autocomplete="off">
-            <div class="hint">非必填；只存本地，不入库</div>
+            <div class="hint">非必填，只存本地</div>
           </div>
           </section>
           <section class="fcard">
@@ -547,22 +608,22 @@ button.mini{padding:3px 9px;font-size:13px}
               <input id="f-port" type="number" min="1024" max="65535" placeholder="9222">
               <button class="mini" type="button" onclick="genPort()">随机</button>
             </div>
-            <div class="hint">一账号一端口，不能重复。点「随机」自动分配未占用的</div>
+            <div class="hint">一账号一端口，点「随机」自动分配</div>
           </div>
           <div class="fld">
             <label for="f-sections">日节数上限</label>
             <input id="f-sections" type="number" min="0" max="40" placeholder="10">
-            <div class="hint">0 = 不限。<b>按账号合计</b>：多门课共用这一个池子</div>
+            <div class="hint">0 = 不限；<b>按账号合计</b></div>
           </div>
           <div class="fld">
             <label for="f-minutes">日时长上限</label>
             <input id="f-minutes" type="number" min="0" max="1440" placeholder="600">
-            <div class="hint">分钟；0 = 不限。建议 ≥ 日节数 × 60</div>
+            <div class="hint">0 = 不限；建议 ≥ 节数×60</div>
           </div>
           <div class="fld">
             <label for="f-enabled">启用</label>
             <span><input id="f-enabled" type="checkbox" checked> 参与调度</span>
-            <div class="hint">停用后不参与批量调度，但数据保留</div>
+            <div class="hint">停用后不参与调度，数据保留</div>
           </div>
           </section>
           <section class="fcard">
@@ -570,12 +631,12 @@ button.mini{padding:3px 9px;font-size:13px}
             <div class="fld">
             <label for="f-name">账号</label>
             <input id="f-name" type="text" autocomplete="off" placeholder="留空 = 不自动重登">
-            <div class="hint" id="hint-name">留空则不写入；已有凭据时留空 = 保持原样</div>
+            <div class="hint" id="hint-name">留空 = 不写入 / 保持原样</div>
           </div>
           <div class="fld">
             <label for="f-pw">密码</label>
             <input id="f-pw" type="password" autocomplete="new-password" placeholder="留空 = 不改">
-            <div class="hint">只写进 data/accounts.local.json（不入库），面板永不回显</div>
+            <div class="hint">只存 data/accounts.local.json，永不回显</div>
           </div>
             <div class="fld" style="grid-template-columns:110px 1fr">
             <label>自定义</label>
@@ -1249,7 +1310,7 @@ function renderCustomFields(cf) {
     '<input type="text" class="cf-key" placeholder="字段名">' +
     '<input type="text" class="cf-val" placeholder="值">' +
     '<button class="mini" type="button" onclick="addCustomRow()">加</button>' +
-    '</div><div class="hint">自定义字段随账号保存，不参与业务判定</div></div>';
+    '</div><div class="hint">随账号保存，不参与业务判定</div></div>';
   box.innerHTML = html;
 }
 
@@ -1545,6 +1606,8 @@ function renderAi(state) {
     + (hasKey ? '<button class="mini danger" type="button" onclick="clearKey()"'
         + ' title="删掉当前厂商的 Key">清除</button>' : "")
     + "</div>";
+  html += '<div class="ai-hint" style="margin-top:6px">'
+    + "加密存本机 data/ 下的库，不入库、不回显。" + "</div>";
   if (a.legacy_key) {
     html += '<div class="ai-hint" style="margin-top:6px">'
       + "当前用的是旧版全局 Key；保存一次本厂商的 Key 后会改为按厂商存。</div>";

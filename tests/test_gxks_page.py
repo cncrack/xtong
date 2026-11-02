@@ -262,7 +262,8 @@ class TestAiPanelUI(unittest.TestCase):
             self.assertIn(path, PAGE)
 
     def test_key_note_mentions_local_encrypted(self):
-        self.assertIn("不入库", PAGE)
+        """Key 说明要讲清「存本机、不回显」。2026-11-02 文案收紧后仍保留这两层意思。"""
+        self.assertIn("加密存本机", PAGE)
         self.assertIn("不回显", PAGE)
 
 
@@ -413,6 +414,99 @@ class TestLayout20261102(unittest.TestCase):
         self.assertIn('id="acct-form"', view)
         # 表单必须直接属于整页视图，不能被 .split 包成半宽
         self.assertNotIn('class="split"', view)
+
+
+class TestStickyTableHeader(unittest.TestCase):
+    """账号列表的表头要吸顶（用户 2026-11-02：「列标题固定在最上面，像表格冻结」）。
+
+    踩过的坑：thead 的 sticky 只相对**自己的滚动容器**生效。
+    原来 .table-wrap 有 overflow:auto（它自己成了滚动容器却又从不滚动），
+    真正滚动的是外层 #accounts → 表头完全不吸顶。
+    """
+
+    def test_thead_is_sticky(self):
+        self.assertIn("position:sticky", PAGE.split(".table-wrap thead th{", 1)[1][:80])
+
+    def test_table_wrap_does_not_create_scroll_container(self):
+        """关键回归点：账号表里的 .table-wrap 必须 overflow:visible。"""
+        body = PAGE.split(".split-main>#accounts .table-wrap{", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow:visible", body,
+                      ".table-wrap 若 overflow:auto 会截断 sticky，表头不吸顶")
+
+    def test_accounts_is_the_scroll_container(self):
+        body = PAGE.split(".split-main>#accounts{", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow:auto", body)
+
+    def test_sticky_header_has_opaque_background(self):
+        """吸顶后必须有实底，否则数据行会从表头下面透出来。"""
+        body = PAGE.split(".table-wrap thead th{", 1)[1].split("}", 1)[0]
+        self.assertIn("background:", body)
+
+
+class TestMobileResponsive(unittest.TestCase):
+    """移动端可用（用户 2026-11-02 定成长期约定，已写入 AGENTS.md）。
+
+    约定要点：375px 宽可用；窄屏不压扁表格（给 min-width 让容器横滑）；
+    工具条换行；断点 ≤760px 按手机处理。
+    """
+
+    def test_viewport_meta(self):
+        self.assertIn('name="viewport"', PAGE)
+        self.assertIn("width=device-width", PAGE)
+
+    def test_has_phone_breakpoint(self):
+        self.assertIn("@media (max-width:760px)", PAGE)
+        self.assertIn("@media (max-width:420px)", PAGE)
+
+    def test_table_scrolls_instead_of_squashing(self):
+        """窄屏给表格 min-width，让容器横滑，而不是把 9 列挤成竖条。"""
+        block = PAGE.split("@media (max-width:760px){", 1)[1].split("@media (max-width:420px)", 1)[0]
+        self.assertIn("table.acct-tbl{min-width", block)
+
+    def test_toolbar_wraps_on_phone(self):
+        block = PAGE.split("@media (max-width:760px){", 1)[1].split("@media (max-width:420px)", 1)[0]
+        self.assertIn(".acct-tools{flex-wrap:wrap", block)
+
+    def test_form_and_ai_single_column_on_phone(self):
+        block = PAGE.split("@media (max-width:760px){", 1)[1].split("@media (max-width:420px)", 1)[0]
+        self.assertIn(".form-cols{grid-template-columns:1fr}", block)
+        self.assertIn(".ai-wrap{grid-template-columns:1fr}", block)
+
+    def test_split_stacks_on_phone(self):
+        block = PAGE.split("@media (max-width:760px){", 1)[1].split("@media (max-width:420px)", 1)[0]
+        self.assertIn("flex-direction:column", block)
+
+    def test_touch_targets_enlarged(self):
+        block = PAGE.split("@media (max-width:760px){", 1)[1].split("@media (max-width:420px)", 1)[0]
+        self.assertIn("button{padding:8px 12px}", block)
+
+
+class TestAccountFormColumns(unittest.TestCase):
+    """账号设置：三栏卡片（用户 2026-11-02：「把它弄成3栏并列显示是否可行」）。
+
+    踩过的坑：.fcard 是 <section>，而基础规则有 section{grid-column:span 12}，
+    不显式覆盖就会每张卡占满整行 → 三栏退化成上下堆叠（用户：「没有看到 3 栏效果」）。
+    """
+
+    def test_three_cards(self):
+        view = PAGE.split('id="view-account"', 1)[1]
+        self.assertEqual(view.count('class="fcard"'), 3)
+        for title in ("基本信息", "额度与端口", "登录凭据"):
+            self.assertIn(title, view)
+
+    def test_grid_is_three_columns(self):
+        self.assertIn(".form-cols{display:grid;"
+                      "grid-template-columns:repeat(3,minmax(0,1fr))", PAGE)
+
+    def test_cards_override_section_span(self):
+        """核心回归点：.fcard 必须写 grid-column:auto，否则又变回单列。"""
+        body = PAGE.split(".fcard{", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-column:auto", body,
+                      ".fcard 没覆盖 section 的 grid-column:span 12 → 会退化成单列")
+
+    def test_cards_reset_section_shadow(self):
+        body = PAGE.split(".fcard{", 1)[1].split("}", 1)[0]
+        self.assertIn("box-shadow:none", body)
 
 
 class TestFullPageTabs(unittest.TestCase):
