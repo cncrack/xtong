@@ -472,7 +472,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02V</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02W</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -579,7 +579,7 @@ button.mini{padding:3px 9px;font-size:13px}
     <!-- 当前账号详情：随**选中账号**变化，鼠标悬停某行时临时预览那一行 -->
     <div class="acct-side" id="acct-side">
       <div class="acct-side-head">账号详情 <span class="muted" id="acct-side-meta"></span></div>
-      <div id="acct-detail"></div>
+      <div class="acct-detail" id="acct-detail"></div>
     </div>
       </aside>
     </div>

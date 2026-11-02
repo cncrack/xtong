@@ -507,6 +507,58 @@ class TestAccountSwitcher(unittest.TestCase):
         self.assertIn("Date.now() - ASW_OPENED_AT < 200", PAGE)
 
 
+class TestIdHasMatchingClass(unittest.TestCase):
+    """通用防护：id 元素若被 class 选择器样式化，就必须带那个 class。
+
+    2026-11-02 教训：`<div id="acct-detail">` 漏了 `class="acct-detail"`，
+    导致 `.acct-detail ...` 共 12 条规则全部失效（冒号/加粗/网格/分组条都没了），
+    而结构测试仍全绿 —— 只查 id 存在是不够的。
+    """
+
+    # 静态标记（<script> 之前）里的元素开标签
+    MARKUP = PAGE.split("<script", 1)[0]
+
+    def _ids_and_tags(self):
+        out = {}
+        for m in re.finditer(r"<[a-zA-Z][^>]*?\bid=\"([\w-]+)\"[^>]*>", self.MARKUP):
+            out[m.group(1)] = m.group(0)
+        return out
+
+    # 合法的同名不同对象（不是 bug，别硬套）：
+    #   toast     → #toast 是容器，.toast 是 JS 创建的每条消息
+    #   asw-name  → #asw-name 是按钮里的当前账号名，.asw-name 是弹层列表项里的名字
+    ALLOW = {"toast", "asw-name"}
+
+    def test_no_class_style_without_class_attribute(self):
+        """找出「CSS 定义了 .X 但 id=X 的元素没写 class=X」的全部情况。"""
+        missing = []
+        for eid, tag in self._ids_and_tags().items():
+            if eid in self.ALLOW:
+                continue
+            # CSS 里是否有针对 .X 的规则？
+            if not re.search(r"\.\b" + re.escape(eid) + r"\s*\{", PAGE):
+                continue
+            # 元素是否带 class=X？
+            m = re.search(r'class="([^"]*)"', tag)
+            classes = (m.group(1) if m else "").split()
+            if eid not in classes:
+                missing.append((eid, tag[:80]))
+        self.assertEqual(missing, [], "以下元素的 class 与 CSS 选择器不匹配，样式会失效："
+                         + repr(missing))
+
+    def test_detail_panel_has_class(self):
+        """单独钉死这次踩过的坑。"""
+        m = re.search(r"<div[^>]*id=\"acct-detail\"[^>]*>", self.MARKUP)
+        self.assertIsNotNone(m)
+        self.assertIn('class="acct-detail"', m.group(0))
+
+    def test_switcher_parts_have_class(self):
+        for cid in ("asw-pop", "asw-list", "asw-btn"):
+            m = re.search(r'<[^>]*id="' + cid + r'"[^>]*>', self.MARKUP)
+            self.assertIsNotNone(m, f"找不到 {cid}")
+            self.assertIn(f'class="{cid}"', m.group(0), f"{cid} 缺同名 class")
+
+
 class TestStickyTableHeader(unittest.TestCase):
     """账号列表的表头要吸顶（用户 2026-11-02：「列标题固定在最上面，像表格冻结」）。
 
