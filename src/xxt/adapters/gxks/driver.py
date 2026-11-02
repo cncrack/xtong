@@ -309,18 +309,81 @@ class GxksDriver:
         frame = self.list_frame()
         return listparse.parse_course_page(frame.content()) if frame else {"rows": last, "pager": {}}
 
-    def read_page(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
-        """读**第 1 页** → `{rows, pager}`（GET 重载 + cache-bust）。
+    def ensure_list_context(self) -> bool:
+        """确保列表页处在**外层框架的 iframe 里**（2026-11-03 实测修）。
 
-        ⚠ GET 重载会把手动翻到的页号**丢掉**（实测 2026-10-29 17:52：goto_page(2) 后
-        `read_page()` 回到 `1/4`）——翻页是 `__doPostBack` 回发，页号只在 viewstate 里。
-        所以第 2 页及之后的刷新一律用 `refresh_here()`，不要用本方法。
+        ## 为什么必须这样
+
+        直接 GET `LibraryStudyList.aspx`（裸页）能读到行，但**分页控件不渲染**：
+        实测裸页只有 6~7 行、`PageSplit1_BtnNext` 不存在、页码标签解析为 None；
+        而从 `MainPage.aspx?menu=3&subMenu=4` 的 `iframe[name=main]` 进去，
+        同一份数据是 **9 行 + 分页 1/4（有下一页）**。
+
+        原因：站点的分页控件由外层框架/脚本渲染，裸页没有外层 → 没有分页。
+
+        ## 后果（这个坑踩了两次）
+
+        ① 2026-10-29 记录的 4 页 = 在 iframe 里读到的；`read_page()` 的 GET
+           cache-bust 会把 iframe 导航到裸页 → 之后 `next_page()` 找不到按钮 →
+           「第 2 页之后翻不动，停在 2/4」，只读到第 1 页的 9 节。
+        ② 2026-11-03 用户发现「刷新完还是 9 节、面板数据不动」——同一个根因。
+
+        所以：**读列表前先回到 iframe 上下文**，翻页全程不脱离外层框架。
         """
+        frame = self.list_frame()
+        if frame is not None:
+            # 已经在 iframe 里：还要确认它不是「裸页」——
+            # 裸页的 URL 与 iframe 的 URL 一样，靠分页控件是否存在来区分。
+            try:
+                pager = listparse.parse_pager(frame.content())
+                if pager.get("total") is not None or pager.get("has_next") is not None:
+                    return True                 # 有分页控件 → 上下文正确
+            except Exception:                                  # noqa: BLE001
+                pass
+        # 不在 iframe 里（或分页控件缺失）→ 从学习入口重新进
+        try:
+            self.page.goto(selectors.MAIN_PAGE, wait_until="domcontentloaded",
+                           timeout=self.page_timeout_ms)
+            self.page.wait_for_timeout(self.settle_seconds * 1000)
+        except Exception:                                      # noqa: BLE001
+            return False
+        frame = self.list_frame()
+        if frame is None:
+            return False
+        # 等列表帧真的出分页控件（外层框架是异步塞 iframe 的）
+        for _ in range(10):
+            try:
+                pager = listparse.parse_pager(frame.content())
+                if pager.get("total") is not None or pager.get("has_next") is not None:
+                    return True
+            except Exception:                                  # noqa: BLE001
+                pass
+            self.page.wait_for_timeout(self.settle_seconds * 1000)
+        return False
+
+    def read_page(self, *, min_rows: int = 1, tries: int = 10) -> dict[str, Any]:
+        """读**当前页** → `{rows, pager}`。
+
+        ⚠ **不在 iframe 里就重载外层学习入口页**（`ensure_list_context`），
+        而不是直接 GET 裸的 `LibraryStudyList.aspx` —— 裸页**没有分页控件**，
+        读了也只能拿到第 1 页（见 `ensure_list_context` 的 docstring）。
+        """
+        if not self.ensure_list_context():
+            frame = self.list_frame()
+            return {"rows": [], "pager": {}}
         frame = self.list_frame()
         if frame is None:
             return {"rows": [], "pager": {}}
+        # ⚠ **不要 GET 裸页**（`frame.goto(cache_busted(url))`）—— 那样 iframe 会变成
+        # 裸页，分页控件随之消失，后面 `next_page()` 必然点不动（2026-11-03 实测）。
+        # 改成**在 iframe 内触发一次 ASP.NET 回发**（点搜索按钮）：既刷新了数据，
+        # 又保持在外层框架里，分页控件还在。
         try:
-            frame.goto(self.cache_busted(frame.url), wait_until="commit", timeout=self.page_timeout_ms)
+            btn = frame.query_selector("#btnSearch") or frame.query_selector(
+                "input[type=submit]")
+            if btn is not None:
+                btn.click(timeout=self.page_timeout_ms)
+                self.page.wait_for_timeout(self.settle_seconds * 1000)
         except Exception:                                  # noqa: BLE001  网络抖动不该直接失败
             pass
         return self._parse_settled(min_rows=min_rows, tries=tries)
