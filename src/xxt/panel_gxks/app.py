@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -228,6 +229,41 @@ def _pick_sections_cache(debug_dir: Path, label: str,
         if data:
             return data, str(data.get("course") or "")
     return {}, ""
+
+
+def _list_course_caches(debug_dir: Path, label: str) -> list[dict[str, Any]]:
+    """列出该账号**所有**节列表缓存（按课程），供前端切换。
+
+    为什么需要（2026-11-03 用户发现）：面板原来只显示**一份**缓存
+    （`sections_<代号>.json`，老文件），而刷课/刷新节列表写的是**带课程后缀**的
+    `sections_<代号>_<课程>.json` —— 于是面板永远显示旧的那门课，
+    用户刷的课「待学/已完成」一点动静都没有。
+
+    节 ID 在不同课程间会撞车（ledger 的同一教训），所以**不做合并**，
+    改成列出清单让用户自己选要看的课。
+    """
+    out: list[dict[str, Any]] = []
+    for p in sections_cache.list_all(debug_dir, label):
+        data = _read_json(p)
+        if not data:
+            continue
+        rows = data.get("rows") or []
+        summary = data.get("summary") or {}
+        # 课程 value：文件名里带的那段（老文件没有 → ""）
+        m = re.match(rf"sections_{re.escape(label)}_(.+)\.json$", p.name)
+        value = m.group(1) if m else ""
+        out.append({
+            "value": value,
+            # 中文课名：从行里的 category 取；没有就退回课程 value
+            "name": next((r.get("category") for r in rows if r.get("category")),
+                         value or p.stem),
+            "sections": int(summary.get("sections") or len(rows)),
+            "done": int(summary.get("done") or 0),
+            "read_at": str(data.get("read_at") or ""),
+            "mtime": time.strftime("%Y-%m-%d %H:%M:%S",
+                                   time.localtime(p.stat().st_mtime)),
+        })
+    return out
 
 
 def _account_cards(settings: Settings, *,
@@ -478,6 +514,8 @@ def create_app(settings: Settings) -> FastAPI:
         # B1：节列表按课程分开存；`course` 给了就读那一份，没给就读该账号最新的一份
         sections, sections_course = (_pick_sections_cache(debug_dir, label, course)
                                      if label else ({}, ""))
+        # 该账号**所有**课程的缓存清单（前端切换器用；2026-11-03 加）
+        courses_cached = _list_course_caches(debug_dir, label) if label else []
         return {
             "ok": True,
             "accounts": rows,
@@ -485,6 +523,7 @@ def create_app(settings: Settings) -> FastAPI:
             "accounts_file": gaccounts.default_path().exists(),
             "label": label,
             "course": sections_course,
+            "courses_cached": courses_cached,
             "auto_submit": bool(settings.raw.get("gxks", {}).get("auto_submit", False)),
             "jobs": _jobs_snapshot(),
             "sections": sections or None,

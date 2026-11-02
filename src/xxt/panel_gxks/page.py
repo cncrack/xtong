@@ -641,11 +641,14 @@ button.mini{padding:3px 9px;font-size:13px}
 
     <!-- 下面三块属于「账号与任务」，所以放在这个视图内部：
          切到别的 TAB 时一起隐藏（用户 2026-11-02 要求）。 -->
-  <!-- 节进度：待学 / 已完成两个分区 + 两条进度条，见 renderSections -->
+  <!-- 学习进度：待学 / 已完成两个分区 + 两条进度条，见 renderSections -->
   <section id="sec-sections">
     <div class="card-head">
-      <h2>节进度 <span class="muted" id="sec-meta"></span></h2>
+      <h2>学习进度 <span class="muted" id="sec-meta"></span></h2>
       <div class="toolbar">
+        <!-- 课程切换（2026-11-03）：缓存按课分开，面板只显示一份会永远停在旧课 -->
+        <select id="sel-course" onchange="pickCourse(this.value)"
+                title="切换要看哪门课的进度"></select>
         <button id="btn-secrefresh" onclick="refreshSections()"
           title="重新读整个课程（含翻页），约 1 分钟">刷新节列表</button>
       </div>
@@ -826,6 +829,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </dialog>
 <script>
 let LABEL = "";
+let COURSE = "";                 // 当前看哪门课的进度（"" = 后端默认那份）；2026-11-03
 let BUSY = false;
 let STATE = null;              // 最近一次 /api/state 的回包（编辑对话框回填用）
 
@@ -1948,6 +1952,40 @@ function secTableHtml(rows, withState) {
   return html + "</tbody></table></div>";
 }
 
+// 课程切换器（2026-11-03）：节列表缓存按课分开存，面板只看一份会永远停在旧课。
+// 后端给 state.courses_cached = [{value,name,sections,done,read_at}]。
+function renderCourseSelect(state) {
+  const sel = el("sel-course");
+  if (!sel) return;
+  const list = state.courses_cached || [];
+  if (!list.length) {
+    sel.innerHTML = '<option value="">（没有课程缓存）</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  // 当前生效的那份：优先 COURSE，其次后端返回的 course
+  const cur = COURSE || state.course || "";
+  let html = "";
+  for (const c of list) {
+    const v = c.value || "";
+    const mark = (v === cur) ? " ✓" : "";
+    html += '<option value="' + esc(v) + '"' +
+      (v === cur ? " selected" : "") + ">" +
+      esc(c.name || v || "（未命名）") + " · " + (c.done || 0) + "/" +
+      (c.sections || 0) + " 节" + mark + "</option>";
+  }
+  // 只剩一份时不必显示切换器
+  sel.innerHTML = html;
+  sel.style.display = list.length > 1 ? "" : "none";
+}
+
+function pickCourse(value) {
+  COURSE = value || "";
+  SEC_SIG = "";            // 换课 → 签名要作废，否则表格不重建
+  load();
+}
+
 function renderSections(state) {
   const box = el("sections");
   const data = state.sections;
@@ -1966,7 +2004,13 @@ function renderSections(state) {
   el("sec-meta").textContent = [card.display || state.label, course,
     "读于 " + (data.read_at || "?")].filter(Boolean).join(" · ");
 
-  const sig = [state.label, data.read_at, rows.length, s.done, s.practice_ready].join("|");
+  // 签名要覆盖**所有会变的数字**（2026-11-03 用户发现刷课时进度不动）：
+  // 原来只有 read_at/节数/done/可练习 —— 但刷课中「已完成分钟数」在涨、
+  // 「待学分钟数」在降，这些变了签名却不变 → 表格不重建 → 看着像没更新。
+  // 加上两个分钟数（以及每节的 done/state 指纹）后，任何学习进展都会触发重建。
+  const fp = rows.map(r => numv(r.done_minutes) + ":" + (r.state || "")).join(",");
+  const sig = [state.label, data.read_at, rows.length, s.done, s.practice_ready,
+               s.minutes_done, fp].join("|");
   if (sig === SEC_SIG) return;    // 数据没变就别重建，否则折叠区会每 4 秒弹回
   SEC_SIG = sig;
 
@@ -1998,13 +2042,19 @@ function renderSections(state) {
 
   // 待学 / 已完成并排（宽屏两列、窄屏自动堆叠），见 CSS .sec-cols。
   // 上下堆叠时两区各要滚动一次；并排后一屏能同时看到"还差什么"和"已做完什么"。
+  // 空态提示要**说清是哪种空**（2026-11-03 用户看到"待学区已清空"一头雾水：
+  // 其实缓存的是另一门课（旧课全学完），不是当前这门课学完了）。
+  const learnedAll = doneRows.length > 0 && todoRows.length === 0;
+  const todoEmptyMsg = learnedAll
+    ? '<div class="empty">这份缓存里的 ' + doneRows.length + " 节都已完成。" +
+      "如果当前在学的是<b>另一门课</b>，点右上角「刷新节列表」换成那门课的节列表。</div>"
+    : '<div class="empty">这份缓存里没有待学的节。点右上角「刷新节列表」重新读一次当前课程。</div>';
   html += '<div class="sec-cols">';
   html += '<details class="blk todo" data-blk="todo"' +
     (SEC_OPEN.todo ? " open" : "") + "><summary>待学" +
     '<span class="sum">' + todoRows.length + " 节 · 还差 " + todoLeft +
     ' 分钟</span></summary><div class="body">' +
-    (todoRows.length ? secTableHtml(todoRows, true)
-      : '<div class="empty">待学区已清空——这门课全部学完了。</div>') +
+    (todoRows.length ? secTableHtml(todoRows, true) : todoEmptyMsg) +
     "</div></details>";
   html += '<details class="blk" data-blk="done"' +
     (SEC_OPEN.done ? " open" : "") + "><summary>已完成" +
@@ -2019,8 +2069,10 @@ function renderSections(state) {
 }
 
 function refreshSections() {
-  // 带上当前显示的课程 value：B1 之后缓存按课程分开，不带就会写到“无课程”那份去
-  post("/api/sections/refresh", { course: (STATE && STATE.course) || "" });
+  // 带上当前显示的课程 value：B1 之后缓存按课程分开，不带就会写到"无课程"那份去。
+  // ⚠ 优先用用户选的 COURSE，而不是 STATE.course：后者是后端**这次读到**的，
+  // 用户切到另一门课时它还没变，会把新课写进旧课的文件（2026-11-03）。
+  post("/api/sections/refresh", { course: COURSE || (STATE && STATE.course) || "" });
 }
 
 function refreshSectionsFor(label, course) {
@@ -2214,7 +2266,10 @@ async function loadAi() {
 
 async function load() {
   try {
-    let r = await fetch("/api/state?label=" + encodeURIComponent(LABEL));
+    // 带上当前选的课程 value：缓存按课分开存（2026-11-03）
+    const q = "/api/state?label=" + encodeURIComponent(LABEL) +
+      (COURSE ? "&course=" + encodeURIComponent(COURSE) : "");
+    let r = await fetch(q);
     // 选中的账号被删掉 / 改了代号：后端会 400。此时回落到第一个账号，
     // 不能一直报“连接中断”——那看起来像面板坏了。
     if (!r.ok && LABEL) {
@@ -2225,6 +2280,7 @@ async function load() {
     STATE = state;
     LABEL = state.label || "";
     readFilter();                 // 工具栏是静态的，每次重绘前把筛选条件读回来
+    renderCourseSelect(state);
     renderAccountsSelect(state);
     renderAccounts(state);
     // 有悬停预览时保持预览（否则 4 秒轮询会把右列弹回选中账号，鼠标还停在行上却跳走）
