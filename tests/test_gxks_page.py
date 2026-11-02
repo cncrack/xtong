@@ -306,33 +306,48 @@ class TestLayout20261031(unittest.TestCase):
 
     # ② 列宽
     def test_table_columns_have_explicit_widths(self):
-        """列宽显式给定，账号列吃余量；操作列压成 1% 自适应。"""
-        self.assertIn('<th style="min-width:96px">账号</th>', PAGE)
-        self.assertIn('<th style="width:1%">操作</th>', PAGE)
-        # 2026-11-02：删掉「端口」「状态」两列（与右侧浏览器区重复），
-        # 空间给「今日」「课程」
-        for w in ("width:132px", "width:76px", "width:82px"):
-            self.assertIn(w, PAGE)
-        # ⚠ 只能看账号表的表头：`>状态</th>` 在「节进度」表里也有，直接搜全页会误报
+        """列宽用百分比 + table-layout:fixed。
+
+        2026-11-02：原来 auto 布局下「账号」列（只写了 min-width）会吸走全部余量，
+        名字靠左、右边一大片空白；改 fixed + 百分比后余量按比例分给各列。
+        """
         head = PAGE.split('table class="acct-tbl"', 1)[1].split("</thead>", 1)[0]
+        self.assertIn('>账号</th>', head)
+        self.assertIn('>操作</th>', head)
+        for w in ("width:20%", "width:26%", "width:13%", "width:12%"):
+            self.assertIn(w, head)
+        self.assertIn("table.acct-tbl{table-layout:fixed}", PAGE)
+        # ⚠ 只能看账号表的表头：`>状态</th>` 在「节进度」表里也有
         self.assertNotIn(">端口</th>", head)
         self.assertNotIn(">状态</th>", head)
         self.assertIn(">今日</th>", head)
         self.assertIn(">课程</th>", head)
+
+    def test_headers_are_centered(self):
+        """用户 2026-11-02：「账号列表的标题要居中」。"""
+        self.assertIn("table.acct-tbl thead th{text-align:center}", PAGE)
+
+    def test_today_column_shows_units(self):
+        """「今日」列要带单位，否则只看到 0/10 ▬ 0 不知道是什么。"""
+        body = PAGE.split("function acctTr(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn('" 节"', body)        # 节数带「节」
+        self.assertIn(" 分</span>", body)   # 分钟带「分」
 
     def test_column_budget_leaves_room_for_name(self):
         """2026-11-02 实测修正：8+4 时账号列只剩 255px，改 9+3 后 414px。
 
         固定列合计必须留够空间，否则账号名被压到下限、表格出横向滚动。
         """
-        # 2026-11-02：删掉端口/状态两列后的固定列合计
-        fixed = 26 + 36 + 132 + 76 + 82                 # ☐ 序号 今日 课程 登录
+        # 2026-11-02：改用百分比，核对「账号」列在 8fr 宽度下够不够放名字
         inner = 1280 - 36                               # main 内宽
         col = (inner - 14 * 11) / 12
-        content9 = col * 8 + 14 * 7 - 40                # span9 减左右内边距
-        left = content9 - fixed
-        self.assertGreaterEqual(left - 150, 96,         # 150 ≈ 4 个图标按钮
-                                f"账号列只剩 {left - 150:.0f}px，会挤")
+        table = col * 8 + 14 * 7 - 40                   # 账号表可用宽度
+        account_col = table * 0.20                      # 账号列 20%
+        self.assertGreaterEqual(account_col, 120,        # 放得下「林鑫阳」+ 状态圆点
+                                f"账号列只有 {account_col:.0f}px，会挤")
+        today_col = table * 0.26
+        self.assertGreaterEqual(today_col, 170,
+                                f"今日列只有 {today_col:.0f}px，单位可能被截断")
 
     # ③ 右侧浏览器与会话
     def test_table_sits_beside_browser_side(self):

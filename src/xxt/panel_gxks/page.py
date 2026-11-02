@@ -261,6 +261,14 @@ mark.hit{background:#fff3bf;color:inherit;padding:0 1px;border-radius:2px;
 .acct-batch b{font-size:12.5px;white-space:nowrap}
 /* 统计与批量操作之间的竖分隔线 */
 .bb-sep{flex:0 0 auto;width:1px;height:16px;background:var(--line);margin:0 3px}
+/* 列宽策略（2026-11-02 修）：
+   原来 table-layout:auto，没设 width 的「账号」列会吸走全部余量 →
+   名字靠左、右边留一大片空白。改成 fixed + 百分比，余量按比例分给各列。 */
+table.acct-tbl{table-layout:fixed}
+table.acct-tbl th,table.acct-tbl td{overflow:hidden;text-overflow:ellipsis}
+/* 表头居中（用户 2026-11-02 要求） */
+table.acct-tbl thead th{text-align:center}
+table.acct-tbl thead th.num{text-align:center}
 table.acct-tbl{font-size:13.5px}
 table.acct-tbl th{font-size:12.5px;padding:6px 8px}
 table.acct-tbl td{padding:6px 8px;vertical-align:middle}
@@ -494,7 +502,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Z</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02Z2</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -940,12 +948,15 @@ function acctTr(c, accRow, cur) {
   // 端口号 + 活/停 标签本来在 66px 里会折成两行，现在列宽加到 84 且 nowrap。
   // 今日列：118px 里塞「12/10 节 ▮▮ + 480 分」会折行 → 分改成只有数字，
   // 单位「分」进 title（悬停可看全），保住单行。
-  html += '<td class="c-today" title="今日 ' + esc(t.sections || 0) + " 节 · " +
+  // 今日 = 「已完成 / 日上限 节」+ 迷你进度条 + 「今日分钟数 分」
+  // 补上单位，避免只看到 0/10 ▬ 0 不知道是什么（用户 2026-11-02 问过）
+  html += '<td class="c-today" title="今日已学 ' + esc(t.sections || 0) + " 节 / 上限 " +
+    (secLim > 0 ? esc(secLim) + " 节" : "不限") + " · 共 " +
     esc(Math.round(Number(t.minutes) || 0)) + ' 分钟">' +
     "<b>" + esc(t.sections || 0) + "</b>/" +
-    (secLim > 0 ? esc(secLim) : "不限") +
+    (secLim > 0 ? esc(secLim) : "不限") + " 节" +
     miniBar(Number(t.sections) || 0, secLim > 0 ? secLim : Math.max(1, Number(t.sections) || 1)) +
-    '<span class="muted">' + esc(Math.round(Number(t.minutes) || 0)) + "</span></td>";
+    '<span class="muted">' + esc(Math.round(Number(t.minutes) || 0)) + " 分</span></td>";
   html += '<td class="muted">' + (sec.total
     ? esc(sec.done) + "/" + esc(sec.total) + " 节"
     : "—") + "</td>";
@@ -1070,14 +1081,14 @@ function renderAccounts(state) {
   //   ☐28 / #30 / 端口 66 / 状态 76 / 今日 118 / 课程 66 / 登录 92 = 476
   let html = '<div class="table-wrap" style="max-height:none">' +
     '<table class="acct-tbl"><thead><tr>' +
-    '<th style="width:26px"><input type="checkbox" id="acct-all"' +
+    '<th style="width:28px"><input type="checkbox" id="acct-all"' +
     (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
-    '<th class="num" style="width:36px">序号</th>' +
-    '<th style="min-width:96px">账号</th>' +
-    '<th style="width:132px">今日</th>' +
-    '<th style="width:76px">课程</th>' +
-    '<th style="width:82px">登录</th>' +
-    '<th style="width:1%">操作</th>' +
+    '<th style="width:46px">序号</th>' +
+    '<th style="width:20%">账号</th>' +
+    '<th style="width:26%">今日</th>' +
+    '<th style="width:13%">课程</th>' +
+    '<th style="width:12%">登录</th>' +
+    '<th style="width:20%">操作</th>' +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
   if (!state.accounts_file) {
     html += '<div class="muted" style="margin-top:8px">当前是单账号回落' +
