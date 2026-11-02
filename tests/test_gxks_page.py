@@ -492,9 +492,19 @@ class TestAccountSwitcher(unittest.TestCase):
         self.assertIn("closeAsw()", body)
         self.assertIn("pick(label)", body)
 
-    def test_mobile_uses_fixed_panel(self):
-        block = PAGE.split("@media (max-width:760px){", 1)[1]
-        self.assertIn(".asw-pop{position:fixed", block)
+    def test_popover_uses_fixed_positioning(self):
+        """弹层必须 fixed 定位（2026-11-02 用户反馈看不到效果；
+        absolute 会被 sticky header 的层叠上下文影响）。"""
+        body = PAGE.split(".asw-pop{", 1)[1].split("}", 1)[0]
+        self.assertIn("position:fixed", body)
+        self.assertIn("z-index:120", body)
+        # hidden 时明确隐藏
+        self.assertIn(".asw-pop[hidden]{display:none}", PAGE)
+
+    def test_ignores_the_opening_click(self):
+        """点开它的那次 click 冒泡到 document 时不能立刻关掉。"""
+        self.assertIn("ASW_OPENED_AT", PAGE)
+        self.assertIn("Date.now() - ASW_OPENED_AT < 200", PAGE)
 
 
 class TestStickyTableHeader(unittest.TestCase):

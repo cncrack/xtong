@@ -31,9 +31,11 @@ h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.01em}
 .asw-btn #asw-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
                    min-width:0;font-weight:600}
 .asw-caret{color:var(--dim);font-size:11px;flex:0 0 auto}
-.asw-pop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;width:250px;
+/* 弹层用 fixed 定位（坐标由 JS 按按钮位置算），层级要压过 header 与页面内容 */
+.asw-pop{position:fixed;z-index:120;width:250px;max-width:calc(100vw - 20px);
          background:var(--card);border:1px solid var(--line);border-radius:10px;
-         box-shadow:0 8px 24px rgba(16,24,40,.16);padding:8px}
+         box-shadow:0 10px 30px rgba(16,24,40,.22);padding:8px}
+.asw-pop[hidden]{display:none}
 .asw-pop input{width:100%;box-sizing:border-box;font:inherit;font-size:13px;
                border:1px solid var(--line);border-radius:6px;padding:6px 9px;
                margin-bottom:6px}
@@ -49,7 +51,7 @@ h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.01em}
 .asw-empty{color:var(--dim);font-size:12.5px;padding:8px 9px}
 @media (max-width:760px){
   .asw-btn{max-width:140px}
-  .asw-pop{position:fixed;left:10px;right:10px;width:auto;top:58px}
+  .asw-pop{left:8px;right:8px;width:auto!important}
 }
 h2{font-size:15px;margin:0 0 12px;color:var(--txt);font-weight:700;letter-spacing:.02em;
    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -470,7 +472,7 @@ button.mini{padding:3px 9px;font-size:13px}
 </head>
 <body>
 <header>
-  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02U</span></h1>
+  <h1>第二平台控制台 <span class="muted" style="font-weight:400;font-size:12px">v2026-11-02V</span></h1>
   <!-- 账号切换器（2026-11-02 替换原来的 <select>）：账号多时原下拉会很长，
        改成「当前账号按钮 + 可搜索弹层」。 -->
   <div class="asw" id="asw">
@@ -1085,9 +1087,15 @@ function acctDetailHtml(c, accRow) {
   let h = "";
 
   // ① 档案：长字段各占一行，年级/学号短、并成一行
+  // 用户 2026-11-02：「学校与专业能放在一行吗，能尽量放一行的放一行」
+  // → 学校+专业配对、年级+学号配对；太窄时 CSS 自动退回一行一个。
   let prof = "";
-  if (has(pf.school)) prof += row("学校", pf.school);
-  if (has(pf.major)) prof += row("专业", pf.major);
+  if (has(pf.school) || has(pf.major)) {
+    prof += '<div class="dgrid2">'
+      + (has(pf.school) ? cell("学校", pf.school) : "")
+      + (has(pf.major) ? cell("专业", pf.major) : "")
+      + "</div>";
+  }
   if (has(pf.grade) || has(pf.student_id)) {
     prof += '<div class="dgrid2">'
       + (has(pf.grade) ? cell("年级", pf.grade) : "")
@@ -2014,12 +2022,23 @@ function renderAccountsSelect(state) {
 
 function toggleAsw() {
   const pop = el("asw-pop");
-  if (!pop) return;
-  const open = pop.hidden;
-  pop.hidden = !open;
   const btn = el("asw-btn");
-  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
-  if (open) {
+  if (!pop || !btn) return;
+  const willOpen = pop.hidden;
+  if (willOpen) {
+    // 用 fixed + 按钮的视口坐标定位：不受 header(sticky) 的层叠上下文影响，
+    // 也不会被祖先的 overflow 裁掉（用户反馈过"看不到效果"）。
+    const r = btn.getBoundingClientRect();
+    const w = Math.max(230, Math.round(r.width));
+    pop.style.position = "fixed";
+    pop.style.width = w + "px";
+    pop.style.left = Math.max(8, Math.round(r.left)) + "px";
+    pop.style.top = Math.round(r.bottom + 6) + "px";
+  }
+  pop.hidden = !willOpen;
+  btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  if (willOpen) {
+    ASW_OPENED_AT = Date.now();
     const q = el("asw-q");
     if (q) { q.value = ""; q.focus(); }
     renderAswList();
@@ -2112,7 +2131,11 @@ el("sections").addEventListener("toggle", (e) => {
   if (d) SEC_OPEN[d.dataset.blk] = d.open;
 }, true);
 // 点弹层外面 / 按 Esc 关闭账号切换器
+// ⚠ 忽略「打开它的那次点击」：onclick 先执行、同一事件继续冒泡到 document，
+// 若不加这个判断，会出现"点开就立刻关"的假象（看起来像没反应）。
+let ASW_OPENED_AT = 0;
 document.addEventListener("click", (e) => {
+  if (Date.now() - ASW_OPENED_AT < 200) return;
   const box = el("asw");
   if (box && !box.contains(e.target)) closeAsw();
 });
