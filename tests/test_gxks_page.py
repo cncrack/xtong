@@ -858,13 +858,43 @@ class TestRunLogBlock(unittest.TestCase):
 
         为什么滚动不是分页：这页 4 秒轮询整块重绘，分页需要维护页码状态，
         轮询会重置页码 → 体验很差；滚动条零状态、桌面/移动都能用。
+
+        ⚠ **滚动容器是 .table-wrap，不是 .body**（2026-11-03 用户实拍表头被盖）：
+        thead 的 sticky 只在最近的滚动祖先是表格容器时生效。
         """
         self.assertIn("max-height:min(52vh,420px)", PAGE)
-        self.assertIn("overflow-y:auto", PAGE)
+        self.assertIn("overflow:auto", PAGE)
         # 滚动条方案不依赖页码状态；折叠态还原仍由 SEC_OPEN 负责，没被破坏
         self.assertIn('SEC_OPEN[d.dataset.blk]', PAGE)
         # 窄屏也配了（>=440px 横滑，列不压扁）
         self.assertIn("table{min-width:440px}", PAGE)
+
+    def test_table_wrap_is_the_scroll_container(self):
+        """.body 不滚、.table-wrap 滚 —— 否则表头 sticky 失效被首行盖住。
+
+        ⚠ 检查**所有**匹配规则（页面里窄屏断点还有一条 .table-wrap 规则），
+        不能只看第一条 —— 否则窄屏那条会漏检。
+        """
+        body_rules = [r.split("}", 1)[0] for r in
+                      PAGE.split("details.blk>.body{")[1:]]
+        for rule in body_rules:
+            self.assertNotIn("overflow", rule,
+                             ".body 不能是滚动容器（会压掉表头 sticky）：" + rule)
+        wrap_rules = [r.split("}", 1)[0] for r in
+                      PAGE.split("details.blk>.body .table-wrap{")[1:]]
+        self.assertTrue(any("overflow:auto" in r for r in wrap_rules),
+                        ".table-wrap 必须是滚动容器")
+        self.assertTrue(any("max-height:min(52vh,420px)" in r for r in wrap_rules),
+                        ".table-wrap 要限高，长列表才有滚动条")
+
+    def test_buttons_do_not_wrap(self):
+        """「学这节」按钮曾被挤成两行，把行距撑得参差不齐。"""
+        self.assertIn("details.blk>.body td button{white-space:nowrap}", PAGE)
+
+    def test_cells_vertically_centered(self):
+        """垂直居中 + 统一 padding → 行高整齐。"""
+        self.assertIn("details.blk>.body th,details.blk>.body td{vertical-align:middle",
+                      PAGE)
 
 
 class TestBrowserCardPerAccount(unittest.TestCase):

@@ -123,8 +123,8 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
   h1{font-size:16px}
   h2{font-size:14px}
   section{padding:12px;border-radius:10px}
-  /* 窄屏节列表也保持滚动条，只是表格最小宽收窄（仍够横滑看全关键列） */
-  details.blk>.body{max-height:50vh}
+  /* 窄屏节列表也保持滚动条，只是高度与最小宽收窄（仍够横滑看全关键列） */
+  details.blk>.body .table-wrap{max-height:50vh}
   details.blk>.body .table-wrap table{min-width:440px}
   /* TAB 条：可横向滑动，不换行 */
   .pagetabs{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -427,6 +427,20 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+/* 节列表：节名列占剩余空间、其余列按内容宽度 → 长节名换行时其他列不被挤扁 */
+details.blk>.body table{table-layout:auto;width:100%}
+details.blk>.body table td:first-child{width:auto}
+/* 「操作」列按内容宽度（节名列占剩余空间 → 长节名换行时其他列不被挤扁）。
+   ⚠ 只约束**最后一列**；早先把「练习」列也按内容宽度，结果它被压窄、
+   「可做 #15263」折成两行（2026-11-03 截图）。 */
+details.blk>.body table th:last-child,details.blk>.body table td:last-child{width:1%;
+                                                                     white-space:nowrap}
+/* 练习列整体一行：「可做 #15263」不许折行 */
+details.blk>.body table td:nth-last-child(2){white-space:nowrap}
+/* 表格底部不留空：最后一行不画下边框（原来多出一条像空行） */
+details.blk>.body table tr:last-child td{border-bottom:0}
+/* 表格底部贴住容器：.table-wrap 自身不留 padding/border（原来底部有一条空白带） */
+details.blk>.body .table-wrap{background:transparent}
 th{color:var(--dim);font-weight:600;font-size:13px;white-space:nowrap}
 th.num{text-align:right}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
@@ -471,12 +485,24 @@ details.blk.todo>summary{background:#fffaf2;color:var(--warn)}
 details.blk>summary .sum{margin-left:auto;color:var(--dim);font-size:13px}
 /* 两个列表很长时的纵向滚动（2026-11-03 用户问「待学/已完成太长怎么办」）。
    加滚动条、不分页：分页要维护页码状态，而这页 4 秒轮询重绘会重置翻页。
-   高度取 min 一屏一半高度——并排两列时各占一半，窄屏堆叠时也一致不拉长整页。
-   表格 min-width 保证列不压扁 → 纵向条 + 窄屏横向条可并存。 */
-details.blk>.body{padding:8px 10px 10px;max-height:min(52vh,420px);overflow-y:auto;
-                  scrollbar-width:thin}
-details.blk>.body .table-wrap{max-height:none;overflow:visible;border:0;border-radius:0}
+   ⚠ **滚动容器必须是 .table-wrap 自己**，不能是外层 .body：
+   thead 的 sticky 只在**最近的滚动祖先**是表格容器时生效；.body 滚动而
+   .table-wrap 是 overflow:visible 时，表头会随内容滚走、被第一行盖住
+   （2026-11-03 用户实拍：「表头和第一行叠在一起」）。
+   所以：.body 不滚、.table-wrap 滚 → 表头吸顶、行距正常。 */
+details.blk>.body{padding:0 10px 10px}
+details.blk>.body .table-wrap{max-height:min(52vh,420px);overflow:auto;
+                                border:0;border-radius:0}
 details.blk>.body .table-wrap table{min-width:520px}
+/* 行内元素不换行：按钮（做练习/学这节）曾被挤成两行「学这/节」，撑得行距忽高忽低 */
+details.blk>.body td button{white-space:nowrap}
+details.blk>.body td:nth-child(1){min-width:180px}
+/* 「操作」列不换行、给足宽度；节名列允许换行（长节名） */
+details.blk>.body td:last-child{white-space:nowrap;width:1%}
+/* 行高整齐：单元格垂直居中（原来 top 对齐 + 按钮两行 → 行高参差） */
+details.blk>.body th,details.blk>.body td{vertical-align:middle;padding:7px 10px}
+/* 折叠标题与表格之间别留大片空白（用户 2026-11-03：「节标题和待学这行还有间距」） */
+details.blk>summary{padding:8px 12px}
 .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12.5px;
      border:1px solid transparent;white-space:nowrap}
 .t-done{background:#e6f4ef;color:var(--ok);border-color:#c6e6da}
