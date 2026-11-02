@@ -18,7 +18,8 @@ from xxt.panel_gxks.page import PAGE
 FUNC_DEF = re.compile(r"(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
 ONCLICK = re.compile(r'onclick="([A-Za-z_$][\w$]*)\s*\(')
 
-SECTION_IDS = ("sec-accounts", "sec-browser", "sec-sections", "sec-work", "sec-ops")
+SECTION_IDS = ("view-accounts", "view-account", "view-ai",
+               "sec-sections", "sec-work", "sec-ops")
 
 
 class TestHandlers(unittest.TestCase):
@@ -147,19 +148,43 @@ class TestAccountTable(unittest.TestCase):
         i_slot = PAGE.index('<div id="accounts"></div>')
         self.assertLess(i_tools, i_slot)
 
-    # ---------------------------------------------------------------- 悬停详情
+    # ---------------------------------------------------------------- 右列账号详情
 
-    def test_hover_detail_panel(self):
+    def test_side_detail_panel_is_persistent(self):
+        """账号详情：2026-11-02 从「悬停浮层」改成「右列常驻卡」。
+
+        用户原话：「这个自动弹出的卡片区能否与浏览器与会话在同一列显示，
+        不跟随，但会随着我选择账号的不同而跟随变化」。
+        """
         self.assertIn('id="acct-detail"', PAGE)
-        self.assertIn("function showAcctDetail(", PAGE)
-        self.assertIn("function hideAcctDetail(", PAGE)
-        # 浮层不拦鼠标 → 移开一定触发 mouseout，不会卡住
-        self.assertIn("pointer-events:none", PAGE)
+        self.assertIn("function renderAcctSide(", PAGE)
+        # 跟随选中账号，不再跟随鼠标：悬停相关函数应消失
+        self.assertNotIn("function showAcctDetail(", PAGE)
+        self.assertNotIn("function hideAcctDetail(", PAGE)
 
-    def test_hover_uses_event_delegation(self):
-        """表格每 4 秒重绘，事件必须委托在容器上，直接绑行会随重绘丢失。"""
+    def test_hover_previews_and_selection_persists(self):
+        """2026-11-02 最终形态：悬停预览 + 移开回到选中账号。
+
+        用户先要求"改成常驻不跟鼠标"，随后补充"鼠标移到某个账号时右侧栏要跟随变化"
+        —— 两者结合：位置固定不飘，内容随悬停变，移开回落到选中账号。
+        """
+        self.assertIn("function renderAcctSide(", PAGE)
+        self.assertIn("function hoverAcctSide(", PAGE)
+        # 悬停必须走事件委托（表格每 4 秒重绘，直接绑行会丢）
         self.assertIn('el("accounts").addEventListener("mouseover"', PAGE)
         self.assertIn('el("accounts").addEventListener("mouseout"', PAGE)
+        # 移开时要回落到选中账号（传空 label），不是清空
+        self.assertIn('hoverAcctSide("")', PAGE)
+        # 悬停态要能看出来，避免误以为选中变了
+        self.assertIn("悬停预览", PAGE)
+
+    def test_detail_sits_in_right_column(self):
+        """详情卡必须在账号视图的右栏（.split-side）里，而不是页面末尾的独立浮层。"""
+        side = PAGE.split('class="split-side"', 1)[1].split("</aside>", 1)[0]
+        self.assertIn('id="acct-detail"', side)
+        self.assertIn('class="acct-side"', side)
+        # 浏览器卡也在同一栏
+        self.assertIn('id="browser"', side)
 
 
 class TestAiPanelUI(unittest.TestCase):
@@ -169,11 +194,13 @@ class TestAiPanelUI(unittest.TestCase):
     2026-10-31：与「账号设置」并成一张卡的两个 TAB（`#pane-ai`），布局重排成左右两栏。
     """
 
-    def test_lives_in_tab_pane(self):
-        self.assertIn('<div class="tabpane" id="pane-ai"', PAGE)
+    def test_lives_in_full_page_view(self):
+        """2026-11-02：AI 页签必须占**整个区域**，不是只占账号列表那几栏。"""
+        self.assertIn('<section id="view-ai" class="pageview"', PAGE)
         self.assertIn('onclick="showTab(\'ai\')"', PAGE)
         self.assertIn("function showTab(", PAGE)
-        # 旧的独立区块已被 TAB 取代
+        # 整页视图：默认 span 12（占满整行）
+        self.assertIn(".pageview{display:none;grid-column:span 12}", PAGE)
         self.assertNotIn('<section id="sec-ai">', PAGE)
 
     def test_entry_points(self):
@@ -185,11 +212,38 @@ class TestAiPanelUI(unittest.TestCase):
         self.assertIn("＋ 新增厂商", PAGE)
 
     def test_layout_is_two_columns(self):
-        """左栏厂商+参数、右栏 Key 卡片（用户：AI 模型和选项也要重新规划排列）。"""
+        """左栏「厂商与参数」、右栏「Key + 测试」（2026-11-02 重做）。"""
         self.assertIn('class="ai-wrap"', PAGE)
-        self.assertIn('class="ai-col"', PAGE)
-        self.assertIn("ai-col-key", PAGE)
-        self.assertIn(".ai-wrap{display:grid;grid-template-columns:1fr 300px", PAGE)
+        self.assertIn('class="ai-panel"', PAGE)
+        self.assertIn("ai-panel-key", PAGE)
+        self.assertIn(".ai-wrap{display:grid;grid-template-columns:1fr 340px", PAGE)
+
+    def test_has_test_connection_button(self):
+        """用户：「增加测试联通 AI 模型的按钮和成功或者错误提示信息」。"""
+        self.assertIn("function testAi(", PAGE)
+        self.assertIn("测试连通", PAGE)
+        self.assertIn('/api/ai/test', PAGE)
+        # 结果提示区：成功绿、失败红
+        self.assertIn('id="ai-test-msg"', PAGE)
+        self.assertIn(".ai-testmsg.ok{", PAGE)
+        self.assertIn(".ai-testmsg.bad{", PAGE)
+
+    def test_has_fetch_models_button(self):
+        """用户：「模型名称能从对应的厂商获取到」。"""
+        self.assertIn("function fetchModels(", PAGE)
+        self.assertIn("/api/ai/models", PAGE)
+        self.assertIn('list="ai-models-dl"', PAGE)
+        self.assertIn('id="ai-models-dl"', PAGE)
+
+    def test_key_is_per_provider_in_ui(self):
+        """Key 按厂商分开存：界面要显示当前是哪家、并支持清除。"""
+        self.assertIn("function clearKey(", PAGE)
+        self.assertIn('/api/ai/key/delete', PAGE)
+        self.assertIn("provider: name", PAGE)
+        self.assertIn("每家的 Key 分开保存", PAGE)
+
+    def test_provider_select_marks_configured(self):
+        self.assertIn('(p2.has_key ? " ●" : "")', PAGE)
 
     def test_each_config_item_renders_its_description(self):
         """每个配置项都把后端给的 `desc` 渲染出来——用户明确要求"做好说明"。"""
@@ -224,13 +278,16 @@ class TestLayout20261031(unittest.TestCase):
     """
 
     # ① TAB 化
-    def test_settings_card_holds_two_tabs(self):
-        self.assertIn('<section id="sec-settings">', PAGE)
-        self.assertIn('id="tab-btn-account"', PAGE)
-        self.assertIn('id="tab-btn-ai"', PAGE)
-        self.assertIn('id="pane-account"', PAGE)
-        self.assertIn('id="pane-ai"', PAGE)
-        # 切换靠 class，不靠重绘（否则 4 秒轮询会把标签页弹回第一个）
+    def test_three_page_level_tabs(self):
+        """三个**整页级** TAB（用户 2026-11-02：「要占整个区域」）。"""
+        self.assertIn('<nav class="pagetabs"', PAGE)
+        for t in ("accounts", "account", "ai"):
+            self.assertIn(f'id="tab-btn-{t}"', PAGE)
+            self.assertIn(f'id="view-{t}"', PAGE)
+        # 旧的独立区块已并入视图
+        self.assertNotIn('<section id="sec-accounts">', PAGE)
+        self.assertNotIn('<section id="sec-settings">', PAGE)
+        # 切换靠 class，不靠重绘
         self.assertIn('classList.toggle("on"', PAGE)
 
     def test_tab_switch_does_not_get_reset_by_polling(self):
@@ -249,16 +306,31 @@ class TestLayout20261031(unittest.TestCase):
     # ② 列宽
     def test_table_columns_have_explicit_widths(self):
         """列宽显式给定，账号列吃余量；操作列压成 1% 自适应。"""
-        self.assertIn('<th style="min-width:110px">账号</th>', PAGE)
+        self.assertIn('<th style="min-width:96px">账号</th>', PAGE)
         self.assertIn('<th style="width:1%">操作</th>', PAGE)
-        for w in ("width:76px", "width:82px", "width:130px", "width:104px"):
+        for w in ("width:80px", "width:68px", "width:104px", "width:82px"):
             self.assertIn(w, PAGE)
 
+    def test_column_budget_leaves_room_for_name(self):
+        """2026-11-02 实测修正：8+4 时账号列只剩 255px，改 9+3 后 414px。
+
+        固定列合计必须留够空间，否则账号名被压到下限、表格出横向滚动。
+        """
+        fixed = 26 + 36 + 80 + 68 + 104 + 56 + 82      # ☐ # 端口 状态 今日 课程 登录
+        inner = 1280 - 36                               # main 内宽
+        col = (inner - 14 * 11) / 12
+        content9 = col * 8 + 14 * 7 - 40                # span9 减左右内边距
+        left = content9 - fixed
+        self.assertGreaterEqual(left - 150, 96,         # 150 ≈ 4 个图标按钮
+                                f"账号列只剩 {left - 150:.0f}px，会挤")
+
     # ③ 右侧浏览器与会话
-    def test_browser_card_sits_beside_table(self):
-        self.assertIn("#sec-accounts{grid-column:span 8}", PAGE)
-        self.assertIn("#sec-browser{grid-column:span 4", PAGE)
-        self.assertIn("position:sticky", PAGE)      # 跟随滚动，切账号时一直看得见
+    def test_table_sits_beside_browser_side(self):
+        """账号视图内部：左表格 + 右栏（浏览器 + 详情）。"""
+        self.assertIn("#view-accounts .split{display:grid;"
+                      "grid-template-columns:minmax(0,8fr) minmax(0,4fr)", PAGE)
+        self.assertIn('class="split-main"', PAGE)
+        self.assertIn('class="split-side"', PAGE)
 
     # ④ 搜索高亮
     def test_search_hits_are_highlighted(self):
@@ -285,6 +357,249 @@ class TestLayout20261031(unittest.TestCase):
         self.assertIn(".sec-cols{display:grid;grid-template-columns:1fr 1fr", PAGE)
         # 窄屏要能堆叠，不能硬挤两列
         self.assertIn("@media (max-width:999px){", PAGE)
+
+
+class TestLayout20261102(unittest.TestCase):
+    """2026-11-02 这轮（用户逐条提的四点）。
+
+    ① 账号区与右侧浏览器卡对齐
+    ② 浏览器卡不随滚动条移动（去掉 sticky）
+    ③ 悬停弹出的详情卡 → 右列常驻、跟随选中账号
+    ④ 区块顺序：账号 → 节进度 → 本次作答 → 账号设置/AI → 操作记录
+    """
+
+    def test_browser_side_no_longer_sticky(self):
+        """用户原话：「浏览器与会话这个区域会随滚动条移动」→ 要固定住。"""
+        self.assertNotIn("#sec-browser", PAGE)
+        # 右栏不能有 sticky
+        split_rule = PAGE.split(".split-main,.split-side{", 1)[1].split("}", 1)[0]
+        self.assertNotIn("sticky", split_rule)
+
+    def test_cards_are_equal_height(self):
+        """用户原话：「账号与任务这块下右侧栏下面没等高呀」。
+
+        等高靠三件事：两卡都 flex column、栅格行默认 stretch、内部可滚动区 flex:1。
+        """
+        # 两栏必须用**同一把尺子**：.split 上给统一 height，内部各自滚动。
+        # 2026-11-02 改 62vh：calc(100vh-172px) 几乎占满整屏，
+        # 把节进度/本次作答/操作记录全挤到一屏之外（用户："它们去哪里了"）。
+        self.assertIn("height:82vh;min-height:500px;max-height:1000px}", PAGE)
+        self.assertIn(".split-main,.split-side{display:flex;flex-direction:column", PAGE)
+        self.assertIn(".split-main>#accounts{overflow:auto;flex:1 1 auto", PAGE)
+        self.assertIn(".split-side>#acct-side{flex:1 1 auto", PAGE)
+
+    def test_section_order(self):
+        """三个视图在 main 下平级；节进度等三块**在 view-accounts 内部**。
+
+        用户 2026-11-02：「三个标签页里面都有把节进度、本次作答、操作记录都包进了它里面，
+        只需要在账号与任务标签页下面有就行」。
+        """
+        # sec-* 现在嵌在 view-accounts 里，用 view-* 单独判序
+        views = re.findall(r'<section id="(view-[a-z]+)"', PAGE)
+        self.assertEqual(views, ["view-accounts", "view-account", "view-ai"],
+                         f"三个视图顺序不对：{views}")
+        view = PAGE.split('id="view-accounts"', 1)[1]
+        for blk in ("sec-sections", "sec-work", "sec-ops"):
+            self.assertIn(blk, view, f"{blk} 应属于账号视图")
+
+    def test_settings_is_full_page_view(self):
+        """账号设置是**整页视图**，不是挤在列表旁边的小面板。
+
+        用户 2026-11-02：「账号设置与AI模型这两个标签页是要占整个区域的，
+        不是只显示账号与任务列表区域的」。
+        """
+        self.assertNotIn('id="sec-settings"', PAGE)
+        view = PAGE.split('id="view-account"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="acct-form"', view)
+        # 表单必须直接属于整页视图，不能被 .split 包成半宽
+        self.assertNotIn('class="split"', view)
+
+
+class TestFullPageTabs(unittest.TestCase):
+    """整页级 TAB（用户 2026-11-02 最核心的批评）。
+
+    原话：「账号设置与AI模型这两个标签页是要占整个区域的，
+    不是只显示账号与任务列表区域的，你基本的TAB标签页不会设计吗」
+    """
+
+    def test_tabs_span_full_width(self):
+        """TAB 条横跨整宽，三个视图各占整行。"""
+        self.assertIn('<nav class="pagetabs" role="tablist">', PAGE)
+        # 视图默认 span 12 → 占满整行，不受账号列表 9 栏的限制
+        self.assertIn(".pageview{display:none;grid-column:span 12}", PAGE)
+        self.assertIn(".pagetabs{grid-column:span 12", PAGE)
+
+    def test_settings_view_is_not_split(self):
+        """账号设置视图不能被 .split 包成半宽（那正是之前的毛病）。"""
+        view = PAGE.split('id="view-account"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="acct-form"', view)
+        self.assertNotIn('class="split"', view)
+
+    def test_ai_view_is_not_split(self):
+        view = PAGE.split('id="view-ai"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="ai"', view)
+        self.assertNotIn('class="split"', view)
+
+    def test_only_accounts_view_has_split(self):
+        """只有「账号与任务」需要左右分栏，另外两个视图整宽。"""
+        self.assertEqual(PAGE.count('class="split"'), 1)
+
+    def test_tab_bar_uses_segmented_control_style(self):
+        """视觉升级：分段控件（有底色/圆角/选中态阴影），不是细下划线。"""
+        self.assertIn(".pagetabs{grid-column:span 12;display:flex", PAGE)
+        self.assertIn("background:#eceef2;border-radius:10px", PAGE)
+        self.assertIn(".pagetabs button.on{background:var(--card)", PAGE)
+        self.assertIn("box-shadow:0 1px 3px rgba(16,24,40,.12)", PAGE)
+
+    def test_tab_switch_uses_views_not_panes(self):
+        body = PAGE.split("function showTab(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('el("view-" + t)', body)
+        self.assertNotIn('el("pane-" + t)', body)
+
+
+class TestNoDuplicateNewAccountButton(unittest.TestCase):
+    """TAB 条右边那个「＋ 新增账号」已移除（用户：「是不是重复了」）。
+
+    它与「账号设置」页签语义重复：点它其实就是切到账号设置页。
+    """
+
+    def test_tab_bar_has_no_new_account_button(self):
+        nav = PAGE.split('class="pagetabs"', 1)[1].split("</nav>", 1)[0]
+        self.assertNotIn("newAccount()", nav)
+
+    def test_new_account_button_lives_in_accounts_view(self):
+        """按钮留在账号视图的标题行里，语义清楚（点它 = 去填新账号）。"""
+        head = PAGE.split('class="view-head"', 1)[1].split("</div>", 1)[0]
+        self.assertIn("newAccount()", head)
+        self.assertIn("＋ 新增账号", head)
+
+    def test_only_one_new_account_button(self):
+        """全页只应有一个「＋ 新增账号」按钮。"""
+        self.assertEqual(PAGE.count('onclick="newAccount()"'), 1)
+
+
+class TestCancelButtonWorks(unittest.TestCase):
+    """「取消」必须真的有效果（用户：「新增账号的取消功能也不能实现」）。
+
+    根因：原来 resetAccountForm() 只把表单重置成新增态、人还停在表单页，
+    点完屏幕几乎没变化 → 看起来"点了没反应"。
+    现在：清空字段 + **回到账号列表**。
+    """
+
+    def test_cancel_returns_to_accounts_list(self):
+        body = PAGE.split("function resetAccountForm(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('showTab("accounts")', body)
+
+    def test_cancel_clears_fields(self):
+        self.assertIn("function clearAccountFields(", PAGE)
+        body = PAGE.split("function clearAccountFields(", 1)[1].split("\n}", 1)[0]
+        # 关键字段都要清
+        for fld in ("f-label", "f-display", "f-port", "f-name", "f-pw"):
+            self.assertIn(f'el("{fld}").value = ""', body)
+
+    def test_cancel_re_enables_label_field(self):
+        """编辑态代号是 disabled 的，取消后必须恢复可编辑，否则下次新增填不进去。"""
+        body = PAGE.split("function clearAccountFields(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('el("f-label").disabled = false', body)
+
+    def test_new_account_requests_random_port(self):
+        """新增时自动要一个未占用端口，省得用户自己填。"""
+        body = PAGE.split("function newAccount(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("genPort()", body)
+
+    def test_new_account_does_not_call_reset_which_switches_back(self):
+        """newAccount 不能调 resetAccountForm（后者会切回列表，方向相反）。"""
+        body = PAGE.split("function newAccount(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("resetAccountForm()", body)
+
+
+class TestBrowserCardPerAccount(unittest.TestCase):
+    """浏览器与会话**按账号区分**（用户 2026-11-02 提问后核实并落地）。
+
+    用户原话：「右侧栏上面的浏览器与会话是指针对每一个账号不一样的，还是一样的，
+    如果不一样，是不是也要跟随账号显示呢？」
+
+    核实结论：**确实按账号不同** —— 端口、profile 目录、登录态快照、会话检查结果
+    全部按 label 取（见 `app.py::_browser_state`）。所以它必须跟随账号显示。
+    """
+
+    def test_backend_returns_every_accounts_browser_state(self):
+        """后端一次算全所有账号的浏览器状态，悬停时前端可直接切、无需再发请求。"""
+        import inspect
+
+        from xxt.panel_gxks import app as panel_app
+        src = inspect.getsource(panel_app.create_app)
+        self.assertIn('"browsers": browsers', src)
+        self.assertIn('browsers = {r["label"]: _browser_state(', src)
+
+    def test_browser_state_is_keyed_by_label(self):
+        """`_browser_state` 的端口/profile/快照都按 label 取，不是全局一份。"""
+        import inspect
+
+        from xxt.panel_gxks import app as panel_app
+        src = inspect.getsource(panel_app._browser_state)
+        self.assertIn("acc.port if acc else 0", src)
+        self.assertIn("state_path(settings, label)", src)
+        self.assertIn('f"session_{label}.json"', src)
+
+    def test_credentials_are_per_account(self):
+        """凭据必须按账号判，不能读全局 account.local.json（那是单账号遗留）。
+
+        这是 2026-11-02 查出的真 bug：全局文件会让所有账号显示同一个凭据状态，
+        与表格里按账号算的 credentials 自相矛盾。
+        """
+        import inspect
+
+        from xxt.panel_gxks import app as panel_app
+        src = inspect.getsource(panel_app._browser_state)
+        self.assertIn("acc.configured", src)
+        self.assertNotIn("glogin.is_configured", src)
+
+    def test_hover_switches_browser_too(self):
+        """悬停某行时，浏览器区也要跟着切到那个账号。"""
+        body = PAGE.split("function hoverAcctSide(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("renderBrowserFor", body)
+
+    def test_browser_renders_for_given_label(self):
+        """renderBrowser 接受 (state, browser, label)，按传入账号渲染。"""
+        self.assertIn("function renderBrowserFor(state, label)", PAGE)
+        self.assertIn("function renderBrowser(state, browser, label)", PAGE)
+        # 标题要写清是谁的浏览器，否则切账号后数字变了但不知道看的是谁
+        self.assertIn('"（端口 " + (b.port || "?") + "）"', PAGE)
+
+    def test_polling_keeps_hover_preview(self):
+        """4 秒轮询不能把右列弹回选中账号（鼠标还停在行上却跳走）。"""
+        body = PAGE.split("async function load(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("HOVER_LABEL", body)
+        self.assertIn("renderBrowserFor(state, HOVER_LABEL)", body)
+
+
+class TestBrowserButtonsLayout(unittest.TestCase):
+    """浏览器卡按钮重排（用户 2026-11-02：「这几个按钮要重新排列一下」）。
+
+    原来 5 个按钮平铺一行、宽度随文字长短不一、主次不分。
+    现在分两组：浏览器（启动/停止）+ 会话（检查/恢复/重登），组内等宽。
+    """
+
+    def test_buttons_are_grouped(self):
+        self.assertIn('class="bgrp"', PAGE)
+        self.assertIn('class="bgrp-lab">浏览器', PAGE)
+        self.assertIn('class="bgrp-lab">会话', PAGE)
+        self.assertEqual(PAGE.count('class="bgrp-btn'), 5, "五个按钮都要用组内样式")
+
+    def test_group_css_makes_them_equal_width(self):
+        self.assertIn(".bgrp{display:flex;align-items:center;gap:6px", PAGE)
+        self.assertIn(".bgrp-btn{flex:1 1 0", PAGE)
+
+    def test_lifecycle_buttons_keep_semantics(self):
+        """启动是主操作、停止是危险操作，语义不能因为重排丢掉。"""
+        self.assertIn('id="btn-bstart" class="bgrp-btn primary"', PAGE)
+        self.assertIn('id="btn-bstop" class="bgrp-btn danger"', PAGE)
+
+    def test_all_five_buttons_still_exist(self):
+        for bid in ("btn-bstart", "btn-bstop", "btn-scheck",
+                    "btn-srestore", "btn-rlogin"):
+            self.assertIn(f'id="{bid}"', PAGE, f"按钮 {bid} 丢了")
 
 
 class TestTypography(unittest.TestCase):
@@ -317,14 +632,16 @@ class TestLayoutBalance(unittest.TestCase):
     """
 
     def test_accounts_area_capped_so_page_does_not_grow_forever(self):
-        # 账号特别多时在卡内滚动，而不是把整页拉到 2000px+
-        self.assertIn("max-height:calc(100vh - 120px)", PAGE)
-        self.assertIn("#sec-accounts>#accounts{overflow:auto", PAGE)
+        # 账号特别多时在栏内滚动，而不是把整页拉到 2000px+
+        self.assertIn("height:82vh", PAGE)
+        self.assertIn(".split-main>#accounts{overflow:auto", PAGE)
+        self.assertIn("min-height:500px", PAGE)
 
-    def test_accounts_table_takes_full_width(self):
-        # 表格 9 列约 940px，挤到 6 栏（600px）会折行 → 整行独占
-        self.assertNotIn("#sec-accounts{grid-column:span 6}", PAGE)
-        self.assertIn("#sec-accounts{max-height:calc(100vh - 120px)", PAGE)
+    def test_accounts_table_gets_nine_columns(self):
+        # 表格 9 列，挤到 6 栏会折行 → 9fr + 3fr 并排
+        self.assertNotIn("grid-column:span 6", PAGE)
+        self.assertIn("grid-template-columns:minmax(0,8fr) minmax(0,4fr)", PAGE)
+        self.assertIn("height:82vh", PAGE)
 
     def test_browser_card_is_compact(self):
         # 原来 6 行竖表把浏览器卡撑到 396px；改成短项并排 + 长项单行截断
@@ -396,10 +713,21 @@ class TestAccountAdminUI(unittest.TestCase):
         self.assertIn('data.detail || data.error || ("HTTP " + r.status)', PAGE)
         self.assertIn("await apiPost(", PAGE)
 
-    def test_multi_account_totals_row(self):
+    def test_multi_account_totals_in_batch_bar(self):
+        """统计与批量操作**同一行**（用户 2026-11-02：
+        「合计…运行中…空闲… 要放在这一行：已选 N 个 / 开始学习 / …」）。
+
+        原来统计是表格上方独立一行（head 变量），已并入 #acct-batch。
+        """
         self.assertIn("合计 ' + tot.sections", PAGE)
-        self.assertIn("cards.length > 1", PAGE)
-        self.assertIn("function renderAccounts(", PAGE)
+        # 统计必须在 renderBatchBar 里，而不是 renderAccounts 的 head
+        bar = PAGE.split("function renderBatchBar(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("合计", bar)
+        self.assertIn("运行中", bar)
+        self.assertIn("空闲", bar)
+        self.assertIn("bb-sep", bar)          # 统计与按钮之间的竖分隔
+        # 旧实现里的独立 head 行必须已经删掉
+        self.assertNotIn('let head = "";', PAGE)
 
 
 class TestPageShell(unittest.TestCase):

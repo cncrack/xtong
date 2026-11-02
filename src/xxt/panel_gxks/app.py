@@ -347,7 +347,10 @@ def _browser_state(settings: Settings, label: str,
         "can_start": backend == "cdp" and chrome is not None and cdp_dir is not None,
         # 登录态快照：本站 cookie 全是会话级，关浏览器就没了 → 只能靠这份文件兜底
         "state": gbrowser.state_summary(gbrowser.state_path(settings, label)) if label else {},
-        "credentials": glogin.is_configured(glogin.credentials_path(settings)),
+        # ⚠ 凭据必须按**账号**判（`acc.configured`），不能读全局 account.local.json。
+        # 那个文件是单账号时代的遗留：多账号下所有账号会显示同一个状态，
+        # 与表格里按账号算的 `credentials` 自相矛盾（2026-11-02 查出的真 bug）。
+        "credentials": bool(acc.configured) if acc else False,
         "session": _read_json(_latest(f"session_{label}.json",
                                       settings.data_dir / "debug")) if label else None,
     }
@@ -444,6 +447,12 @@ def create_app(settings: Settings) -> FastAPI:
         # 不共用的话这个接口要探两轮，而单次探测最坏就是一个 timeout（见 chrome.port_alive）。
         alive = gchrome.ports_alive([r["port"] for r in rows])
         cur_port = next((r["port"] for r in rows if r["label"] == label), None)
+        # 每个账号各算一份浏览器/会话状态，供前端**悬停预览**时直接切换
+        # （用户 2026-11-02：「右侧栏上面的浏览器与会话……如果不一样，是不是也要跟随账号显示」）。
+        # 数据本来就是按账号的（端口/profile/快照/会话检查），这里一次算全，避免悬停时再发请求。
+        browsers = {r["label"]: _browser_state(settings, r["label"],
+                                               alive=alive.get(r["port"]))
+                    for r in rows}
         # B1：节列表按课程分开存；`course` 给了就读那一份，没给就读该账号最新的一份
         sections, sections_course = (_pick_sections_cache(debug_dir, label, course)
                                      if label else ({}, ""))
@@ -460,6 +469,8 @@ def create_app(settings: Settings) -> FastAPI:
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
                         if label else None),
+            # 全部账号的浏览器/会话状态（悬停预览用；键 = 账号代号）
+            "browsers": browsers,
             # AI 配置（厂商列表 + 当前选中 + **是否配了 Key**；Key 本身永不回显）
             "ai": ai,
             "ops": ops,
@@ -890,15 +901,73 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/ai/key")
     def ai_key(body: dict) -> dict:
-        """保存 API Key（加密存本机库）。空串 = 不修改。"""
+        """保存 **指定厂商** 的 API Key（加密存本机库）。空串 = 不修改。
+
+        用户 2026-11-02：「配置了 Key 要能保存，下次在不同厂商切换也能直接调用」
+        → 必须带 `provider`，按厂商各存一把。
+        """
+        provider = str(body.get("provider") or "").strip()
+        if not provider:
+            return {"ok": False, "error": "要先选一个厂商"}
         ok, err = gxks_ai_config.save_key(
             _db_path(settings), data_dir=settings.data_dir,
-            api_key=str(body.get("api_key") or ""))
+            provider=provider, api_key=str(body.get("api_key") or ""))
         if not ok:
             return {"ok": False, "error": err}
-        # ⚠ 留痕只记"已更新"，**绝不写 Key 内容**
-        _record(settings, "", "ai-key", "更新 AI 的 API Key（内容不记录）")
-        return {"ok": True, "message": "已保存 API Key（加密存本机）"}
+        # ⚠ 留痕只记厂商与"已更新"，**绝不写 Key 内容**
+        _record(settings, "", "ai-key", f"更新 AI 的 API Key：{provider}（内容不记录）")
+        return {"ok": True,
+                "message": f"已保存「{provider}」的 API Key（加密存本机）"}
+
+    @app.post("/api/ai/key/delete")
+    def ai_key_delete(body: dict) -> dict:
+        """清除某厂商的 Key（换 Key 或不再使用时）。"""
+        provider = str(body.get("provider") or "").strip()
+        if not provider:
+            return {"ok": False, "error": "要先选一个厂商"}
+        gxks_ai_config.delete_key(_db_path(settings), provider=provider)
+        _record(settings, "", "ai-key-del", f"清除 AI 的 API Key：{provider}")
+        return {"ok": True, "message": f"已清除「{provider}」的 API Key"}
+
+    @app.get("/api/ai/models")
+    def ai_models(provider: str = "") -> dict:
+        """从厂商拉模型列表（用户：「模型名称能从对应的厂商获取到」）。"""
+        from ..ai import probe
+
+        cfg = gxks_ai_config.load(_db_path(settings), data_dir=settings.data_dir)
+        want = provider or cfg["current"]["name"]
+        hit = next((p for p in cfg["providers"] if p["name"] == want), None)
+        if not hit:
+            return {"ok": False, "error": f"没有这个厂商：{want}"}
+        key = gxks_ai_config.load_key_for(
+            _db_path(settings), data_dir=settings.data_dir, provider=want) or ""
+        names, err = probe.fetch_models(hit["base_url"], key, timeout=20.0)
+        if err:
+            return {"ok": False, "error": err, "provider": want}
+        return {"ok": True, "provider": want, "models": names,
+                "message": f"取到 {len(names)} 个模型"}
+
+    @app.post("/api/ai/test")
+    def ai_test(body: dict) -> dict:
+        """测试连通：真发一次最小对话（用户：「测试联通 AI 模型的按钮和提示信息」）。"""
+        from ..ai import probe
+
+        cfg = gxks_ai_config.load(_db_path(settings), data_dir=settings.data_dir)
+        want = str(body.get("provider") or cfg["current"]["name"]).strip()
+        hit = next((p for p in cfg["providers"] if p["name"] == want), None)
+        if not hit:
+            return {"ok": False, "error": f"没有这个厂商：{want}"}
+        # 优先用请求里带的值（用户可能刚改了地址/模型还没保存）
+        base_url = str(body.get("base_url") or "").strip() or hit["base_url"]
+        model = str(body.get("model") or "").strip() or hit["model"]
+        key = gxks_ai_config.load_key_for(
+            _db_path(settings), data_dir=settings.data_dir, provider=want) or ""
+        ok, msg = probe.test_chat(base_url, key, model, timeout=30.0)
+        # 留痕：只记厂商与成败，不记 Key
+        _record(settings, "", "ai-test",
+                f"测试 AI 连通：{want} → {'成功' if ok else '失败'}")
+        return {"ok": ok, "provider": want, "model": model,
+                "message": msg, "error": "" if ok else msg}
 
     return app
 

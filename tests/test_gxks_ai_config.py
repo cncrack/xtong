@@ -112,13 +112,47 @@ class TestGxksAiConfig(unittest.TestCase):
     FAKE = "sk-" + "test" + "-" + "fake" + "-value"
 
     def test_key_is_encrypted_and_retrievable(self):
-        ok, err = cfg.save_key(self.db, data_dir=self.data, api_key=self.FAKE)
+        ok, err = cfg.save_key(self.db, data_dir=self.data,
+                               provider="DeepSeek", api_key=self.FAKE)
         self.assertTrue(ok, err)
-        self.assertEqual(cfg.load_key(self.db, data_dir=self.data), self.FAKE)
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="DeepSeek"),
+            self.FAKE)
+
+    def test_key_is_per_provider(self):
+        """每个厂商一把 Key，切换厂商不用重填（用户 2026-11-02 明确要求）。"""
+        a, b = "sk-" + "alpha", "sk-" + "beta"
+        cfg.save_key(self.db, data_dir=self.data, provider="DeepSeek", api_key=a)
+        cfg.save_key(self.db, data_dir=self.data, provider="Kimi", api_key=b)
+        # 各取各的，互不覆盖
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="DeepSeek"), a)
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="Kimi"), b)
+        # 没配的厂商取不到
+        self.assertIsNone(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="智谱 GLM"))
+
+    def test_provider_key_status_in_load(self):
+        """load() 要能告诉前端**每家**有没有 Key（下拉里标 ●）。"""
+        cfg.save_key(self.db, data_dir=self.data, provider="Kimi",
+                     api_key="sk-" + "kimi")
+        got = cfg.load(self.db, data_dir=self.data)
+        status = {p["name"]: p["has_key"] for p in got["providers"]}
+        self.assertTrue(status["Kimi"])
+        self.assertFalse(status["DeepSeek"])
+
+    def test_delete_key(self):
+        cfg.save_key(self.db, data_dir=self.data, provider="Kimi",
+                     api_key="sk-" + "kimi")
+        cfg.delete_key(self.db, provider="Kimi")
+        self.assertIsNone(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="Kimi"))
 
     def test_key_never_returned_to_frontend(self):
         """面板拿到的只有 'has_key' 布尔，绝不回显 Key。"""
-        cfg.save_key(self.db, data_dir=self.data, api_key=self.FAKE)
+        cfg.save_key(self.db, data_dir=self.data, provider="DeepSeek",
+                     api_key=self.FAKE)
         got = cfg.load(self.db, data_dir=self.data)
         self.assertTrue(got["has_key"])
         # 整个回包里不该出现 Key 原文
@@ -128,20 +162,32 @@ class TestGxksAiConfig(unittest.TestCase):
     def test_empty_key_does_not_overwrite(self):
         """空串 = 不修改（面板不回显，没法区分'没填'和'清空'）。"""
         first = "sk-" + "first" + "-value"
-        cfg.save_key(self.db, data_dir=self.data, api_key=first)
-        ok, err = cfg.save_key(self.db, data_dir=self.data, api_key="")
+        cfg.save_key(self.db, data_dir=self.data, provider="DeepSeek", api_key=first)
+        ok, err = cfg.save_key(self.db, data_dir=self.data,
+                               provider="DeepSeek", api_key="")
         self.assertFalse(ok)
-        self.assertEqual(cfg.load_key(self.db, data_dir=self.data), first)
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="DeepSeek"),
+            first)
+
+    def test_missing_provider_rejected(self):
+        ok, err = cfg.save_key(self.db, data_dir=self.data, provider="",
+                               api_key="sk-" + "x")
+        self.assertFalse(ok)
+        self.assertIn("厂商", err)
 
     def test_key_from_other_data_dir_cannot_be_read(self):
         """密钥随 data_dir 隔离：换目录解不开（安全设计）。"""
-        cfg.save_key(self.db, data_dir=self.data, api_key="sk-" + "iso" + "-value")
+        cfg.save_key(self.db, data_dir=self.data, provider="DeepSeek",
+                     api_key="sk-" + "iso" + "-value")
         other = self.root / "other"
         other.mkdir()
-        self.assertIsNone(cfg.load_key(self.db, data_dir=other))
+        self.assertIsNone(
+            cfg.load_key_for(self.db, data_dir=other, provider="DeepSeek"))
 
     def test_no_key_configured(self):
-        self.assertIsNone(cfg.load_key(self.db, data_dir=self.data))
+        self.assertIsNone(
+            cfg.load_key_for(self.db, data_dir=self.data, provider="DeepSeek"))
         self.assertFalse(cfg.load(self.db, data_dir=self.data)["has_key"])
 
 

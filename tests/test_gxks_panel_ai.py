@@ -104,7 +104,7 @@ class TestAiConfigApi(unittest.TestCase):
     FAKE = "sk-" + "panel" + "-" + "fake" + "-value"
 
     def test_save_key_then_has_key_true_and_never_echoed(self):
-        r = self.client.post("/api/ai/key", json={"api_key": self.FAKE})
+        r = self.client.post("/api/ai/key", json={"provider": "DeepSeek", "api_key": self.FAKE})
         self.assertTrue(r.json()["ok"], r.json())
         body = self.client.get("/api/ai").json()
         self.assertTrue(body["has_key"])
@@ -113,22 +113,135 @@ class TestAiConfigApi(unittest.TestCase):
 
     def test_empty_key_does_not_clear(self):
         first = "sk-" + "first" + "-value"
-        self.client.post("/api/ai/key", json={"api_key": first})
-        r = self.client.post("/api/ai/key", json={"api_key": ""})
+        self.client.post("/api/ai/key", json={"provider": "DeepSeek", "api_key": first})
+        r = self.client.post("/api/ai/key", json={"provider": "DeepSeek", "api_key": ""})
         self.assertFalse(r.json()["ok"])
         self.assertIn("未做修改", r.json()["error"])
         self.assertTrue(self.client.get("/api/ai").json()["has_key"])
         # 原 Key 仍在（证明没被清空）
         from xxt.store import gxks_ai_config as cfg
-        self.assertEqual(cfg.load_key(self.db, data_dir=self.root / "data"), first)
+        self.assertEqual(cfg.load_key_for(self.db, data_dir=self.root / "data", provider="DeepSeek"), first)
 
     def test_key_not_written_into_ops_log(self):
         """留痕只记"已更新"，绝不写 Key 内容。"""
-        self.client.post("/api/ai/key", json={"api_key": self.FAKE})
+        self.client.post("/api/ai/key", json={"provider": "DeepSeek", "api_key": self.FAKE})
         rows = self.client.get("/api/ops").json()["rows"]
         blob = json.dumps(rows, ensure_ascii=False)
         self.assertIn("ai-key", blob)
         self.assertNotIn(self.FAKE, blob)
+
+    # ---------------------------------------------------------------- 按厂商存 Key
+
+    def test_key_saved_per_provider(self):
+        """切到另一家厂商再切回来，Key 还在（用户：「切换也不用再填写」）。"""
+        a = "sk-" + "prov-a"
+        b = "sk-" + "prov-b"
+        r = self.client.post("/api/ai/key",
+                             json={"provider": "DeepSeek", "api_key": a})
+        self.assertTrue(r.json()["ok"], r.json())
+        r = self.client.post("/api/ai/key", json={"provider": "Kimi", "api_key": b})
+        self.assertTrue(r.json()["ok"], r.json())
+
+        from xxt.store import gxks_ai_config as cfg
+        data = self.root / "data"
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=data, provider="DeepSeek"), a)
+        self.assertEqual(
+            cfg.load_key_for(self.db, data_dir=data, provider="Kimi"), b)
+
+    def test_key_requires_provider(self):
+        r = self.client.post("/api/ai/key", json={"api_key": "sk-" + "x"})
+        self.assertFalse(r.json()["ok"])
+        self.assertIn("厂商", r.json()["error"])
+
+    def test_key_status_per_provider_in_state(self):
+        """下拉里要能标出**哪家**配了 Key。"""
+        self.client.post("/api/ai/key",
+                         json={"provider": "Kimi", "api_key": "sk-" + "k"})
+        body = self.client.get("/api/ai").json()
+        status = {p["name"]: p["has_key"] for p in body["providers"]}
+        self.assertTrue(status["Kimi"])
+        self.assertFalse(status["DeepSeek"])
+
+    def test_delete_key(self):
+        self.client.post("/api/ai/key",
+                         json={"provider": "Kimi", "api_key": "sk-" + "k"})
+        r = self.client.post("/api/ai/key/delete", json={"provider": "Kimi"})
+        self.assertTrue(r.json()["ok"])
+        body = self.client.get("/api/ai").json()
+        status = {p["name"]: p["has_key"] for p in body["providers"]}
+        self.assertFalse(status["Kimi"])
+
+    def test_delete_provider_removes_its_key(self):
+        """删厂商要把它的 Key 一起清掉，不留孤儿密文。"""
+        self.client.post("/api/ai/provider",
+                         json={"name": "自建", "base_url": "https://a/v1",
+                               "model": "m"})
+        self.client.post("/api/ai/key",
+                         json={"provider": "自建", "api_key": "sk-" + "z"})
+        self.client.post("/api/ai/provider/delete", json={"name": "自建"})
+        from xxt.store import gxks_ai_config as cfg
+        self.assertIsNone(
+            cfg.load_key_for(self.db, data_dir=self.root / "data", provider="自建"))
+
+    # ---------------------------------------------------------------- 拉模型
+
+    def test_models_endpoint_uses_provider(self):
+        from unittest import mock as _m
+        with _m.patch("xxt.ai.probe.fetch_models",
+                      return_value=(["m1", "m2"], "")) as f:
+            r = self.client.get("/api/ai/models?provider=Kimi")
+        body = r.json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["models"], ["m1", "m2"])
+        self.assertEqual(f.call_args[0][0], "https://api.moonshot.cn/v1")
+
+    def test_models_endpoint_reports_error(self):
+        from unittest import mock as _m
+        with _m.patch("xxt.ai.probe.fetch_models", return_value=([], "域名解析失败")):
+            r = self.client.get("/api/ai/models?provider=Kimi")
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertIn("域名解析", body["error"])
+
+    def test_models_endpoint_unknown_provider(self):
+        r = self.client.get("/api/ai/models?provider=没有这家")
+        self.assertFalse(r.json()["ok"])
+
+    # ---------------------------------------------------------------- 测试连通
+
+    def test_test_endpoint_success(self):
+        from unittest import mock as _m
+        self.client.post("/api/ai/key",
+                         json={"provider": "DeepSeek", "api_key": "sk-" + "t"})
+        with _m.patch("xxt.ai.probe.test_chat",
+                      return_value=(True, "连接成功（120 ms）")):
+            r = self.client.post("/api/ai/test", json={"provider": "DeepSeek"})
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("连接成功", body["message"])
+
+    def test_test_endpoint_failure(self):
+        from unittest import mock as _m
+        with _m.patch("xxt.ai.probe.test_chat",
+                      return_value=(False, "失败：认证失败：API Key 无效")):
+            r = self.client.post("/api/ai/test", json={"provider": "DeepSeek"})
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertIn("Key 无效", body["error"])
+
+    def test_test_endpoint_uses_request_values(self):
+        """用户在界面上改了地址/模型但还没保存，测试应先用这些值试。"""
+        from unittest import mock as _m
+        with _m.patch("xxt.ai.probe.test_chat",
+                      return_value=(True, "ok")) as f:
+            self.client.post("/api/ai/test",
+                             json={"provider": "DeepSeek",
+                                   "base_url": "https://custom/v1",
+                                   "model": "custom-model"})
+        args = f.call_args[0]
+        self.assertEqual(args[0], "https://custom/v1")
+        self.assertEqual(args[2], "custom-model")
 
     # ---------------------------------------------------------------- 存储位置
     def test_config_lives_in_gxks_db_not_xxt_db(self):
