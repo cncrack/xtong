@@ -286,8 +286,9 @@ def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Sessio
     if page is None:
         session = Session("cdp", browser=browser, _playwright=pw)
         session.close()                                    # Q31：连上了没页面也要立刻断
-        raise SessionError("no_page", "连上了但找不到平台页面（Chrome 是否已登录并打开学习入口？）",
-                           "先在浏览器里登录并打开课程列表页，再重跑")
+        raise SessionError("no_page", "连上了但找不到平台页面（浏览器里还没打开学习入口）",
+                           "两种办法：① 在面板点「启动并登录」（会自动打开学习入口）；"
+                           "② 在那个 Chrome 窗口里手动打开课程列表页再重跑")
     return Session("cdp", page=page, browser=browser, _playwright=pw)
 
 

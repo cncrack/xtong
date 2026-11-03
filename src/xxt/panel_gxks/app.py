@@ -71,7 +71,14 @@ def _start_chrome_interactive(label: str, port: int) -> dict[str, Any]:
     result = tmp / "chrome_start.result.json"
     tmp.mkdir(parents=True, exist_ok=True)
     result.unlink(missing_ok=True)
-    spec.write_text(json.dumps({"label": label, "port": int(port)}), encoding="utf-8")
+    # 带上启动 URL（`selectors.MAIN_PAGE`，学习入口）：不给 URL 时 Chrome 停在
+    # `chrome://new-tab-page/`，而刷课脚本要求页面里已有课程列表帧（cdp 模式故意
+    # 不导航，免得打断人工操作）→ 点「开始学习」会立刻报「找不到平台页面」。
+    # ⚠ 这里只能引用 `selectors`，**不能写平台 URL 字面量**（平台细节只属于 adapters/，
+    # 由 `tests/test_gxks_boundaries.py` 守）。
+    from ..adapters.gxks import selectors
+    spec.write_text(json.dumps({"label": label, "port": int(port),
+                                "url": selectors.MAIN_PAGE}), encoding="utf-8")
     try:
         done = subprocess.run(["schtasks", "/run", "/tn", _CHROME_TASK],
                               capture_output=True, text=True, encoding="utf-8",
@@ -161,17 +168,46 @@ def _spawn_script(settings: Settings, label: str, kind: str,
     return proc
 
 
-def _jobs_snapshot() -> list[dict[str, Any]]:
+# 刚结束的任务（按 label 留最后一条）：任务跑完 `_JOBS` 会被清掉，
+# 但用户最想看的恰恰是「刚才跑了什么、成功没成功」（2026-11-03）。
+# 只留**一条**且只在内存里，不占资源、重启即清空。
+_LAST_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def _jobs_snapshot(include_finished: bool = False) -> list[dict[str, Any]]:
+    """`include_finished=True` 时把「刚结束的任务」也带上（`alive: false`）。
+
+    ## 为什么要有这个开关（2026-11-03 用户问「运行日志怎么没有了」）
+
+    原来任务一结束就 `_JOBS.pop()` → 页面立刻变成「当前没有运行中的任务」，
+    **刚跑完的日志当场消失**。而那正是用户最需要回看的时刻（成功没？哪节没达标？）。
+
+    默认 `False`：`_stop`/`_account_cards` 这类「判断有没有任务在跑」的地方**不能**
+    把已结束的当活的（否则停止按钮、额度计算都会错）。
+    只有 `/api/state` 的展示路径传 `True`。
+    """
     out: list[dict[str, Any]] = []
     with _JOBS_LOCK:
         for label, job in list(_JOBS.items()):
             alive = job["proc"].poll() is None
+            snap = {"label": label, "kind": job["kind"], "since": job["since"],
+                    "alive": alive, "detail": job["detail"],
+                    "log_name": Path(job["log"]).name,
+                    "tail": _log_tail(Path(job["log"]))}
             if not alive:
                 _JOBS.pop(label, None)
-            out.append({"label": label, "kind": job["kind"], "since": job["since"],
-                        "alive": alive, "detail": job["detail"],
-                        "log_name": Path(job["log"]).name,
-                        "tail": _log_tail(Path(job["log"]))})
+                # 留一条给页面回看（带上结束时间，便于和「正在跑」区分）。
+                # ⚠ **不要** append 到 `out`：默认返回值必须是"还在跑的任务"，
+                # 否则第一次查询就会把已结束的当成活的 → 「停止」去杀死 pid、
+                # 新一轮启动被自己挡住（2026-11-03 被测试抓到）。
+                snap["ended_at"] = time.strftime("%H:%M:%S")
+                _LAST_JOBS[label] = snap
+                continue
+            out.append(snap)
+    if include_finished:
+        for label, snap in _LAST_JOBS.items():
+            if not any(j["label"] == label for j in out):
+                out.append(dict(snap))
     return out
 
 
@@ -499,6 +535,11 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
     label = _safe_label(settings, label)
     with _JOBS_LOCK:
         job = _JOBS.get(label)
+        # 已结束的任务留在 `_JOBS` 里等 `_jobs_snapshot` 收进 `_LAST_JOBS` 回看；
+        # 但**不能被当成活的去停**（否则会对一个已死的 pid 报「已停止」，
+        # 用户以为停了，实际什么都没发生 —— 2026-11-03 测试抓到）。
+        if job is not None and job["proc"].poll() is not None:
+            job = None
     if job is None:
         return {"ok": False, "error": "该账号没有在跑的任务"}
     result = _kill(job["proc"])
@@ -635,7 +676,10 @@ def create_app(settings: Settings) -> FastAPI:
             "course": sections_course,
             "courses_cached": courses_cached,
             "auto_submit": bool(settings.raw.get("gxks", {}).get("auto_submit", False)),
-            "jobs": _jobs_snapshot(),
+            # `include_finished=True`：刚结束的任务也带上（`alive: false`），
+            # 这样页面能继续显示最后一次的日志尾巴（2026-11-03 用户要求）。
+            # 其他接口仍用默认 False，不会把已结束的当"在跑"。
+            "jobs": _jobs_snapshot(include_finished=True),
             "sections": sections or None,
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))

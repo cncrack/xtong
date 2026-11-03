@@ -43,12 +43,27 @@ try {
     if (-not (Test-Path $chrome)) { throw "找不到 Chrome：$chrome（设 XXT_GXKS_CHROME 指向 chrome.exe）" }
     if ([string]::IsNullOrWhiteSpace($label)) { throw "缺少 label" }
 
+    # ⚠ 必须与 `adapters/gxks/chrome.py::_CHROME_ARGS` **保持一致**。
+    # 2026-11-03 踩到：本脚本只写了前两个，漏了后两个 →
+    #   ① 没有 `--no-proxy-server`：系统代理（本机 v2rayN 10808）会把视频 CDN 流量
+    #      也接过去，m3u8/ts 都返回 200，但**分片解密/解码失败**：播放器永远停在
+    #      `waiting`、`readyState=0`、`buffered=[]`（逐帧探针实测）；
+    #   ② 没有 `--disable-blink-features=AutomationControlled`：未挂自动化豁免。
     $argv = @(
         "--remote-debugging-port=$port",
         "--user-data-dir=$profile",
         "--no-first-run",
-        "--no-default-browser-check"
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--no-proxy-server"
     )
+    # 启动页必须给（2026-11-03 踩到）：不给 URL 时 Chrome 停在
+    # `chrome://new-tab-page/`，而刷课脚本要求页面里已有 `LibraryStudyList.aspx` 帧
+    # （cdp 模式**故意不导航**，免得打断人工操作）→ 点「开始学习」立刻报
+    # 「连上了但找不到平台页面」。所以起浏览器时就把学习入口打开。
+    $url = [string]$spec.url
+    if (-not [string]::IsNullOrWhiteSpace($url)) { $argv += $url }
+
     # -PassThru 拿 pid：面板要显示「停止浏览器」并只停自己起的那个
     $proc = Start-Process -FilePath $chrome -ArgumentList $argv -PassThru
 

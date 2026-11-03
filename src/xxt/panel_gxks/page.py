@@ -400,10 +400,14 @@ table.acct-tbl .sdot.off{background:#c3c8d0}
 /* 第一枚（cdp / managed）允许收缩并省略，保证后两枚始终可见 */
 .b-tags .tag:first-child{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 /* 持久提示条：启动浏览器 / 刷新节列表的长结果放这里。
-   toast 只停 7 秒，用户回来看就没了（2026-11-03）。 */
-.b-notice{margin-top:8px;padding:8px 10px;border:1px solid var(--line);
+   toast 只停 7 秒，用户回来看就没了（2026-11-03）。
+   ⚠ 必须 `grid-column:1/-1` —— `<main>` 是 12 栏网格，不写就会缩成
+   ~90px 的一列，中文竖排成一溜（用户 2026-11-03 截图指出）。 */
+.b-notice{grid-column:1/-1;margin:0 0 10px;padding:8px 10px;border:1px solid var(--line);
   border-left:3px solid var(--accent);border-radius:8px;background:#f7f9fc;
-  font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  writing-mode:horizontal-tb}
+.b-notice[hidden]{display:none}
 .b-notice.bad{border-left-color:var(--bad,#c0392b);background:#fdf3f2}
 .b-notice button{margin-left:8px}
 /* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
@@ -473,6 +477,11 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
          letter-spacing:.04em}
 .ops-sub:first-of-type{margin-top:2px}
 #runlog pre{margin:0}
+/* 「任务已结束，这是最后一次输出」提示条（2026-11-03 用户要求保留日志回看）：
+   绿色左边框 + 淡绿底，和「正在跑」区分开，一眼看出这不是实时输出。 */
+.runlog-done{margin:0 0 6px;padding:5px 9px;border-radius:6px;
+  background:#e9f6f0;border-left:3px solid #4a9d78;color:#2f6b52;
+  font-size:12.5px;line-height:1.45}
 /* 操作记录的前三列（时间/动作/结果）不折行，把余量全留给详情 */
 #ops td:nth-child(-n+3){white-space:nowrap}
 /* 两条进度条（节数 / 学时）：纯 div，不引图表库 */
@@ -2297,19 +2306,28 @@ function renderRunLog(state) {
     if (meta) meta.textContent = "";
     return;
   }
-  const cur = jobs.find((j) => j.label === state.label) || jobs[0];
+  // 优先看**本账号正在跑**的；没有在跑的，就回退到本账号**刚结束**的那条
+  // （2026-11-03 用户要求：跑完了还能回看日志）。`alive===false` 是后端留的尾巴。
+  const mine = jobs.filter((j) => j.label === state.label);
+  const cur = mine.find((j) => j.alive) || mine[0] ||
+              jobs.find((j) => j.alive) || jobs[0];
+  const running = cur.alive !== false;
   if (meta) {
     meta.textContent = "· " + (cur.label || "") + "（" + (cur.kind || "") +
-      " 起于 " + (cur.since || "?") + "，每 4 秒刷新）";
+      (running
+        ? " 起于 " + (cur.since || "?") + "，每 4 秒刷新"
+        : " 已结束（" + (cur.since || "?") + " → " + (cur.ended_at || "?") +
+          "）· 这是最后一次的输出");
   }
   const tail = (cur.tail || []);
-  box.innerHTML = "<pre>" + (tail.length ? esc(tail.join("\n")) : "（日志还没写出内容）") +
-    "</pre>";
-  if (jobs.length > 1) {
-    const others = jobs.filter((j) => j !== cur)
-      .map((j) => j.label + "·" + (j.kind || "")).join("、");
+  box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
+    "<pre>" + (tail.length ? esc(tail.join("\n")) : "（日志还没写出内容）") + "</pre>";
+  // 其他还在跑的任务
+  const others = jobs.filter((j) => j !== cur && j.alive);
+  if (others.length) {
     box.innerHTML += '<div class="muted" style="margin-top:4px">还有其他任务在跑：' +
-      esc(others) + "（点对应账号行可看它的日志）</div>";
+      esc(others.map((j) => j.label + "·" + (j.kind || "")).join("、")) +
+      "（点对应账号行可看它的日志）</div>";
   }
 }
 

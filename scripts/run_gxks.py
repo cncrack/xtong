@@ -312,9 +312,31 @@ def main() -> int:
             except Exception as exc:                          # noqa: BLE001
                 print(f"[WARN] 回写节缓存失败（不影响播放）：{type(exc).__name__}")
 
-        out = drv.watch(section, interval=args.interval, max_seconds=args.max_hours * 3600,
-                        read_progress_every=args.progress_every, margin_minutes=args.margin,
-                        on_event=_on_event)
+        # ⚠ 中断也要记账（2026-11-03 用户「计时有没有算有效」）：
+        # 原来只有 `result == "done"` 才写台账，中途停掉（Ctrl+C / 面板「停止」）
+        # 一分钟都不记 → 用户明明看了 3/38，台帐却一条没有，看起来像"计时无效"。
+        # 现在改成 `try/finally`：只要**播过**就补一条 `partial`，分钟数按实际播放时长，
+        # 但 `result != "done"` 时**不计入"今日几节"**（节数只认学完的，见 ledger 的
+        # `result == "done"` 判定），只累加分钟数 —— 这样额度刹车仍然准。
+        _watch_started = time.monotonic()
+        try:
+            out = drv.watch(section, interval=args.interval,
+                            max_seconds=args.max_hours * 3600,
+                            read_progress_every=args.progress_every,
+                            margin_minutes=args.margin,
+                            on_event=_on_event)
+        except KeyboardInterrupt:
+            played = time.monotonic() - _watch_started
+            print(f"\n⚠ 被中断（已播 {played / 60:.1f} 分钟）→ 记一条 partial，不计节数")
+            if played >= 30:                       # 半分钟以下不记，避免噪声
+                try:
+                    gledger.record(account=acc_label, section_id=section,
+                                   name=row["name"], minutes=played / 60.0,
+                                   result="partial", course=str(args.course or ""))
+                    print(f"[OK] 已记 partial：{section} {played / 60:.1f} 分钟（不计入今日节数）")
+                except Exception as exc:           # noqa: BLE001
+                    print(f"⚠ 记账失败：{exc}")
+            raise
         close_log()
 
         final = out.get("last_row") or {}

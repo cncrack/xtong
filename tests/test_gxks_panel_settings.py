@@ -80,7 +80,11 @@ class TestMultiAccountRunLog(unittest.TestCase):
     def test_runlog_lists_other_jobs(self):
         body = PAGE.split("function renderRunLog(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("还有其他任务在跑", body)
-        self.assertIn("jobs.length > 1", body)
+        # 2026-11-03 改：判断依据从「jobs 总数 > 1」改成「除当前这条外还有**在跑**的」。
+        # 因为现在会带上「刚结束」的任务（alive=false），用它计数会把已结束的也算进去，
+        # 出现「还有其他任务在跑：default·study」这种假提示。
+        self.assertIn("others.length", body)
+        self.assertIn("j !== cur && j.alive", body)
 
     def test_job_snapshot_has_tail_for_each_job(self):
         from xxt.panel_gxks import app
