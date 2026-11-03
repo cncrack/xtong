@@ -399,6 +399,13 @@ table.acct-tbl .sdot.off{background:#c3c8d0}
 .b-tags .tag{flex:0 0 auto;font-size:12px;padding:2px 8px;white-space:nowrap}
 /* 第一枚（cdp / managed）允许收缩并省略，保证后两枚始终可见 */
 .b-tags .tag:first-child{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+/* 持久提示条：启动浏览器 / 刷新节列表的长结果放这里。
+   toast 只停 7 秒，用户回来看就没了（2026-11-03）。 */
+.b-notice{margin-top:8px;padding:8px 10px;border:1px solid var(--line);
+  border-left:3px solid var(--accent);border-radius:8px;background:#f7f9fc;
+  font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.b-notice.bad{border-left-color:var(--bad,#c0392b);background:#fdf3f2}
+.b-notice button{margin-left:8px}
 /* 浏览器卡的紧凑信息区：短项并排三列，长项各占一行并截断。
    原来 6 行竖表把整张卡撑到 396px，右侧一长条空白（实测 6 个账号时差 1116px）。 */
 .binfo{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
@@ -582,6 +589,10 @@ button.mini{padding:3px 9px;font-size:13px}
       aria-controls="view-ai" onclick="showTab('ai')">AI 模型</button>
   </nav>
 
+  <!-- 全局持久提示条（2026-11-03）：启动浏览器 / 刷新节列表的**长结果**放这里。
+       toast 只停 7 秒，用户回来看就没了；这类结果往往带「接下来该做什么」。 -->
+  <div id="notice" class="b-notice" hidden></div>
+
   <!-- ------------------------------------------------ 视图 1：账号与任务（整行） -->
   <section id="view-accounts" class="pageview on bare" role="tabpanel">
     <div class="split">
@@ -639,7 +650,7 @@ button.mini{padding:3px 9px;font-size:13px}
     <div class="bgrp">
       <span class="bgrp-lab">浏览器</span>
       <button id="btn-bstart" class="bgrp-btn primary" onclick="startBrowser()"
-        title="用本账号的端口与 profile 目录拉起 Chrome">启动</button>
+        title="用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）">启动并登录</button>
       <button id="btn-bstop" class="bgrp-btn danger" onclick="post('/api/browser/stop')"
         title="只停面板自己拉起的那个 Chrome">停止</button>
       <button id="btn-bcopy" class="mini" type="button" onclick="copyChromeCmd()"
@@ -899,6 +910,20 @@ function toast(msg, bad) {
   d.textContent = msg;
   el("toast").appendChild(d);
   setTimeout(() => d.remove(), bad ? 7000 : 4200);
+}
+
+// 全局持久提示条：长消息 / 带按钮的结果用它（toast 只停几秒，用户回来看就没了）。
+// `html` 允许带按钮（如「启动浏览器并登录」），`bad` 决定左边框颜色。
+function showNotice(html, bad) {
+  const box = el("notice");
+  if (!box) return;
+  box.innerHTML = html || "";
+  box.className = "b-notice" + (bad ? " bad" : "");
+  box.hidden = !html;
+}
+function hideNotice() {
+  const box = el("notice");
+  if (box) { box.hidden = true; box.innerHTML = ""; }
 }
 
 async function post(url, body) {
@@ -1954,9 +1979,15 @@ async function saveKey() {
   load();
 }
 
+// 启动浏览器并**自动注入登录态**（2026-11-03 用户要的「一键」）：
+// 后端起完 Chrome 会调 `--restore` 注入快照 cookie，所以比普通启动慢（约 10 秒）。
 async function startBrowser() {
-  toast("正在启动 Chrome（几秒内看新窗口）…");
-  await post("/api/browser/start");
+  toast("正在启动 Chrome 并注入登录态（约 10 秒）…");
+  hideNotice();
+  const data = await post("/api/browser/start");
+  if (data && data.ok && data.message) {
+    showNotice("✅ " + data.message.replace(/\n/g, "<br>"));
+  }
 }
 
 async function checkSession() {
@@ -2159,15 +2190,26 @@ function renderSections(state) {
   box.innerHTML = html;
 }
 
-function refreshSections() {
+async function refreshSections() {
   // 带上当前显示的课程 value：B1 之后缓存按课程分开，不带就会写到"无课程"那份去。
   // ⚠ 优先用用户选的 COURSE，而不是 STATE.course：后者是后端**这次读到**的，
   // 用户切到另一门课时它还没变，会把新课写进旧课的文件（2026-11-03）。
-  post("/api/sections/refresh", { course: COURSE || (STATE && STATE.course) || "" });
+  const data = await post("/api/sections/refresh",
+    { course: COURSE || (STATE && STATE.course) || "" });
+  // 浏览器没开：后端**提前拦下**（不白跑一分钟），这里给出可点的下一步
+  if (data && data.need_browser) {
+    showNotice("⚠ " + esc(data.error).replace(/\n/g, "<br>") +
+      '<button class="mini primary" onclick="startBrowser()">启动浏览器并登录</button>', true);
+  }
 }
 
-function refreshSectionsFor(label, course) {
-  post("/api/sections/refresh", { label: label, course: course || "" });
+async function refreshSectionsFor(label, course) {
+  const data = await post("/api/sections/refresh",
+    { label: label, course: course || "" });
+  if (data && data.need_browser) {
+    showNotice("⚠ " + esc(data.error).replace(/\n/g, "<br>") +
+      '<button class="mini primary" onclick="startBrowser()">启动浏览器并登录</button>', true);
+  }
 }
 
 function doWork(btn) {

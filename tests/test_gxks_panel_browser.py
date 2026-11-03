@@ -123,65 +123,51 @@ class TestGxksPanelBrowser(unittest.TestCase):
     def test_start_skips_when_port_already_alive(self):
         self._p_alive.stop()
         with mock.patch.object(panel_app.gchrome, "port_alive", return_value=True), \
-             mock.patch.object(panel_app.gchrome, "start") as start:
+             mock.patch.object(panel_app, "_start_chrome_interactive") as start, \
+             mock.patch.object(panel_app, "_chrome_start_message",
+                               return_value="已在运行"):
             body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
             start.assert_not_called()
         self.assertTrue(body["ok"])
-        self.assertIn("不用重复启动", body["message"])
+        self.assertIn("已在运行", body["message"])
 
     def test_start_without_profile_uses_default_dir(self):
         # 单账号回落表（account.local.json）本来就没有 profile 字段：
         # 默认落到 data/profiles/<代号>，否则这个按钮永远是灰的
-        self._p_chrome.stop()
-        probed: list[int] = []
-
-        def _port_alive(port, **_kw):
-            probed.append(int(port))                      # 启动前没活、启动后活着
-            return len(probed) > 1
-
-        with mock.patch.object(panel_app.gchrome, "find_chrome",
-                               return_value=Path("C:/c/chrome.exe")), \
-             mock.patch.object(panel_app.gchrome, "start",
-                               return_value=mock.Mock(pid=777)) as start, \
-             mock.patch.object(panel_app.gchrome, "port_alive",
-                               side_effect=_port_alive):
-            body = self.client.post("/api/browser/start", json={"label": "yi"}).json()
-        self.assertTrue(body["ok"])
-        self.assertEqual(Path(start.call_args.kwargs["profile"]),
-                         self.root / "data" / "profiles" / "yi")
+        with mock.patch.object(panel_app, "_start_chrome_interactive",
+                               return_value={"ok": True, "pid": 777}) as start, \
+             mock.patch.object(panel_app, "_chrome_start_message",
+                               return_value="ok"):
+            self.client.post("/api/browser/start", json={"label": "yi"})
+        # 端口取自账号表（乙同学 9223），不是全局默认
+        self.assertEqual(start.call_args.args, ("yi", 9223))
+        # profile 落到 data/profiles/yi
+        own = panel_app._BROWSERS.get("yi") or {}
+        self.assertEqual(Path(own["profile"]).name, "yi")
 
     def test_start_refused_without_chrome(self):
-        body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
+        """交互式任务报错（含找不到 Chrome）时，错误原样透出，不静默失败。"""
+        with mock.patch.object(panel_app, "_start_chrome_interactive",
+                               return_value={"ok": False,
+                                             "error": "没找到 Chrome：C:/c/chrome.exe"}):
+            body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
         self.assertFalse(body["ok"])
         self.assertIn("没找到 Chrome", body["error"])
 
     def test_start_success_registers_pid_then_stop_kills_it(self):
-        self._p_chrome.stop()
-        self._p_alive.stop()
-        probed: list[int] = []
-
-        def _port_alive(port, **_kw):
-            # 启动前那次必须“没活”（否则早退），拉起后的探活一律返回“活着”
-            probed.append(int(port))
-            return len(probed) > 1
-
-        with mock.patch.object(panel_app.gchrome, "find_chrome",
-                               return_value=Path("C:/c/chrome.exe")), \
-             mock.patch.object(panel_app.gchrome, "start",
-                               return_value=mock.Mock(pid=777)) as start, \
-             mock.patch.object(panel_app.gchrome, "port_alive",
-                               side_effect=_port_alive), \
+        with mock.patch.object(panel_app, "_start_chrome_interactive",
+                               return_value={"ok": True, "pid": 777}) as start, \
+             mock.patch.object(panel_app, "_chrome_start_message",
+                               return_value="已登录"), \
              mock.patch.object(panel_app, "_kill_pid", return_value="已停止") as kill:
             body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
             self.assertTrue(body["ok"])
-            self.assertEqual(len(probed), 2)               # 启动前查一次、启动后再查一次
-            self.assertEqual(probed[1], 9222)
-            # 端口与 profile 都取自账号表，不信全局配置
-            self.assertEqual(start.call_args.kwargs["port"], 9222)
-            self.assertEqual(Path(start.call_args.kwargs["profile"]).name, "jia")
+            # 端口与账号都取自账号表，不信全局配置
+            self.assertEqual(start.call_args.args, ("jia", 9222))
 
             state = self.client.get("/api/browser/state?label=jia").json()
             self.assertTrue(state["started_by_panel"])
+            self.assertEqual(panel_app._BROWSERS["jia"]["pid"], 777)
 
             stopped = self.client.post("/api/browser/stop", json={"label": "jia"}).json()
             self.assertTrue(stopped["ok"])
@@ -191,21 +177,17 @@ class TestGxksPanelBrowser(unittest.TestCase):
                                           json={"label": "jia"}).json()["ok"], False)
 
     def test_start_reports_port_not_responding(self):
-        self._p_chrome.stop()
-        with mock.patch.object(panel_app.gchrome, "find_chrome",
-                               return_value=Path("C:/c/chrome.exe")), \
-             mock.patch.object(panel_app.gchrome, "start",
-                               return_value=mock.Mock(pid=1)), \
-             mock.patch.object(panel_app.gchrome, "port_alive", return_value=False):
+        with mock.patch.object(panel_app, "_start_chrome_interactive",
+                               return_value={"ok": False,
+                                             "error": "等了 40 秒，端口 9222 仍未响应"}):
             body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
         self.assertFalse(body["ok"])
-        self.assertIn("调试端口", body["error"])
+        self.assertIn("仍未响应", body["error"])
 
     def test_stop_refuses_foreign_browser(self):
         body = self.client.post("/api/browser/stop", json={"label": "jia"}).json()
         self.assertFalse(body["ok"])
         self.assertIn("不是面板起的", body["error"])
-
     def test_start_refused_while_job_running(self):
         proc = mock.Mock(pid=1)
         proc.poll.return_value = None                     # 活着：snapshot 才留得住这条
@@ -213,10 +195,7 @@ class TestGxksPanelBrowser(unittest.TestCase):
                                   "since": "12:00:00", "log": Path("nope.log"),
                                   "detail": "--max-sections 3"}
         try:
-            self._p_chrome.stop()
-            with mock.patch.object(panel_app.gchrome, "find_chrome",
-                                   return_value=Path("C:/c/chrome.exe")):
-                body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
+            body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
         finally:
             panel_app._JOBS.pop("jia", None)
         self.assertFalse(body["ok"])
@@ -343,6 +322,107 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertIn("验证码", body["error"])
         argv = run.call_args.args[0]
         self.assertEqual(argv[argv.index("--port") + 1], "9222")   # 端口按账号表，不猜
+
+
+
+
+
+
+class TestChromeStartLogins(unittest.TestCase):
+    """`_chrome_start_message` 的登录策略（2026-11-03 用户问「为何不能自动登录」）。
+
+    三层：① 注入快照；② 快照票过期 → 自动用账号密码重登；③ 验证码 → 转人工。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "data").mkdir(parents=True)
+        self.settings = Settings(root=self.root)
+        self.acc = mock.Mock(label="jia", port=9222)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _snapshot(self, saved=True):
+        p = self.root / "data" / "storage_state_gxks_jia.json"
+        p.write_text(json.dumps({"cookies": [{"name": ".ASPXAUTH", "value": "X",
+                                              "domain": "www.gaoxiaokaoshi.com",
+                                              "path": "/", "expires": -1}]}),
+                     encoding="utf-8")
+        return saved
+
+    def _cred(self, configured=True):
+        p = self.root / "data" / "account.local.json"
+        if configured:
+            p.write_text(json.dumps({"name": "s1", "pw": "p"}), encoding="utf-8")
+        else:
+            p.unlink(missing_ok=True)
+
+    def _run(self, results: dict[str, dict]) -> tuple[str, list[str]]:
+        """`results` 按 flag（--restore / --relogin）给回包。"""
+        calls: list[str] = []
+
+        def _run_session(_acc, *flags, **_kw):
+            flag = flags[0] if flags else ""
+            calls.append(flag)
+            return {"ok": True, "parsed": results.get(flag, {})}
+
+        msg = panel_app._chrome_start_message(self.settings, self.acc, 9222, _run_session)
+        return msg, calls
+
+    def test_restore_works_no_relogin(self):
+        self._snapshot()
+        self._cred()
+        msg, calls = self._run({"--restore": {"logged_in": True, "restored": 9}})
+        self.assertIn("已注入登录态（9 条 cookie）", msg)
+        self.assertIn("可以直接刷课", msg)
+        self.assertEqual(calls, ["--restore"], "注入成功就不该再跑重登")
+
+    def test_already_logged_in_does_not_say_injected_zero(self):
+        """`restored=0` = 本来就登着（脚本没走注入）—— 不能说「注入 0 条 cookie」。"""
+        self._snapshot()
+        self._cred()
+        msg, _ = self._run({"--restore": {"logged_in": True, "restored": 0}})
+        self.assertIn("已是登录状态", msg)
+        self.assertNotIn("0 条 cookie", msg)
+
+    def test_expired_ticket_falls_back_to_password(self):
+        """快照票过期是常态（cookie 是 session 级）→ 必须自动重登。"""
+        self._snapshot()
+        self._cred()
+        msg, calls = self._run({
+            "--restore": {"logged_in": False, "restored": 9},
+            "--relogin": {"logged_in": True, "relogin": {"result": "ok"}},
+        })
+        self.assertIn("快照票已失效", msg)
+        self.assertIn("账号密码登录成功", msg)
+        self.assertEqual(calls, ["--restore", "--relogin"])
+
+    def test_verify_code_sends_human(self):
+        self._snapshot()
+        self._cred()
+        msg, _ = self._run({
+            "--restore": {"logged_in": False, "restored": 9},
+            "--relogin": {"logged_in": False, "need_human": True,
+                          "relogin": {"result": "need_verify"}},
+        })
+        self.assertIn("验证码", msg)
+        self.assertIn("手动登录", msg)
+
+    def test_no_snapshot_goes_straight_to_password(self):
+        self._cred()
+        msg, calls = self._run({
+            "--relogin": {"logged_in": True, "relogin": {"result": "ok"}},
+        })
+        self.assertIn("账号密码登录成功", msg)
+        self.assertEqual(calls, ["--relogin"], "没有快照就别白跑注入")
+
+    def test_no_snapshot_no_cred_asks_manual(self):
+        self._cred(configured=False)
+        msg, calls = self._run({})
+        self.assertIn("手动登录", msg)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

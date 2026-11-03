@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -88,27 +89,43 @@ def has_auth_ticket(context: Any) -> bool:
         return True
 
 
-def _find_frame(page: Any) -> Any | None:
-    """表单可能在主文档也可能在 iframe 里，按 `#frmLogin` 是否存在找。"""
-    for frame in [page, *page.frames]:
-        try:
-            if frame.query_selector(f"#{selectors.LOGIN_FORM_ID}") is not None:
-                return frame
-        except Exception:                                  # noqa: BLE001  帧在导航时会抛
-            continue
-    return None
+def _find_frame(page: Any, *, wait_ms: int = 0) -> Any | None:
+    """表单可能在主文档也可能在 iframe 里，按 `#frmLogin` 是否存在找。
+
+    ⚠ **必须能等**（2026-11-03 实测的坑）：登录页 `Loginb.aspx` 是**异步渲染**的，
+    `goto` 到 `load` 之后 2 秒内 `document` 里还一个 input 都没有
+    （实测 `input=0`、`bodyLen=1409`，要 5 秒后才出现 `#frmLogin`）。
+    原来这里只 `query_selector` 一次就返回 None → `login()` 直接判 `no_form`，
+    表现是「自动重登永远失败，但手动在那台浏览器里登录完全正常」。
+
+    `wait_ms > 0` 时轮询等待（100ms 一次），让调用方能用上真正可靠的判定。
+    """
+    deadline = time.monotonic() + max(0, wait_ms) / 1000.0
+    while True:
+        for frame in [page, *page.frames]:
+            try:
+                if frame.query_selector(f"#{selectors.LOGIN_FORM_ID}") is not None:
+                    return frame
+            except Exception:                              # noqa: BLE001  帧在导航时会抛
+                continue
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
 
 
 def login(page: Any, cred: dict[str, str], *, settle_ms: int = 4000,
-          wait_ms: int = 30000) -> dict[str, Any]:
+          wait_ms: int = 30000, form_wait_ms: int = 15000) -> dict[str, Any]:
     """在已打开的登录页上走正常流程登录。
+
+    `form_wait_ms`：等 `#frmLogin` 出现的最长时间。登录页是异步渲染的
+    （实测要 5 秒才出现表单），不能只探一次就判 `no_form`。
 
     返回 `{"result": "ok|need_verify|no_form|failed", ...}`，**不含凭据值**。
     """
     if is_need_verify(page.url):
         return {"result": "need_verify", "reason": "url_need_verify"}
 
-    frame = _find_frame(page)
+    frame = _find_frame(page, wait_ms=form_wait_ms)
     if frame is None:
         return {"result": "no_form", "url": page.url}
 

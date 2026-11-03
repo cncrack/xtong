@@ -134,12 +134,27 @@ class TestGxksPanel(unittest.TestCase):
         self.assertEqual(argv[argv.index("--max-sections") + 1], "12")
 
     def test_sections_refresh_spawns_all_pages(self):
-        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn:
+        # 端口探活必须 mock 成 True：接口**先探浏览器端口**（2026-11-03 加），
+        # 探不到就直接返回 need_browser，不会起进程。
+        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn, \
+             mock.patch("xxt.panel_gxks.app.gchrome.port_alive", return_value=True):
             spawn.return_value = mock.Mock(pid=1)
             self.client.post("/api/sections/refresh", json={"label": "jia"})
             argv = list(spawn.call_args.args[4:])
         self.assertIn("--all", argv)
         self.assertEqual(argv[argv.index("--port") + 1], "9222")
+
+    def test_sections_refresh_refuses_when_browser_down(self):
+        """浏览器没开：**提前拦下**，不起进程（否则用户白等一分钟还不知道为啥）。"""
+        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn, \
+             mock.patch("xxt.panel_gxks.app.gchrome.port_alive", return_value=False):
+            spawn.return_value = mock.Mock(pid=1)
+            r = self.client.post("/api/sections/refresh", json={"label": "jia"})
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(body.get("need_browser"), "要带 need_browser，前端才会给启动按钮")
+        self.assertIn("9222", body["error"])
+        spawn.assert_not_called()
 
     def test_stop_without_job(self):
         r = self.client.post("/api/stop", json={"label": "jia"})

@@ -37,21 +37,28 @@ class TestRecentTotals(unittest.TestCase):
                           encoding="utf-8")
 
     def test_spans_midnight(self):
-        """跨零点的两节：今日算 1 节，近 24h 算 2 节。"""
+        """跨零点的两节：今日算 1 节，近 24h 算 2 节。
+
+        ⚠ 显式传 `day=`，**不依赖「现在几点」**：`now - 3h` 在白天会落在同一天，
+        断言就假了（2026-11-03 20:xx 实测翻车）。两个口径过滤的字段不同：
+        `today_totals` 认 `date`、`recent_totals` 认 `at` —— 分开测才稳。
+        """
         now = datetime.now()
-        yest = now - timedelta(hours=3)          # 昨天晚上（跨零点前）
+        older = now - timedelta(hours=2)               # 确定在 24h 窗口内
+        older_day = (now - timedelta(days=1)).date()   # 但归属"昨天"
         self._write([
-            {"at": yest.isoformat(timespec="seconds"), "date": yest.date().isoformat(),
+            {"at": older.isoformat(timespec="seconds"),
+             "date": older_day.isoformat(),
              "account": "default", "course": "", "section_id": "1301",
              "name": "a", "minutes": 35.9, "result": "done"},
             {"at": now.isoformat(timespec="seconds"), "date": now.date().isoformat(),
              "account": "default", "course": "", "section_id": "1302",
              "name": "b", "minutes": 35.8, "result": "done"},
         ])
-        t = ledger.today_totals(self.p, "default")
+        t = ledger.today_totals(self.p, "default", day=now.date().isoformat())
         r = ledger.recent_totals(self.p, "default", 24)
-        self.assertEqual(r["sections"], 2, "近24h 要含跨零点前的那节")
-        self.assertEqual(t["sections"], 1, "今日按墙钟日：跨零点前那节算昨天")
+        self.assertEqual(r["sections"], 2, "近24h 按 `at` 过滤 → 两节都在")
+        self.assertEqual(t["sections"], 1, "今日按 `date` 过滤 → 只有今天那节")
 
     def test_recent_excludes_older_than_window(self):
         old = datetime.now() - timedelta(hours=30)

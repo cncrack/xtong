@@ -54,6 +54,29 @@ def _default_label() -> str:
     return accounts[0].label if accounts else "default"
 
 
+def _record_fail(settings: Settings, label: str, detail: str) -> None:
+    """失败也写一条操作记录（2026-11-03）。
+
+    ## 为什么必须留痕
+
+    面板上任务一结束 `jobs` 就空了、运行日志的尾巴也没了，用户能回看的只有
+    「操作记录」表。失败只 `print` 到 stderr 的话，**事后完全查不到原因**——
+    实测（2026-11-03 01:13）Chrome 被关掉后点「刷新节列表」，用户只看到任务
+    一闪而过，不知道是浏览器没开。
+
+    写库失败不能反过来把主流程带崩，所以整个包在 try 里。
+    """
+    try:
+        db = open_question_bank(settings.data_dir / "gxks_questions.db")
+        try:
+            gxks_ops.record_op(db, account_label=label, action="sections-read",
+                               detail=detail[:400], result="fail")
+        finally:
+            db.close()
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
 def _slim(row: dict, page: int) -> dict:
     out = {k: row.get(k) for k in FIELDS}
     out["page"] = page
@@ -168,9 +191,13 @@ def main() -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         if exc.hint:
             print(f"       {exc.hint}", file=sys.stderr)
+        # 带上 hint（连不上浏览器时 hint 里有可照做的命令）一起落库，用户才查得到
+        _record_fail(settings, label, f"读取节列表失败：{exc}"
+                     + (f"（{exc.hint}）" if exc.hint else ""))
         return 2
     except Exception as exc:                                # noqa: BLE001
         print(f"[FAIL] {type(exc).__name__}: {exc}", file=sys.stderr)
+        _record_fail(settings, label, f"读取节列表失败：{type(exc).__name__}: {exc}")
         return 5
     finally:
         if session is not None:

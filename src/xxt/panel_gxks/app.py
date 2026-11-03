@@ -43,9 +43,68 @@ SCRIPTS = ROOT / "scripts"
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
 
-# 面板自己拉起的浏览器（只记我们起的，用于“停止浏览器”时只杀自己那一只）
+# 面板自己拉起的浏览器（只记我们起的，用于"停止浏览器"时只杀自己那一只）
 _BROWSERS: dict[str, dict[str, Any]] = {}
 _BROWSER_LOCK = threading.Lock()
+_CHROME_TASK = "xxt-gxks-chrome"   # 交互式计划任务（见 scripts/start_chrome.ps1）
+
+
+def _start_chrome_interactive(label: str, port: int) -> dict[str, Any]:
+    """用**交互式计划任务**在用户桌面会话里起 Chrome（2026-11-03 实测的必要做法）。
+
+    ## 为什么不能直接 Popen
+
+    面板本身跑在后台计划任务（非交互会话）里，由它 `subprocess.Popen` 起的 Chrome
+    **拿不到桌面、直接退出** → 调试端口永远起不来。实测：同一组参数从交互式 shell
+    起就 100% 正常，从面板起永远是「Chrome 起来了但端口没响应」。
+
+    ## 做法
+
+    计划任务 `xxt-gxks-chrome`（`-LogonType Interactive`）跑
+    `scripts/start_chrome.ps1`（有桌面）。面板只写参数文件 → 触发 → 读结果。
+    Chrome 因此**不属于面板的子进程**，面板重启/退出都不会带走它。
+
+    返回 `{"ok": bool, "pid"?: int, "error"?: str}`。
+    """
+    tmp = ROOT / "data" / "tmp"
+    spec = tmp / "chrome_start.json"
+    result = tmp / "chrome_start.result.json"
+    tmp.mkdir(parents=True, exist_ok=True)
+    result.unlink(missing_ok=True)
+    spec.write_text(json.dumps({"label": label, "port": int(port)}), encoding="utf-8")
+    try:
+        done = subprocess.run(["schtasks", "/run", "/tn", _CHROME_TASK],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=20)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "触发计划任务超时"}
+    if done.returncode != 0:
+        task = ROOT / "scripts" / "start_chrome.ps1"
+        return {"ok": False,
+                "error": "交互式任务 xxt-gxks-chrome 不存在或起不来。\n"
+                         "在**你自己的 PowerShell 窗口**里执行一次（只需一次，之后一直有效）：\n"
+                         f'$a=New-ScheduledTaskAction -Execute powershell.exe -Argument '
+                         f'"-NoProfile -ExecutionPolicy Bypass -File {task}";'
+                         f'$p=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" '
+                         f'-LogonType Interactive -RunLevel Limited;'
+                         f'Register-ScheduledTask -TaskName {_CHROME_TASK} -Action $a '
+                         f'-Principal $p -Force'}
+    # 等 Chrome 冷启动 + 端口就绪（脚本自己最多等 30 秒，这里留点余量）
+    for _ in range(80):
+        time.sleep(0.5)
+        if gchrome.port_alive(port):
+            pid = 0
+            try:
+                pid = int(json.loads(result.read_text(encoding="utf-8")).get("pid") or 0)
+            except Exception:                                   # noqa: BLE001
+                pass
+            return {"ok": True, "pid": pid}
+    err = ""
+    try:
+        err = str(json.loads(result.read_text(encoding="utf-8")).get("error") or "")
+    except Exception:                                           # noqa: BLE001
+        pass
+    return {"ok": False, "error": err or f"等了 40 秒，端口 {port} 仍未响应"}
 
 
 # ------------------------------------------------------------------ 子进程
@@ -475,6 +534,50 @@ def app_factory() -> FastAPI:
     return create_app(Settings())
 
 
+def _chrome_start_message(settings: Any, acc: Any, port: int,
+                          run_session: Any) -> str:
+    """Chrome 起来后把**登录态**弄好，拼一句给用户看的结果。
+
+    `run_session` = `create_app` 内的 `_session_script`（子进程跑会话脚本），
+    以参数传入 —— 本函数在模块级，拿不到那个闭包。
+
+    登录策略（2026-11-03 用户问「为何不能自动登录」）：
+      ① 先注入快照（零密码、最快）；
+      ② 票过期是**常态**（cookie 全是 session 级，`expires=-1`，关窗即失效）
+         → 自动改用账号密码重登一次；
+      ③ 遇验证码立刻停、转人工（绝不试错：试错=撞库特征）。
+    """
+    msg = f"Chrome 已启动（端口 {port}）"
+    has_cred = glogin.is_configured(glogin.credentials_path(settings))
+    state = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
+
+    if state.get("saved"):
+        out = run_session(acc, "--restore")
+        parsed = out.get("parsed") or {}
+        restored = int(parsed.get("restored") or 0)
+        if out.get("ok") and parsed.get("logged_in"):
+            # restored=0 表示**本来就在登录态**（脚本没走注入）—— 文案不能说"注入 0 条"
+            if restored:
+                return msg + f"，已注入登录态（{restored} 条 cookie）→ 可以直接刷课"
+            return msg + "，当前已是登录状态 → 可以直接刷课"
+        if not has_cred:
+            return (msg + f"；快照票已失效（注入 {restored} 条仍不认），"
+                          "且没配账号密码 —— 请在那台浏览器里手动登录一次")
+        msg += f"；快照票已失效（注入 {restored} 条仍不认），改用账号密码自动登录…"
+
+    if not has_cred:
+        return msg + "；没有可用的登录态，也没配账号密码 —— 请手动登录一次"
+
+    out = run_session(acc, "--relogin", timeout=180)
+    p = out.get("parsed") or {}
+    if out.get("ok") and p.get("logged_in"):
+        return msg + "\n✅ 已用账号密码登录成功 → 可以直接刷课"
+    if p.get("need_human"):
+        return msg + "\n⚠ 平台要求输验证码：请在刚打开的浏览器窗口里手动登录一次"
+    return msg + (f"\n⚠ 自动登录没成功（{p.get('relogin') or p.get('url') or '未知'}）；"
+                  "请手动登录一次")
+
+
 def create_app(settings: Settings) -> FastAPI:
     from .page import PAGE
 
@@ -550,6 +653,16 @@ def create_app(settings: Settings) -> FastAPI:
         label = acc.label
         if any(j["label"] == label for j in _jobs_snapshot()):
             return {"ok": False, "error": "该账号已有任务在跑"}
+        # **先探浏览器端口**（2026-11-03 实测的坑）：Chrome 没开时脚本要连 CDP 才报
+        # `ECONNREFUSED`，表现是「点了刷新 → 任务跑一下 → 消失」，用户不知道要开浏览器。
+        # 这里提前拦下，直接在按钮旁给出可照做的提示，不用白等一分钟。
+        if not gchrome.port_alive(acc.port):
+            return {"ok": False, "need_browser": True,
+                    "error": f"浏览器没启动（端口 {acc.port} 连不上）。"
+                             "点右侧「启动并登录」自动拉起，或手动执行：\n"
+                             f'"{gchrome.find_chrome() or "chrome.exe"}" '
+                             f'--remote-debugging-port={acc.port} '
+                             f'--user-data-dir="data/profiles/{label}"'}
         args = ["--label", label, "--port", str(acc.port), "--all"]
         course = sections_cache.safe_course(body.get("course"))
         if course:
@@ -610,37 +723,23 @@ def create_app(settings: Settings) -> FastAPI:
                     "error": "当前是 managed 后端（容器形态）：面板内不起浏览器。"
                              "本机请把 config/settings.local.toml 里 browser_backend 改回 cdp"}
         if state["port_alive"]:
-            return {"ok": True, "message": f"端口 {acc.port} 已在运行，不用重复启动"}
-        profile = gbrowser.cdp_profile(settings, acc.label, acc)
-        chrome = gchrome.find_chrome()
-        if chrome is None:
-            return {"ok": False, "error": "没找到 Chrome。请安装，或设环境变量 "
-                                          "XXT_GXKS_CHROME 指向 chrome.exe"}
+            return {"ok": True,
+                    "message": f"端口 {acc.port} 已在运行。"
+                               + _chrome_start_message(settings, acc, acc.port, _session_script)}
         if any(j["label"] == acc.label for j in _jobs_snapshot()):
             return {"ok": False, "error": "该账号有任务在跑，先「停止」再启动浏览器"}
-        proc = gchrome.start(chrome, port=acc.port, profile=profile,
-                             url=gchrome.default_start_url())
-        if not gchrome.port_alive(acc.port):
-            # 2026-11-02 实测：面板若跑在**非交互会话**（后台作业/服务）里，
-            # 由它拉起的 Chrome 可能拿不到桌面、直接退出 → 端口永远起不来。
-            # 所以错误信息要直接给出**可复制的命令行**，让用户在自己的
-            # PowerShell 窗口里手动起一次（cdp 后端本来就是"连你已开的 Chrome"）。
-            cmd = (f'"{chrome}" --remote-debugging-port={acc.port} '
-                   f'--user-data-dir="{profile}" --no-first-run '
-                   f'--no-default-browser-check --no-proxy-server')
-            return {"ok": False,
-                    "error": f"Chrome 起来了但调试端口 {acc.port} 没响应。"
-                             "两种常见原因：① 该 profile 已被另一个**不带调试端口**的 "
-                             f"Chrome 占用；② 面板跑在非交互会话里，Chrome 拿不到桌面。\n"
-                             f"解决：关掉该账号的 Chrome，然后在**你自己的 PowerShell 窗口**里手动执行：\n"
-                             f"{cmd}"}
+        started = _start_chrome_interactive(acc.label, acc.port)
+        if not started.get("ok"):
+            return {"ok": False, "error": started.get("error") or "Chrome 没起来"}
         with _BROWSER_LOCK:
-            _BROWSERS[acc.label] = {"pid": proc.pid, "since": time.strftime("%H:%M:%S"),
-                                    "port": acc.port, "profile": str(profile)}
+            _BROWSERS[acc.label] = {"pid": int(started.get("pid") or 0),
+                                    "since": time.strftime("%H:%M:%S"),
+                                    "port": acc.port,
+                                    "profile": str(gbrowser.cdp_profile(settings, acc.label, acc))}
         _record(settings, acc.label, "browser-start",
-                f"面板启动 Chrome（端口 {acc.port}，profile {profile.name}）")
-        return {"ok": True, "message": f"Chrome 已启动（端口 {acc.port}）；"
-                                        "登录后点「检查会话」确认"}
+                f"面板启动 Chrome（端口 {acc.port}，交互式任务）")
+        return {"ok": True,
+                "message": _chrome_start_message(settings, acc, acc.port, _session_script)}
 
     @app.post("/api/browser/stop")
     def browser_stop(body: dict) -> dict:
