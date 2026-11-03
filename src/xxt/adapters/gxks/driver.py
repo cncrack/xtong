@@ -37,6 +37,18 @@ MAX_PAUSE_RECOVERIES = 3          # 同一节反复被判 paused 时最多拉回
 NO_REPORT_AFTER_SECONDS = 75      # 上报是 60 秒一拍；超过 75 秒没新增上报 = 网络/上报断了
 OVERRUN_MARGIN_MINUTES = 2        # 达标不能“刚刚好”：学时 ≥ 要求 + 本余量 才停（C11）
 MAX_REPLAYS_PER_SECTION = 1         # 视频播完还差学时 → 重播补足，最多补播几次（Q26）
+
+# **`ended` 状态的累计总时长上限**（2026-11-04 加的防死循环闸）。
+#
+# 1305 实测：视频 3011 秒（50.2 分）播完，平台只记 39/48 → 走「等 240s → 补播 → 再等」
+# 流程，但 `ended_at` 被反复归零 → 等待期永远重来 → 日志每 70 秒刷一遍 `progress`+`ended`，
+# **永不退出**（用户以为「又停了」，其实是原地打转）。
+#
+# 为什么定 660 秒：一次完整的「等 240s + 补播一个窗口（REPLAY_WINDOW_SECONDS）」
+# 大约 240 + 300 = 540 秒；再留一次回读与抖动的余量 → 660 秒。
+# 超过就认命：视频确实没东西可播、平台也确实不记账 → 交给上层切下一节
+# （上层对 `result != "done"` 的处理是「本节非正常收场 → 停」，比死循环好）。
+ENDED_TOTAL_MAX_SECONDS = 660.0
 ENDED_SETTLE_SECONDS = 240        # `ended` 后兜底等待期：fresh 回读仍差时再等一会儿（1.8 实测通常是 0s）
 REPLAY_WINDOW_SECONDS = 300       # 补播只盯 5 分钟：够了立刻收工，不再白播整段
 
@@ -114,7 +126,25 @@ def plan_action(state: str, *, reloads: int = 0,
     if state == "hidden":
         return "foreground"
     if state == "stalled":
-        return "wait"
+        # ⚠ 2026-11-04 实测改判：原来给 `wait`（干等），但 1305 因此**白丢 9 分钟学时**。
+        #
+        # 实测时间线（1305 3.2，视频 3011 秒 = 50.2 分）：
+        #   01:30:36  平台 36/48   ← 正常，1:1
+        #   01:33:57  stalled      ← 视频卡住
+        #   01:36:06  平台 39/48   ← 之后**再也不涨**
+        #   01:45:43  ended        ← 又过 12 分钟才播完
+        # 结果视频播了 50.2 分，平台只记 39 分，差 9 分钟**永远补不回来**
+        # （视频已播完、列表差 9 分 → `escalate` → 整节作废，60 分钟白跑）。
+        #
+        # 干等为什么没用：卡住时**画面不推进**，而平台按墙钟计时 →
+        # 那段时间服务端不认账（与 Q13「媒体重建后服务端停止记账」同源）。
+        # 恢复手段仍是 Q13 的结论：**重载播放页开新会话**，而不是继续挂着。
+        # 与 `rebuild` 共用同一套「重载 + 冷却 + 次数上限」逻辑，避免重载风暴。
+        if reloads >= MAX_RECOVERIES_PER_SECTION:
+            return "escalate"
+        if seconds_since_reload is not None and seconds_since_reload < RELOAD_COOLDOWN_SECONDS:
+            return "wait"
+        return "reload"
     if state == "ended":
         return "escalate"
     if state == "rebuild":
@@ -740,6 +770,19 @@ class GxksDriver:
         watch_until = started + max_seconds
         replays = 0
         ended_at: float | None = None
+        # **已结束状态的累计时长**（2026-11-04 修：ended 死循环）
+        #
+        # 现象：1305 播完（视频 3011 秒=50.2 分）但平台只记 39/48，于是
+        #   ended → 等 240s → 仍 39 → 补播 1 次 → 又 ended → 又把 ended_at 归零
+        #   → 等待期永远重来 → 日志每 70 秒刷一次 `progress 39/48` + `ended`，
+        #   **永不退出、也不切下一节**（用户看到「又停了」其实是它在原地打转）。
+        #
+        # 补播次数上限（`max_replays`）管不住它：`ended_at` 归零后等待期重新算，
+        # `should_replay` 虽然返回 False，但代码走的是 `continue`（继续等），
+        # 不是 `return`。所以要有**一个总闸**：ended 状态累计超过
+        # `ENDED_TOTAL_MAX_SECONDS` 就认命退出（交给上层切下一节）。
+        ended_total = 0.0
+        ended_since: float | None = None
         prev: dict[str, Any] | None = None
         prev_at = started
         rebuilds = 0
@@ -809,6 +852,18 @@ class GxksDriver:
                 # 视频播完是**正常边界**，不是异常：`ended` 后站点 `stopLoop()`（实测 m_time 冻在 2816）。
                 # 只要列表已达“要求”（即便够不着余量线），就按达标收工——没东西可再播了。
                 if state == "ended":
+                    # 累计 ended 呆的总时长（跨补播也算），超上限就退出（防死循环，2026-11-04）
+                    if ended_since is None:
+                        ended_since = now
+                    ended_total = now - ended_since
+                    if ended_total >= ENDED_TOTAL_MAX_SECONDS:
+                        emit("ended_give_up", row=last_row, waited=round(ended_total),
+                             replays=replays, done=(last_row or {}).get("done_minutes"),
+                             need=(last_row or {}).get("required_minutes"))
+                        return {"result": "escalate", "seconds": now - started,
+                                "reloads": self._reloads, "rebuilds": rebuilds,
+                                "last_row": last_row, "replays": replays,
+                                "reason": "ended_too_long"}
                     # 1.7 的“19/20”其实是**快照过期**：ended 时用的是 1 分钟前的回读值。
                     # 1.8 复验：ended 瞬间 fresh 回读就到 20/20 done（`settled=0`）⇒ 必须立即回读。
                     # 若仍差，进 `ENDED_SETTLE_SECONDS` 等待期（果真有落库延迟也兜得住），再考虑补播。
@@ -840,6 +895,9 @@ class GxksDriver:
                             prev, prev_at = None, now          # t 归零，不清基线会被判 rebuild
                             last_updates, last_update_at = None, now
                             ended_at = None
+                            # ⚠ **不重置 `ended_since`**：补播若没真的播起来（又立刻 ended），
+                            # 累计要接着算，否则等待期无限重来（2026-11-04 的死循环）。
+                            # 真的播起来了会走 `state == "ok"` 重置。
                             next_read = now + 10.0
                             watch_until = min(watch_until, now + REPLAY_WINDOW_SECONDS)
                             continue
@@ -850,6 +908,8 @@ class GxksDriver:
 
             if state == "ok":
                 pause_recoveries = 0        # 真正在走就把计数清零，避免历史上偶发暂停把配额吃掉
+                # 视频重新走起来了，ended 累计从头算（否则补播成功播几秒就被旧累计判超时）
+                ended_since = None
             self.mute()                     # 重载后 video 是新元素，静音要每次重设
 
             if sample:

@@ -86,7 +86,10 @@ def test_plan_action_mapping():
     assert driver.plan_action("loading") == "wait"
     assert driver.plan_action("paused") == "play"
     assert driver.plan_action("hidden") == "foreground"
-    assert driver.plan_action("stalled") == "wait"
+    # 2026-11-04 改判：stalled 从 `wait` 改为 `reload`。
+    # 实测 1305 卡住后干等 12 分钟，平台**停止记账**（墙钟在走、画面不推进），
+    # 最终白丢 9 分钟 → 整节作废。恢复手段只能是重载开新会话（Q13）。
+    assert driver.plan_action("stalled") == "reload"
     assert driver.plan_action("ended") == "escalate"     # 站点在 ended 只停表，不自动重播
     assert driver.plan_action("rebuild", reloads=0, seconds_since_reload=999) == "reload"
 
