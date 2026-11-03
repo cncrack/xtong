@@ -524,8 +524,36 @@ class GxksDriver:
         self.page.wait_for_timeout(self.settle_seconds * 1000)
         return True
 
+    def prev_page(self) -> bool:
+        """点「上一页」。
+
+        为什么需要它（2026-11-04 实测的真 bug）：
+        `goto_page()` 原来**只会往后翻**，没有往前的能力。刷完一节需要重新挑节时，
+        列表可能停在第 4 页而目标在第 1 页 → `goto_page(1)` 永远失败 →
+        `find_section()` 里 `if not goto_page(1): return None` 直接判「没有未完成的节」
+        **错误收工**（实测：第 4 页明明还有 9 节「未学习」，却报「列表里没有未完成的节了」）。
+        """
+        frame = self.list_frame()
+        if frame is None:
+            return False
+        try:
+            btn = frame.query_selector(selectors.PAGER_PREV)
+            if btn is None:
+                return False
+            if not btn.is_enabled():
+                return False
+            btn.click(timeout=self.page_timeout_ms)
+        except Exception:                                  # noqa: BLE001
+            return False
+        self.page.wait_for_timeout(self.settle_seconds * 1000)
+        return True
+
     def goto_page(self, target: int, *, max_steps: int = 12) -> bool:
-        """翻到第 `target` 页（1 基）。已在目标页直接返回 True；失败返回 False。"""
+        """翻到第 `target` 页（1 基）。已在目标页直接返回 True；失败返回 False。
+
+        ⚠ **双向**翻页（2026-11-04 修）：原来只会 `next_page()`，
+        当前页在目标页**之后**时永远回不去 → 见 `prev_page()` 的说明。
+        """
         target = max(1, int(target))
         for _ in range(max_steps):
             pager = self.current_pager()
@@ -534,9 +562,13 @@ class GxksDriver:
                 return False
             if cur == target:
                 return True
-            if cur < target and not pager.get("has_next"):
-                return False
-            if not self.next_page():
+            if cur < target:
+                if not pager.get("has_next"):
+                    return False
+                moved = self.next_page()
+            else:
+                moved = self.prev_page()
+            if not moved:
                 return False
             if self.current_pager().get("current") == cur:   # 点了没动：不硬转
                 return False
