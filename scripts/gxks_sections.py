@@ -87,27 +87,56 @@ def _slim(row: dict, page: int) -> dict:
 
 
 def _gather(drv, pages: int, all_pages: bool) -> tuple[list[dict], dict]:
-    """读列表；`all_pages` 时按分页器一路翻到底。"""
+    """读列表；`all_pages` 时从**第 1 页**一路翻到底。
+
+    ⚠ **必须显式回到第 1 页再开始**（2026-11-04 修的真 bug）：
+
+    原来的写法是「以当前所在页为起点」：
+
+        start = pager.get("current")     # 实测可能是 4（上次刷课停在最后一页）
+        last  = pager.get("total")
+        page  = start
+        while True:
+            drv.read_page()              # ⚠ 这一句内部会点搜索按钮回发
+            if page >= last: break       # 于是 4 >= 4 立刻退出
+
+    而 `read_page()` 会点 `#btnSearch` 触发 ASP.NET 回发，**回发会把页码重置回第 1 页**。
+    结果是：读到的明明是第 1 页，却标成第 4 页，然后 `page >= last` 立即跳出循环。
+
+    实测后果：36 节只存到 **27 节**，`summary {sections: 27, done: 8}`，
+    缺掉第 1 页的 1289~1297 共 9 节（其中 1.1~1.9 全是「已完成」，
+    所以「已完成」从 16 掉到 8，看起来像数据错了）。
+
+    修法：先把页码拉回 1（`goto_page(1)`，双向翻页已在 2026-11-04 补齐），
+    再按实际页码递增，每轮都以**读回的分页器**为准（不信本地 `page` 变量）。
+    """
     rows: list[dict] = []
-    pager = drv.current_pager()
     seen: set[str] = set()
-    start = int(pager.get("current") or 1)
-    last = int(pager.get("total") or 1) if all_pages else max(start, pages)
-    page = start
-    while True:
-        for raw in drv.read_page(min_rows=1).get("rows") or []:
+
+    # 回到第 1 页；回不去就说明被挤出 iframe 上下文，交给 read_page 自己重进
+    if not drv.goto_page(1):
+        drv.ensure_list_context()
+        if not drv.goto_page(1):
+            print("[..] 回不到第 1 页，按当前位置开读", file=sys.stderr)
+
+    pager = drv.current_pager()
+    last = int(pager.get("total") or 1) if all_pages else max(1, pages)
+    # 每轮都以**读回来的 pager.current** 为准：read_page 的回发会重置页码，
+    # 本地累加的 page 变量不可信。
+    for _ in range(last + 2):
+        parsed = drv.read_page(min_rows=1)
+        page = int((parsed.get("pager") or {}).get("current")
+                   or drv.current_pager().get("current") or 1)
+        for raw in parsed.get("rows") or []:
             section_id = str(raw.get("platform_chapter_id") or "")
             if section_id and section_id in seen:
-                continue                      # 翻页回发偶尔重复当前页，去重
+                continue                  # 翻页回发偶尔重复当前页，去重
             seen.add(section_id)
             rows.append(_slim(raw, page))
         if page >= last:
             break
         if not drv.next_page():
             print(f"[..] 第 {page} 页之后翻不动，停在 {page}/{last}", file=sys.stderr)
-            break
-        page = int(drv.current_pager().get("current") or page + 1)
-        if page > last + 1:
             break
     return rows, drv.current_pager()
 

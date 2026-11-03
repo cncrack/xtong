@@ -484,7 +484,19 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
          padding-bottom:4px;border-bottom:1px dashed var(--line);
          letter-spacing:.04em}
 .ops-sub:first-of-type{margin-top:2px}
-#runlog pre{margin:0}
+/* 运行日志容器（2026-11-04 用户要求「高度调大些」「自动滚到最新」）：
+   - 原来没有固定高度，日志一长整页被撑得很高；
+   - 现在给 52vh 上限 + 内部滚动，默认**滚到底部看最新一行**；
+   - `scroll-behavior:smooth` 让 4 秒一次的重绘不至于跳得生硬。 */
+#runlog{max-height:min(52vh,520px);overflow-y:auto;scrollbar-width:thin;
+  background:#fafbfc;border:1px solid var(--line);border-radius:8px;
+  padding:8px 10px}
+#runlog pre{margin:0;font-size:12.5px;line-height:1.5;white-space:pre-wrap;
+  word-break:break-word}
+/* 「最新在上」的说明：一行小字，不占地方（2026-11-04） */
+.runlog-hint{font-size:11.5px;color:var(--dim);margin:0 0 4px;
+  padding-bottom:3px;border-bottom:1px dashed var(--line)}
+@media (max-width:760px){ #runlog{max-height:46vh} }
 /* 「任务已结束，这是最后一次输出」提示条（2026-11-03 用户要求保留日志回看）：
    绿色左边框 + 淡绿底，和「正在跑」区分开，一眼看出这不是实时输出。 */
 .runlog-done{margin:0 0 6px;padding:5px 9px;border-radius:6px;
@@ -2356,9 +2368,30 @@ function renderRunLog(state) {
         : " 已结束（" + (cur.since || "?") + " → " + (cur.ended_at || "?") +
           "）· 这是最后一次的输出");
   }
+  // ---- 日志**倒序显示：最新那行永远在最上面**（2026-11-04 用户明确要求）----
+  //
+  // 用户原话：「日志没有把最新的那一每次显示在上面，如果我要看以往日志，我可以鼠标往上滚」。
+  //
+  // 之前的写法是正序 + 试图「自动滚到底部」，方向搞反了：
+  // ① 正序时最新行在最下面，容器一限高就必须滚到底才看得见；
+  // ② 而每 4 秒整块重绘 `innerHTML` 会把滚动位置重置，于是每 4 秒跳一次；
+  // ③ 就算记忆滚动位置，用户想「一眼看到最新」也得先把滚动条拖到底。
+  //
+  // 现在：**把 tail 倒过来渲染**（最新在最上）+ 重绘后 `scrollTop = 0`。
+  // 好处：
+  //   - 不用滚，最新行永远在视野第一行；
+  //   - 4 秒重绘后回到顶部 = 回到最新，**不会跳**；
+  //   - 用户要翻历史就自己**往下滚**（倒序里「更早」在下方）。
+  //   - 用户已经往下滚看历史时，还原他的位置，不抢滚动。
+  const keepTop = box.scrollTop;
+  const wasAtTop = keepTop < 24;
+
   const tail = (cur.tail || []);
+  // 倒序：最后一行（最新）放最前面
+  const shown = tail.slice().reverse();
   box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
-    "<pre>" + (tail.length ? esc(tail.join("\n")) : "（日志还没写出内容）") + "</pre>";
+    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
+    "<pre>" + (shown.length ? esc(shown.join("\n")) : "（日志还没写出内容）") + "</pre>";
   // 其他还在跑的任务
   const others = jobs.filter((j) => j !== cur && j.alive);
   if (others.length) {
@@ -2366,6 +2399,10 @@ function renderRunLog(state) {
       esc(others.map((j) => j.label + "·" + (j.kind || "")).join("、")) +
       "（点对应账号行可看它的日志）</div>";
   }
+
+  // 贴在顶部 = 正在看最新 → 重绘后保持顶部（天然跟最新，不会跳）
+  // 已往下滚 = 在看历史 → 还原他的位置，别抢
+  box.scrollTop = wasAtTop ? 0 : keepTop;
 }
 
 // 账号切换器：缓存账号列表，供弹层过滤用

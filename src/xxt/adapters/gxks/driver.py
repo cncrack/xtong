@@ -668,6 +668,12 @@ class GxksDriver:
             return {}
 
     def play(self) -> bool:
+        """开始/继续播放。
+
+        ⚠ **绝不篡改 `currentTime`**（PLAN.md §8 硬性约定）：
+        「由平台播放器自然播放、自然上报进度心跳；**绝不跳帧/篡改 currentTime**
+        （学习通可检测跳秒）」。所以这里只调 `play()`，不 seek。
+        """
         frame = self.player_frame()
         if frame is None:
             return False
