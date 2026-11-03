@@ -289,6 +289,14 @@ table.acct-tbl td.c-today b{font-size:15px;color:var(--accent);
 table.acct-tbl td.c-ops{white-space:nowrap;text-align:right;overflow:visible}
 table.acct-tbl th.c-ops{overflow:visible}
 table.acct-tbl td.c-ops button{margin-left:3px;padding:2px 7px}
+/* 「本次跑几节」输入框（2026-11-04）：36px 够放 1~12，不出 spinner 也不挤按钮 */
+table.acct-tbl td.c-ops input.sec-n{width:38px;margin-left:3px;padding:2px 4px;
+  font-size:13px;text-align:center;border:1px solid var(--line);border-radius:5px;
+  vertical-align:middle}
+/* 窄屏放大到手指可点（375px 约定） */
+@media (max-width:760px){
+  table.acct-tbl td.c-ops input.sec-n{width:46px;padding:5px 4px;font-size:14px}
+}
 /* 端口列单行：端口号 + 活/停 标签不折行（用户 2026-11-02 明确要求） */
 table.acct-tbl td.c-port{white-space:nowrap}
 /* 今日列的数字与迷你条必须同行：折行会让整行高度从 44px 涨到 66px */
@@ -1116,10 +1124,17 @@ function acctTr(c, accRow, cur) {
   } else if (left <= 0) {
     html += '<button class="mini" disabled title="今日额度已用完（账本按账号统计）">额度满</button>';
   } else {
-    const n = left === Infinity ? 3 : Math.min(3, left);
-    html += '<button class="mini primary" onclick="startStudy(\'' + esc(c.label) + "'," + n +
-      ')" title="今日还剩 ' + (left === Infinity ? "不限" : left) + ' 节">学习 ' + n +
-      " 节</button>";
+    // 「本次跑几节」可自己定（2026-11-04 用户要求）：
+    // 原来写死 3，用户问「为什么不能设置」。日上限（daily_sections）管**一天总共**，
+    // 这里管**这一次点下去跑几节** —— 两者取小（脚本侧 `run_gxks.py:181` 再兜一层），
+    // 所以把这里调大也只是"最多跑到日上限"，不会超刷。
+    const cap = left === Infinity ? 12 : Math.min(12, left);
+    const n = Math.min(3, cap);
+    html += '<input class="sec-n" type="number" min="1" max="' + cap + '" value="' + n +
+      '" data-label="' + esc(c.label) + '" title="本次跑几节（1~' + cap +
+      '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）">' +
+      '<button class="mini primary" onclick="startStudyN(this)" data-label="' + esc(c.label) +
+      '" title="按左边数字跑；中途可随时停止，学时保留">学习</button>';
   }
   html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) + "','" +
     esc(c.course_value || "") + '\')" title="重读这门课的节列表（约 1 分钟）">↻</button>';
@@ -1362,7 +1377,15 @@ async function batchAction(action) {
     return;
   }
   const body = { labels: labels, action: action, confirm: true };
-  if (action === "start") body.max_sections = 3;
+  if (action === "start") {
+    // 批量也允许自己定（2026-11-04）：原来写死 3，与单账号行为不一致。
+    const inp = prompt("本次每个账号跑几节？（1~12，默认 3）", "3");
+    if (inp === null) return;                       // 取消
+    let n = parseInt(inp, 10);
+    if (!Number.isFinite(n) || n < 1) n = 3;
+    if (n > 12) n = 12;
+    body.max_sections = n;
+  }
   const data = await apiPost("/api/accounts/batch", body);
   toast(data.message || data.error || "已提交", !data.ok);
   if (data.ok && action === "delete") SEL.clear();
@@ -1409,6 +1432,20 @@ function pick(label) {
 
 function startStudy(label, n) {
   post("/api/study", { label: label, max_sections: n });
+}
+
+// 按行内输入框里的节数开始学习（2026-11-04）。
+// 越界钳制在 1~12，且不超过该行 input 的 max（= 今日剩余额度）——
+// 真正的额度兜底在脚本侧（`run_gxks.py:181` 取 min(本次, 剩余)），这里只是别让用户填错。
+function startStudyN(btn) {
+  const label = btn.dataset.label;
+  const box = document.querySelector('.sec-n[data-label="' + label + '"]');
+  const max = Math.max(1, parseInt((box && box.max) || "12", 10) || 12);
+  let n = parseInt((box && box.value) || "3", 10);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  if (n > max) { n = max; if (box) box.value = String(max); }
+  if (n > 12) n = 12;
+  startStudy(label, n);
 }
 
 function stopJob(label) {
