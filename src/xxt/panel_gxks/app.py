@@ -33,6 +33,7 @@ from ..adapters.gxks import ledger as gledger
 from ..adapters.gxks import login as glogin
 from ..adapters.gxks import sections_cache
 from ..config import Settings
+from ..core import runmark
 from ..store import gxks_ai_config
 from ..store import gxks_ops
 from ..store import gxks_panel_settings
@@ -331,8 +332,153 @@ def _spawn_script(settings: Settings, label: str, kind: str,
         _JOBS[_job_key(label, kind)] = {
             "proc": proc, "kind": kind, "label": label,
             "since": time.strftime("%H:%M:%S"), "log": log_path,
-            "detail": " ".join(args[:4])}
+            "detail": " ".join(args[:4]),
+            # 供 `_jobs_snapshot` 在任务结束时清登记表（它拿不到 settings）
+            "data_dir": str(settings.data_dir)}
+    _write_job_registry(settings, label, kind, proc.pid, log_path,
+                        " ".join(args[:4]))
     return proc
+
+
+# ---------------------------------------------------------------- 任务登记（认领孤儿）
+
+def _registry_path(settings: Settings) -> Path:
+    """任务登记文件：面板重启后靠它把「还在跑但自己不知道」的任务认领回来。
+
+    ## 为什么需要（2026-11-05 用户拍板等 5 节跑完再重启）
+
+    `_JOBS` 是**内存表**。子进程加了 `CREATE_NO_WINDOW` 后确实脱离了面板进程树
+    （面板重启不再杀它，这是好事），但代价是：**重启后面板不认得它了** ——
+    任务继续跑到自然结束，可面板上看不见、也停不掉（「停止」找不到对象）。
+
+    于是把「我起过哪些任务」落盘。重启后启动时读一遍：
+    pid 还活着 + 创建时间对得上（`runmark.pid_owns_file`，防 pid 复用）
+    → 重新登记进 `_JOBS`，面板照常显示日志、照常能停。
+    """
+    return settings.data_dir / "gxks_jobs.json"
+
+
+def _write_job_registry(settings: Settings, label: str, kind: str,
+                        pid: int, log_path: Path, detail: str) -> None:
+    """登记一个刚起的任务（失败不影响任务本身 —— 登记只是"备忘"）。"""
+    p = _registry_path(settings)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+        data[_job_key(label, kind)] = {
+            "label": label, "kind": kind, "pid": int(pid),
+            "log": str(log_path), "detail": detail,
+            "since": time.strftime("%H:%M:%S"),
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def _drop_job_registry(data_dir: Path, label: str, kind: str) -> None:
+    """任务结束时把它从登记表里删掉（否则下次启动会拿一个死 pid 去认领）。"""
+    p = Path(data_dir) / "gxks_jobs.json"
+    try:
+        if not p.exists():
+            return
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        if data.pop(_job_key(label, kind), None) is None:
+            return
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+class _OrphanProc:
+    """认领回来的任务：只有 pid，没有 `subprocess.Popen` 对象。
+
+    只实现 `_JOBS` 用到的两个接口（`poll()` 判活、`pid` 供 taskkill），
+    这样 `_jobs_snapshot` / `_stop_one` / `_kill` 一行都不用改就能处理它。
+    """
+
+    def __init__(self, pid: int, alive: bool = True):
+        self.pid = int(pid)
+        self._alive = bool(alive)
+
+    def poll(self) -> int | None:
+        if self._alive and not runmark.pid_alive(self.pid):
+            self._alive = False
+        return None if self._alive else 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def adopt_orphan_jobs(settings: Settings) -> list[dict[str, Any]]:
+    """启动时把「还在跑但面板不知道」的任务认领回 `_JOBS`，返回认领清单。
+
+    ## 判活三道闸（缺一不可）
+
+    1. **pid 活着** —— `runmark.pid_alive`；
+    2. **pid 归属对得上** —— `runmark.pid_owns_file` 比进程创建时间与日志 mtime，
+       防 Windows **pid 复用**：否则会把一个恰好复用了旧 pid 的无关进程认成刷课，
+       更糟的是「停止」时把它 taskkill 掉（2026-10-27 盘点 B 的同一个坑）；
+    3. **日志文件还在** —— 没有日志就无法展示，认领了也是空壳。
+
+    登记表里认领失败（进程已死）的条目**顺手清掉**，不留垃圾。
+    """
+    p = _registry_path(settings)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    adopted: list[dict[str, Any]] = []
+    stale: list[str] = []
+    for key, info in list(data.items()):
+        try:
+            pid = int(info.get("pid") or 0)
+            label = str(info.get("label") or "")
+            kind = str(info.get("kind") or "")
+            log = Path(str(info.get("log") or ""))
+        except (TypeError, ValueError):
+            stale.append(key)
+            continue
+        if not (pid and label and kind and log.exists()
+                and runmark.pid_alive(pid)
+                and runmark.pid_owns_file(log, pid)):
+            stale.append(key)
+            continue
+        with _JOBS_LOCK:
+            if key in _JOBS:                 # 本进程刚起过同名任务，别覆盖
+                continue
+            _JOBS[key] = {
+                "proc": _OrphanProc(pid), "kind": kind, "label": label,
+                "since": str(info.get("since") or ""), "log": log,
+                "detail": str(info.get("detail") or ""),
+                "data_dir": str(settings.data_dir),
+                "adopted": True}
+        adopted.append({"label": label, "kind": kind, "pid": pid,
+                        "log": log.name})
+    if stale:
+        left = {k: v for k, v in data.items() if k not in stale}
+        try:
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(left, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            os.replace(tmp, p)
+        except OSError:
+            pass
+    return adopted
 
 
 # 刚结束的任务（按 label 留最后一条）：任务跑完 `_JOBS` 会被清掉，
@@ -354,6 +500,7 @@ def _jobs_snapshot(include_finished: bool = False) -> list[dict[str, Any]]:
     只有 `/api/state` 的展示路径传 `True`。
     """
     out: list[dict[str, Any]] = []
+    finished: list[tuple[str, str, str]] = []      # (data_dir, label, kind) 待清登记
     with _JOBS_LOCK:
         for key, job in list(_JOBS.items()):
             alive = job["proc"].poll() is None
@@ -371,8 +518,13 @@ def _jobs_snapshot(include_finished: bool = False) -> list[dict[str, Any]]:
                 # 新一轮启动被自己挡住（2026-11-03 被测试抓到）。
                 snap["ended_at"] = time.strftime("%H:%M:%S")
                 _LAST_JOBS[key] = snap
+                finished.append((job.get("data_dir", ""), job["label"], job["kind"]))
                 continue
             out.append(snap)
+    # 自然结束的任务也要清登记（在锁外做，避免文件 IO 占着锁）
+    for data_dir, label, kind in finished:
+        if data_dir:
+            _drop_job_registry(data_dir, label, kind)
     if include_finished:
         for key, snap in _LAST_JOBS.items():
             if not any(j["label"] == snap["label"] and j["kind"] == snap["kind"]
@@ -718,6 +870,8 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
         results.append(_kill(job["proc"]))
         with _JOBS_LOCK:
             _JOBS.pop(key, None)
+        # 停止是**显式终结**：登记表里也要删，否则下次启动会拿这个 pid 去认领
+        _drop_job_registry(settings.data_dir, job["label"], job["kind"])
     result = "、".join(results)
     db = open_question_bank(settings.data_dir / "gxks_questions.db")
     try:
@@ -798,6 +952,15 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(title="第二平台控制台", docs_url=None, redoc_url=None)
     debug_dir = settings.data_dir / "debug"
+
+    # **认领孤儿任务**（2026-11-05）：面板重启后 `_JOBS`（内存表）是空的，
+    # 但子进程用 `CREATE_NO_WINDOW` 脱离了面板进程树，**它还在跑**。
+    # 不认领的话：任务照跑，面板却看不见、停不掉（用户 11-05 因此不敢重启面板）。
+    # 认领失败（进程已死 / pid 被复用 / 日志没了）的登记会被顺手清掉。
+    try:
+        _adopted = adopt_orphan_jobs(settings)
+    except Exception:                                      # noqa: BLE001
+        _adopted = []
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:

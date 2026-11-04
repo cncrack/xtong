@@ -161,8 +161,9 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
             changed = True
         if state_text is not None:
             r["state_text"] = state_text
-        if practice_ready is not None:
+        if practice_ready is not None and r.get("practice_ready") != bool(practice_ready):
             r["practice_ready"] = bool(practice_ready)
+            changed = True
         # ⚠ **练习解锁状态也要回写**（2026-11-04 用户实拍：「已完成但显示未解锁」）：
         # 平台在达标后会**异步**开放练习（onclick 从 `alert('请先完成学习！')`
         # 变成 `showExam(<id>)`）。回读的行里本来就带 `practice_locked` / `exam_id`，
@@ -176,6 +177,16 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
         if exam_id is not None and str(r.get("exam_id")) != str(exam_id):
             r["exam_id"] = exam_id
             changed = True
+        # **一致性兜底**（2026-11-05 用户实拍「已学完却仍显示未解锁」查出的脏数据）：
+        # 缓存里出现过 `practice_locked=False exam_id=14691 practice_ready=False`
+        # 这种**自相矛盾**的行 —— 平台已解锁、练习 ID 都有，唯独 ready 是旧值。
+        # 成因是回写方漏算 `practice_ready`（见 `listparse.practice_ready` 的注释）。
+        # 这里按同一口径重新推导一次：只要行内信息足以判定"已解锁"，就以行内信息为准，
+        # 不让一个陈旧布尔挡住「做练习」按钮。**不新增平台请求**，纯本地推导。
+        if r.get("practice_locked") is False and r.get("exam_id"):
+            if not r.get("practice_ready"):
+                r["practice_ready"] = True
+                changed = True
         break
 
     # summary 与 gxks_sections.py 的口径保持一致

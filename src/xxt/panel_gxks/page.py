@@ -680,7 +680,8 @@ button.mini{padding:3px 9px;font-size:13px}
       <span class="bgrp-lab">浏览器</span>
       <button id="btn-bstart" class="bgrp-btn primary" onclick="startBrowser()"
         title="用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）">启动并登录</button>
-      <button id="btn-bstop" class="bgrp-btn danger" onclick="post('/api/browser/stop')"
+      <button id="btn-bstop" class="bgrp-btn danger"
+        onclick="post('/api/browser/stop', { label: browserLabel() })"
         title="只停面板自己拉起的那个 Chrome">停止</button>
       <button id="btn-bcopy" class="mini" type="button" onclick="copyChromeCmd()"
         title="复制该账号的 Chrome 启动命令（面板在非交互会话里无法启动 GUI 程序时用）">复制命令</button>
@@ -1370,6 +1371,18 @@ function hoverAcctSide(label) {
   // 浏览器区也按账号区分（端口/profile/登录快照/会话检查都不同），
   // 所以悬停时一起切过去；移开回落到选中账号（用户 2026-11-02 明确问过这点）。
   renderBrowserFor(STATE || {}, HOVER_LABEL);
+}
+
+// 浏览器区**当前显示的是哪个账号**的浏览器（悬停预览时 = 被悬停的那个）。
+//
+// ⚠ 浏览器区那几个按钮必须用它，**不能用 `LABEL`**（2026-11-05 查出的真 bug）：
+// `LABEL` 是「选中账号」，而悬停时右列会**切成被悬停账号**的信息
+// （`hoverAcctSide` → `renderBrowserFor(state, HOVER_LABEL)`，端口/profile/
+// 「面板启动」时间全变）。此时若按钮仍用 `LABEL`，就会出现
+// **「看着 B 的浏览器，点下去停的是 A 的浏览器」** —— 操作错账号。
+// 五个按钮（停止 / 启动并登录 / 检查 / 恢复登录 / 重新登录）全部受影响。
+function browserLabel() {
+  return HOVER_LABEL || LABEL;
 }
 
 // ---------------------------------------------------------------- 选择 / 筛选 / 批量
@@ -2068,7 +2081,7 @@ async function saveKey() {
 async function startBrowser() {
   toast("正在启动 Chrome 并注入登录态（约 10 秒）…");
   hideNotice();
-  const data = await post("/api/browser/start");
+  const data = await post("/api/browser/start", { label: browserLabel() });
   if (data && data.ok && data.message) {
     showNotice("✅ " + data.message.replace(/\n/g, "<br>"));
   }
@@ -2076,17 +2089,17 @@ async function startBrowser() {
 
 async function checkSession() {
   toast("正在检查会话（会访问平台一次，稍等）…");
-  await post("/api/session/check");
+  await post("/api/session/check", { label: browserLabel() });
 }
 
 async function restoreSession() {
   toast("正在注入登录态快照（不发请求，稍等）…");
-  await post("/api/session/restore");
+  await post("/api/session/restore", { label: browserLabel() });
 }
 
 async function reloginSession() {
   toast("正在用账号密码重登一次（若弹验证码，请在那台浏览器窗口里手输）…");
-  await post("/api/session/relogin");
+  await post("/api/session/relogin", { label: browserLabel() });
 }
 
 // 两个分区**默认都展开**（2026-11-05 用户：「已完成默认是折叠的，按理默认应该是打开的才对」）。

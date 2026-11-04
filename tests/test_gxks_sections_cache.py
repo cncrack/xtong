@@ -110,3 +110,58 @@ def test_list_all_sorted_by_mtime_desc(tmp_path) -> None:
     past = time.time() - 3600
     os.utime(old, (past, past))
     assert sc.list_all(tmp_path, "jia")[0].name == "sections_jia_32.json"
+
+
+# ---------------------------------------------------------------- update_row 一致性
+
+def _cache_with_row(tmp_path, **row) -> "object":
+    """造一份只有一节的缓存，返回文件路径。"""
+    p = tmp_path / "sections_jia.json"
+    base = {
+        "idx": 0, "name": "3.5 某节", "platform_chapter_id": "1308",
+        "required_minutes": 20, "done_minutes": 20, "state": "done",
+        "state_text": "已完成", "practice_locked": True, "exam_id": None,
+        "practice_ready": False,
+    }
+    base.update(row)
+    p.write_text(json.dumps({"ok": True, "label": "jia", "read_at": "2026-11-04 11:43:07",
+                             "course": "", "rows": [base], "summary": {}}),
+                 encoding="utf-8")
+    return p
+
+
+def test_update_row_derives_practice_ready_from_row(tmp_path) -> None:
+    """**用户实拍的那个脏状态**（2026-11-05）：`locked=False exam_id=14691` 但 ready 还是 False。
+
+    缓存里不该出现这种自相矛盾的行。回写方漏算 `practice_ready` 时（旧版
+    `run_gxks.py` 用 `r.get("practice_ready")` → 恒为 None），
+    `update_row` 必须按同一口径从行内信息推导，把 ready 纠正过来。
+    """
+    _cache_with_row(tmp_path)                       # 初始：锁着、ready=False
+    ok = sc.update_row(tmp_path, "jia", "", "1308",
+                       practice_locked=False, exam_id=14691,
+                       practice_ready=None)         # 回写方没给 ready（旧版行为）
+    assert ok is True
+    row = json.loads((tmp_path / "sections_jia.json").read_text(encoding="utf-8"))["rows"][0]
+    assert row["practice_locked"] is False
+    assert row["exam_id"] == 14691
+    assert row["practice_ready"] is True, "平台已解锁+有练习 ID，ready 必须跟着变 True"
+
+
+def test_update_row_keeps_locked_row_not_ready(tmp_path) -> None:
+    """反向不能过冲：仍锁着（或没有 exam_id）时，绝不能被推导成 ready=True。"""
+    _cache_with_row(tmp_path, practice_ready=False)
+    sc.update_row(tmp_path, "jia", "", "1308",
+                  practice_locked=True, exam_id=None, practice_ready=None)
+    row = json.loads((tmp_path / "sections_jia.json").read_text(encoding="utf-8"))["rows"][0]
+    assert row["practice_ready"] is False
+
+
+def test_update_row_practice_ready_change_marks_changed(tmp_path) -> None:
+    """ready 变化必须算 `changed`，否则 `read_at` 不变 → 面板 `SEC_SIG` 不变 → 表格不重绘。"""
+    p = _cache_with_row(tmp_path, practice_locked=False, exam_id=14691,
+                        practice_ready=False)
+    sc.update_row(tmp_path, "jia", "", "1308", practice_ready=True)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["rows"][0]["practice_ready"] is True
+    assert "本地回写" in data["read_at"]
