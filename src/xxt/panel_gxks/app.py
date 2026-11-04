@@ -11,8 +11,10 @@ Playwright 同步 API 会阻塞，跑在面板进程里等于把界面锁死。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -47,6 +49,113 @@ _JOBS_LOCK = threading.Lock()
 _BROWSERS: dict[str, dict[str, Any]] = {}
 _BROWSER_LOCK = threading.Lock()
 _CHROME_TASK = "xxt-gxks-chrome"   # 交互式计划任务（见 scripts/start_chrome.ps1）
+
+# ------------------------------------------------------------------ 日志推送
+#
+# ## 为什么要有（2026-11-04 用户：「日志为何要4秒一刷新呢？只要有就更新不是更好吗」）
+#
+# 原来日志跟 `/api/state` 的 **4 秒轮询**绑在一起：
+# ① 刷新慢 —— 新日志最多 4 秒后才显示；
+# ② 每次轮询都要把**整个日志文件读一遍**（`_log_tail` 是 `read_text` + 切片），
+#    日志越长读得越多，纯浪费 I/O；
+# ③ 整块重绘导致滚动位置跳（虽然已用倒序 + `scrollTop=0` 缓解）。
+#
+# ## 方案：SSE（Server-Sent Events）
+#
+# 浏览器原生 `EventSource`，无需前端库、无需额外端口。
+# 后端起一个**监视线程**：每 0.4 秒看一次当前任务日志文件的 (大小, mtime)，
+# 变了就把新内容推给所有订阅者。
+#
+# 订阅者用 `queue.Queue` 收集，FastAPI 的 `StreamingResponse` 逐条吐出去。
+_EVENTS: set[queue.Queue] = set()
+_EVENTS_LOCK = threading.Lock()
+_WATCH_THREAD: threading.Thread | None = None
+
+
+def _event_put(payload: dict[str, Any]) -> None:
+    """把一条事件推给所有订阅者（满了就丢旧的，保证不卡住发布方）。"""
+    with _EVENTS_LOCK:
+        targets = list(_EVENTS)
+    for q in targets:
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            # 订阅者太慢（网络卡/标签页挂起）：丢掉它最老的一条再塞新的，
+            # 不能阻塞发布线程（否则整个面板卡住）。
+            try:
+                q.get_nowait()
+                q.put_nowait(payload)
+            except (queue.Empty, queue.Full):
+                pass
+
+
+def _log_signature() -> dict[str, Any]:
+    """当前所有任务日志的「指纹」（大小 + 修改时间）。变了就说明有新内容。"""
+    out: dict[str, Any] = {}
+    with _JOBS_LOCK:
+        jobs = list(_JOBS.values())
+    for job in jobs:
+        p = Path(job["log"])
+        try:
+            st = p.stat()
+            out[job["label"]] = {"kind": job["kind"], "size": st.st_size,
+                                 "mtime": st.st_mtime, "path": str(p)}
+        except OSError:
+            continue
+    # 已结束的任务也要能推（用户可能在结束后还想看最后几行）
+    with _JOBS_LOCK:
+        pass
+    return out
+
+
+def _watch_logs_loop(stop: threading.Event) -> None:
+    """监视日志变化 → 推送。**只推变化的部分**，不重发全文。"""
+    last: dict[str, Any] = {}
+    last_size: dict[str, int] = {}
+    while not stop.is_set():
+        try:
+            sig = _log_signature()
+            for label, info in sig.items():
+                prev = last_size.get(label)
+                if prev is None:
+                    last_size[label] = info["size"]
+                    last[label] = info
+                    continue
+                if info["size"] == prev:
+                    continue
+                # 有新内容：把**新增的部分**推出去
+                try:
+                    with open(info["path"], "rb") as f:
+                        f.seek(prev)
+                        chunk = f.read().decode("utf-8", errors="replace")
+                except OSError:
+                    continue
+                last_size[label] = info["size"]
+                last[label] = info
+                if chunk:
+                    _event_put({"type": "log", "label": label,
+                                "kind": info["kind"], "text": chunk})
+            # 任务结束（从 _JOBS 消失）→ 告诉前端刷新一次状态
+            gone = set(last) - set(sig)
+            for label in gone:
+                _event_put({"type": "job-ended", "label": label})
+                last.pop(label, None)
+                last_size.pop(label, None)
+        except Exception:                                       # noqa: BLE001
+            pass
+        stop.wait(0.4)
+
+
+def _ensure_watcher() -> None:
+    global _WATCH_THREAD
+    with _EVENTS_LOCK:
+        if _WATCH_THREAD is not None and _WATCH_THREAD.is_alive():
+            return
+        stop = threading.Event()
+        th = threading.Thread(target=_watch_logs_loop, args=(stop,),
+                              daemon=True, name="gxks-log-watch")
+        th.start()
+        _WATCH_THREAD = th
 
 
 def _start_chrome_interactive(label: str, port: int) -> dict[str, Any]:
@@ -893,6 +1002,51 @@ def create_app(settings: Settings) -> FastAPI:
                              "（脚本不会再试第二次）", "session": parsed}
         return {"ok": True, "message": "已重新登录" if logged else f"没成功：{detail}",
                 "session": parsed}
+
+    @app.get("/api/events")
+    async def events() -> Any:
+        """**SSE 事件流**：日志一写就推给前端（2026-11-04 用户要求「有就更新」）。
+
+        事件类型：
+        - `log`：某账号的日志**新增内容**（`text` 字段，可能含多行）；
+        - `job-ended`：某账号的任务结束了（前端据此刷新一次整体状态）；
+        - `ping`：保活（防止中间代理掐断空闲连接）。
+
+        前端用 `new EventSource("/api/events")` 订阅。
+        """
+        from fastapi.responses import StreamingResponse
+
+        _ensure_watcher()
+        q: queue.Queue = queue.Queue(maxsize=256)
+        with _EVENTS_LOCK:
+            _EVENTS.add(q)
+
+        async def gen():
+            try:
+                yield b": connected\n\n"
+                while True:
+                    # ⚠ **必须 `await asyncio.to_thread`**（2026-11-04 实测踩到）：
+                    # 直接 `q.get(timeout=15)` 是**阻塞调用**，会**卡住整个事件循环**
+                    # → 面板所有接口（含 `/api/state`）一起超时，表现为「面板卡死」。
+                    # 实测就是这样：SSE 连上后 `/api/state` 直接 timeout。
+                    # 正确做法是把阻塞读挪到线程池，等价于「不阻塞事件循环地等消息」。
+                    try:
+                        payload = await asyncio.to_thread(q.get, True, 15.0)
+                    except queue.Empty:
+                        yield b": ping\n\n"       # 保活
+                        continue
+                    data = json.dumps(payload, ensure_ascii=False)
+                    yield f"event: {payload.get('type', 'log')}\ndata: {data}\n\n".encode()
+            except asyncio.CancelledError:              # 客户端断开
+                raise
+            finally:
+                with _EVENTS_LOCK:
+                    _EVENTS.discard(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "Connection": "keep-alive",
+                                          "X-Accel-Buffering": "no"})
 
     @app.get("/api/ops")
     def ops(label: str = "", limit: int = 100) -> dict:

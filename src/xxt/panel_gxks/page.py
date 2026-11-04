@@ -1141,10 +1141,21 @@ function acctTr(c, accRow, cur) {
     // 这里管**这一次点下去跑几节** —— 两者取小（脚本侧 `run_gxks.py:181` 再兜一层），
     // 所以把这里调大也只是"最多跑到日上限"，不会超刷。
     const cap = left === Infinity ? 12 : Math.min(12, left);
-    const n = Math.min(3, cap);
+    // ⚠ **记住用户填的值**（2026-11-04 用户实拍：「改了节数，点学习还是 3 节」）：
+    // 账号表每 4 秒被 `load()` 整块重绘（`renderAccounts` 重建 innerHTML），
+    // 输入框里的用户输入会被**重置回默认值** → 改了不起作用。
+    // 用 `SEC_N` 记住每个账号填过的值，重绘时读回来。
+    if (SEC_N.has(c.label)) {
+      const saved = SEC_N.get(c.label);
+      if (saved > cap) SEC_N.set(c.label, cap);          // 额度变了要收敛
+    } else {
+      SEC_N.set(c.label, Math.min(3, cap));
+    }
+    const n = Math.min(Number(SEC_N.get(c.label)) || 3, cap);
     html += '<input class="sec-n" type="number" min="1" max="' + cap + '" value="' + n +
       '" data-label="' + esc(c.label) + '" title="本次跑几节（1~' + cap +
-      '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）">' +
+      '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）" ' +
+      'oninput="rememberSecN(this)" onchange="rememberSecN(this)">' +
       '<button class="mini primary" onclick="startStudyN(this)" data-label="' + esc(c.label) +
       '" title="按左边数字跑；中途可随时停止，学时保留">学习</button>';
   }
@@ -1457,7 +1468,22 @@ function startStudyN(btn) {
   if (!Number.isFinite(n) || n < 1) n = 1;
   if (n > max) { n = max; if (box) box.value = String(max); }
   if (n > 12) n = 12;
+  SEC_N.set(label, n);           // 记住这次的选择
   startStudy(label, n);
+}
+
+// 记住「本次跑几节」的用户输入（2026-11-04）。
+// ⚠ 必须记住：账号表每 4 秒整块重绘，输入框里的值会被重置回默认值 3。
+const SEC_N = new Map();
+function rememberSecN(box) {
+  if (!box) return;
+  const label = box.dataset.label;
+  if (!label) return;
+  let n = parseInt(box.value, 10);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  const max = parseInt(box.max || "12", 10) || 12;
+  if (n > max) n = max;
+  SEC_N.set(label, n);
 }
 
 function stopJob(label) {
@@ -2346,6 +2372,59 @@ function renderOps(state) {
 // 运行日志（用户 2026-11-02：「黑色的刷课进程记录……单独一块」）。
 // 数据来自 state.jobs[].tail —— 后端已经在读日志文件的尾巴，这里只负责展示。
 // 当前选中账号的任务优先显示；其他账号的任务折叠在后面，避免多任务时刷屏。
+//
+// ⚠ **2026-11-04 改为 SSE 推送 + 增量追加**（用户：「日志为何要4秒一刷新呢？
+// 只要有就更新不是更好吗」）：
+//   - 后端 `/api/events` 推「新增内容」，这里**只追加新行**，不再整块重绘；
+//   - 整块重绘正是滚动跳动的根源（`innerHTML` 一换，滚动位置就重置）。
+//   - `/api/state` 的 4 秒轮询**保留**（进度条、账号状态仍需要），
+//     但它**不再负责日志**（`renderRunLog` 只在 SSE 断开时兜底重建）。
+const LOG_LINES = new Map();     // label -> 行数组（倒序：索引 0 = 最新）
+const LOG_JOBS = new Map();      // label -> {kind, since, ended_at, alive}
+
+// 用 SSE 收到的增量文本追加到对应账号的日志区
+function appendLogLines(label, text) {
+  const lines = String(text || "").split(/\r?\n/).filter((s) => s.length);
+  if (!lines.length) return;
+  let arr = LOG_LINES.get(label);
+  if (!arr) { arr = []; LOG_LINES.set(label, arr); }
+  // **倒序**：新行插到最前面 → 最新永远在最上面（用户要求）
+  for (const ln of lines) arr.unshift(ln);
+  // 只保留最近 400 行，避免长时间运行后 DOM 过大
+  if (arr.length > 400) arr.length = 400;
+  if (label === LABEL) renderLogBox();
+}
+
+function renderLogBox() {
+  const box = el("runlog"), meta = el("runlog-meta");
+  if (!box) return;
+  const label = LABEL;
+  const job = LOG_JOBS.get(label) || (STATE && STATE.jobs || []).find((j) => j.label === label);
+  const arr = LOG_LINES.get(label) || [];
+  if (!arr.length && !job) {
+    box.innerHTML = '<div class="empty">当前没有运行中的任务（刷课 / 做练习 / 刷新节列表的实时输出会显示在这里）。</div>';
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const running = job ? job.alive !== false : false;
+  if (meta) {
+    meta.textContent = job
+      ? "· " + (job.label || label) + "（" + (job.kind || "") +
+        (running
+          ? " 起于 " + (job.since || "?") + "，实时推送"
+          : " 已结束（" + (job.since || "?") + " → " + (job.ended_at || "?") +
+            "）· 这是最后一次的输出")
+      : "";
+  }
+  // 保留滚动位置：用户在往下翻看历史时，别把他拽回顶部
+  const keepTop = box.scrollTop;
+  const wasAtTop = keepTop < 24;
+  box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
+    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
+    "<pre>" + (arr.length ? esc(arr.join("\n")) : "（日志还没写出内容）") + "</pre>";
+  box.scrollTop = wasAtTop ? 0 : keepTop;
+}
+
 function renderRunLog(state) {
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
@@ -2361,10 +2440,17 @@ function renderRunLog(state) {
   const cur = mine.find((j) => j.alive) || mine[0] ||
               jobs.find((j) => j.alive) || jobs[0];
   const running = cur.alive !== false;
+  // 记下任务信息，供 SSE 增量渲染用
+  LOG_JOBS.set(cur.label, cur);
+  // **兜底重建**：本地没有这个账号的日志行（SSE 还没推过、或页面刚打开）→
+  // 用 state 里的 tail 初始化一次。之后由 SSE 增量追加。
+  if (!LOG_LINES.has(cur.label) && (cur.tail || []).length) {
+    LOG_LINES.set(cur.label, (cur.tail || []).slice().reverse());
+  }
   if (meta) {
     meta.textContent = "· " + (cur.label || "") + "（" + (cur.kind || "") +
       (running
-        ? " 起于 " + (cur.since || "?") + "，每 4 秒刷新"
+        ? " 起于 " + (cur.since || "?") + "，实时推送"
         : " 已结束（" + (cur.since || "?") + " → " + (cur.ended_at || "?") +
           "）· 这是最后一次的输出");
   }
@@ -2389,9 +2475,13 @@ function renderRunLog(state) {
   const tail = (cur.tail || []);
   // 倒序：最后一行（最新）放最前面
   const shown = tail.slice().reverse();
+  // 用 `LOG_LINES` 里的**累计行**（SSE 推来的增量已合并进去），
+  // 而不是只有 tail 的最后 12 行 —— 否则轮询会把 SSE 已收到的更长历史覆盖掉。
+  const merged = LOG_LINES.get(cur.label);
+  const lines = (merged && merged.length >= shown.length) ? merged : shown;
   box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
     '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
-    "<pre>" + (shown.length ? esc(shown.join("\n")) : "（日志还没写出内容）") + "</pre>";
+    "<pre>" + (lines.length ? esc(lines.join("\n")) : "（日志还没写出内容）") + "</pre>";
   // 其他还在跑的任务
   const others = jobs.filter((j) => j !== cur && j.alive);
   if (others.length) {
@@ -2523,7 +2613,7 @@ async function load() {
     renderRunLog(state);
     renderOps(state);
     el("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }) +
-      " · 每 4 秒刷新";
+      " · 日志实时推送 · 状态每 " + Math.round(POLL_MS / 1000) + " 秒刷新";
   } catch (e) {
     el("clock").textContent = "连接中断：" + e.message;
   }
@@ -2642,8 +2732,44 @@ async function savePanelSettings() {
   } catch (e) { toast("保存失败：" + e.message); }
 }
 
+// ---------------------------------------------------------------- SSE 订阅
+//
+// 2026-11-04 用户：「日志为何要4秒一刷新呢？只要有就更新不是更好吗」
+//
+// 订阅 `/api/events`：日志一写就推过来，前端**增量追加**（不再整块重绘，
+// 整块重绘正是滚动跳动的根源）。
+//
+// `/api/state` 的 4 秒轮询**保留** —— 进度条、账号状态、课程进度仍需要它；
+// 只是日志不再依赖它。
+let EVT = null;
+function connectEvents() {
+  if (EVT) { try { EVT.close(); } catch (e) { /* 忽略 */ } }
+  try {
+    EVT = new EventSource("/api/events");
+  } catch (e) {
+    return;                       // 浏览器不支持 SSE：退回轮询（页面仍可用）
+  }
+  EVT.addEventListener("log", (ev) => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (!d || !d.label) return;
+    appendLogLines(d.label, d.text || "");
+  });
+  EVT.addEventListener("job-ended", () => {
+    // 任务结束：拉一次整体状态（把「已结束」状态、结束时间同步过来）
+    load();
+  });
+  EVT.onerror = () => {
+    // 断线：EventSource 会自己重连；这里只在完全关闭时才提示
+    if (EVT && EVT.readyState === EventSource.CLOSED) {
+      el("clock").textContent = "实时推送已断开，正在重连…";
+    }
+  };
+}
+
 setPoll(4000);
 loadPanelSettings();
+connectEvents();
 load();
 </script>
 </body>
