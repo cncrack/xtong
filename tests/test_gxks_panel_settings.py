@@ -29,16 +29,16 @@ class TestPanelSettingsStore(unittest.TestCase):
 
     def test_defaults_when_empty(self):
         s = gxks_panel_settings.load(self.db)
-        # ⚠ 2026-11-04 实测后改为**默认关**：面板热重载（uvicorn reload）在父进程
-        # 被强杀时会连带终止整棵进程树 → 正在跑的刷课任务被杀（日志末尾
-        # `KeyboardInterrupt`）、不会自动切下一节。详见 gxks_panel_settings 模块说明。
-        self.assertIs(s["reload"], False)
+        # 2026-11-04：默认**开**。曾经改成关（因为当时 `_spawn_script` 没给
+        # DETACHED_PROCESS，面板重启会连带杀掉刷课任务）；现在从根上修好了，
+        # 热重载可以安全地默认开着。
+        self.assertIs(s["reload"], True)
         self.assertEqual(s["poll_seconds"], 4)
 
     def test_save_and_reload(self):
-        gxks_panel_settings.save(self.db, {"reload": True, "poll_seconds": 10})
+        gxks_panel_settings.save(self.db, {"reload": False, "poll_seconds": 10})
         s = gxks_panel_settings.load(self.db)
-        self.assertIs(s["reload"], True)
+        self.assertIs(s["reload"], False)
         self.assertEqual(s["poll_seconds"], 10)
 
     def test_poll_seconds_clamped(self):
@@ -49,7 +49,7 @@ class TestPanelSettingsStore(unittest.TestCase):
 
     def test_missing_db_returns_defaults(self):
         s = gxks_panel_settings.load(Path(self.tmp.name) / "nope.db")
-        self.assertIs(s["reload"], False)
+        self.assertIs(s["reload"], True)
 
 
 class TestPanelSettingsPage(unittest.TestCase):

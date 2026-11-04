@@ -438,6 +438,15 @@ class GxksDriver:
 
         第 1 页直接用 GET cache-bust（便宜且不变页号）；其余页用「下一页→上一页」
         或「上一页→下一页」来回一次取得新响应（Q8 已用同法绕过服务端缓存）。
+
+        ⚠ **翻页不影响播放**（2026-11-04 实测）：列表页与播放页是**两个不同的 frame**
+        （`LibraryStudyList.aspx` vs `LibraryStudy.aspx`），翻页只动列表 frame。
+        实测 `next_page()`+`prev_page()` 期间视频 `currentTime` 连续在涨。
+
+        ⚠ **但不要在诊断时随手调它**（2026-11-04 踩到，见 devlog `-03` 错误 1）：
+        诊断「播放被 rebuild 打断」时，我反复调 `read_row` / `next_page`，
+        **每一次都精确对应日志里的一次 `rebuild`** —— 探针自己制造了要查的现象。
+        **诊断运行中的东西，绝不能同时操作它。**
         """
         pager = self.current_pager()
         cur = pager.get("current")

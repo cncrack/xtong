@@ -257,6 +257,16 @@ def _spawn_script(settings: Settings, label: str, kind: str,
 
     输出**必须落盘**：2026-10-25 的哑故障就是 DEVNULL 吞掉了 traceback，表现为
     "点了没反应"。这里同样不吞，日志名带账号与时刻，面板直接读尾巴。
+
+    ## ⚠ 子进程要**脱离面板的进程树**（2026-11-04 修）
+
+    原来没传 `creationflags` → 子进程默认在父进程的 **Job Object** 里 →
+    Windows 上**父进程一死，整棵进程树跟着死**。实测：面板重启（热重载触发、
+    或手动重启）会把正在跑的刷课任务一起杀掉 → 日志末尾 `KeyboardInterrupt` →
+    任务中断、**不会自动切下一节**（2026-11-04 连续踩到两次）。
+
+    `DETACHED_PROCESS` 让子进程脱离父进程的进程组 ⇒ 面板重启/退出都不影响它。
+    配合 `CREATE_NEW_PROCESS_GROUP`，Ctrl+C 也不会误杀它。
     """
     log_dir = settings.data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -265,9 +275,13 @@ def _spawn_script(settings: Settings, label: str, kind: str,
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1",
                PYTHONUNBUFFERED="1")
     handle = open(log_path, "ab")
+    flags = 0
+    if os.name == "nt":
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     try:
         proc = subprocess.Popen(argv, cwd=str(ROOT), stdout=handle,
-                                stderr=handle, env=env)
+                                stderr=handle, env=env, creationflags=flags)
     finally:
         handle.close()
     with _JOBS_LOCK:

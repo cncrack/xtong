@@ -81,13 +81,28 @@ class TestPerRunSectionsRemembered(unittest.TestCase):
         self.assertIn("max", fn)
 
 
-class TestHotReloadOffByDefault(unittest.TestCase):
-    """面板热重载默认关（避免杀掉正在跑的刷课任务）。"""
+class TestHotReloadDefault(unittest.TestCase):
+    """面板热重载：默认开，但**子进程必须脱离面板进程树**（否则会误杀刷课）。
 
-    def test_default_is_off(self):
+    ## 背景（2026-11-04）
+
+    11-03 设成默认开，理由是「刷课是独立子进程，面板重启不碰它」——
+    **这条假设是错的**：Windows 上父进程被强杀会连带终止整棵进程树
+    （`_spawn_script` 没给 `DETACHED_PROCESS`）→ 刷课被杀 → 不会自动切下一节。
+
+    今天从根上修好：`DETACHED_PROCESS` ⇒ 面板重启不再影响刷课 ⇒ 热重载可安全默认开。
+    """
+
+    def test_default_is_on(self):
         from xxt.store import gxks_panel_settings as gp
-        self.assertFalse(gp.DEFAULTS.get("reload", True),
-                         "面板热重载默认必须关：面板重启会连带杀掉刷课任务")
+        self.assertTrue(gp.DEFAULTS.get("reload", False))
+
+    def test_spawn_uses_detached_process(self):
+        """刷课子进程必须脱离父进程的 Job Object。"""
+        src = inspect.getsource(A._spawn_script)
+        self.assertIn("DETACHED_PROCESS", src,
+                      "刷课子进程要 DETACHED_PROCESS（否则面板重启会连带杀掉它）")
+        self.assertIn("creationflags=flags", src)
 
     def test_serve_reads_setting(self):
         src = inspect.getsource(A.serve)
