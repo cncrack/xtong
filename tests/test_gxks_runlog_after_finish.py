@@ -77,9 +77,10 @@ class TestFinishedJobRetained(unittest.TestCase):
         log = self.root / "data" / "logs" / "x.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(log_text, encoding="utf-8")
-        panel_app._JOBS["jia"] = {"proc": _Proc(alive), "kind": "study",
-                                  "since": "22:22:01", "log": log,
-                                  "detail": "--max-sections 3"}
+        # ⚠ 键是 `label|kind`（2026-11-04 改）：同一账号的 study/sections 各占一条
+        panel_app._JOBS[panel_app._job_key("jia", "study")] = {
+            "proc": _Proc(alive), "kind": "study", "label": "jia",
+            "since": "22:22:01", "log": log, "detail": "--max-sections 3"}
 
     # ------------------------------------------------------------------ 看得到
 

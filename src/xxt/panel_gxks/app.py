@@ -42,8 +42,22 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts"
 
 # 每个账号同时只允许一个任务：两个脚本抢同一个 Chrome 会话会互相顶掉页面
+#
+# ⚠ **键必须是 (label, kind)，不能只用 label**（2026-11-04 修的真 bug）：
+# 原来 `_JOBS[label] = {...}` ⇒ **后起的任务会顶掉先起的**；
+# 而 `_jobs_snapshot()` 清理死任务时 `_JOBS.pop(label)` ⇒ **把还在跑的那个一起弹了**。
+# 实测：11:42 起 `sections` 任务 → 11:50 起 `study` 任务（顶掉前者）→
+# 12:03 发现 sections 已死 → `pop("default")` → **study 从面板视野里消失**
+# （面板显示「没有任务」，而它其实还在跑）。
+#
+# 键用 `label + "|" + kind` 就能同时容纳两个任务，且清理时只弹自己那一条。
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+
+
+def _job_key(label: str, kind: str) -> str:
+    """任务在 `_JOBS` 里的键：同一账号的不同任务（study / sections / work）各占一条。"""
+    return f"{label}|{kind}"
 
 # 面板自己拉起的浏览器（只记我们起的，用于"停止浏览器"时只杀自己那一只）
 _BROWSERS: dict[str, dict[str, Any]] = {}
@@ -90,21 +104,22 @@ def _event_put(payload: dict[str, Any]) -> None:
 
 
 def _log_signature() -> dict[str, Any]:
-    """当前所有任务日志的「指纹」（大小 + 修改时间）。变了就说明有新内容。"""
+    """当前所有任务日志的「指纹」（大小 + 修改时间）。变了就说明有新内容。
+
+    ⚠ 键用 `label|kind`（同 `_JOBS`）：同一账号可能同时有 study 和 sections 两个任务，
+    只按 label 记指纹会让**后一个覆盖前一个** → 推送会漏。
+    """
     out: dict[str, Any] = {}
     with _JOBS_LOCK:
-        jobs = list(_JOBS.values())
-    for job in jobs:
+        jobs = list(_JOBS.items())
+    for key, job in jobs:
         p = Path(job["log"])
         try:
             st = p.stat()
-            out[job["label"]] = {"kind": job["kind"], "size": st.st_size,
-                                 "mtime": st.st_mtime, "path": str(p)}
+            out[key] = {"label": job["label"], "kind": job["kind"],
+                        "size": st.st_size, "mtime": st.st_mtime, "path": str(p)}
         except OSError:
             continue
-    # 已结束的任务也要能推（用户可能在结束后还想看最后几行）
-    with _JOBS_LOCK:
-        pass
     return out
 
 
@@ -115,11 +130,11 @@ def _watch_logs_loop(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             sig = _log_signature()
-            for label, info in sig.items():
-                prev = last_size.get(label)
+            for key, info in sig.items():
+                prev = last_size.get(key)
                 if prev is None:
-                    last_size[label] = info["size"]
-                    last[label] = info
+                    last_size[key] = info["size"]
+                    last[key] = info
                     continue
                 if info["size"] == prev:
                     continue
@@ -130,17 +145,18 @@ def _watch_logs_loop(stop: threading.Event) -> None:
                         chunk = f.read().decode("utf-8", errors="replace")
                 except OSError:
                     continue
-                last_size[label] = info["size"]
-                last[label] = info
+                last_size[key] = info["size"]
+                last[key] = info
                 if chunk:
-                    _event_put({"type": "log", "label": label,
+                    _event_put({"type": "log", "label": info["label"],
                                 "kind": info["kind"], "text": chunk})
             # 任务结束（从 _JOBS 消失）→ 告诉前端刷新一次状态
             gone = set(last) - set(sig)
-            for label in gone:
-                _event_put({"type": "job-ended", "label": label})
-                last.pop(label, None)
-                last_size.pop(label, None)
+            for key in gone:
+                _event_put({"type": "job-ended", "label": last[key]["label"],
+                            "kind": last[key]["kind"]})
+                last.pop(key, None)
+                last_size.pop(key, None)
         except Exception:                                       # noqa: BLE001
             pass
         stop.wait(0.4)
@@ -298,9 +314,10 @@ def _spawn_script(settings: Settings, label: str, kind: str,
     finally:
         handle.close()
     with _JOBS_LOCK:
-        _JOBS[label] = {"proc": proc, "kind": kind, "label": label,
-                        "since": time.strftime("%H:%M:%S"), "log": log_path,
-                        "detail": " ".join(args[:4])}
+        _JOBS[_job_key(label, kind)] = {
+            "proc": proc, "kind": kind, "label": label,
+            "since": time.strftime("%H:%M:%S"), "log": log_path,
+            "detail": " ".join(args[:4])}
     return proc
 
 
@@ -324,25 +341,28 @@ def _jobs_snapshot(include_finished: bool = False) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     with _JOBS_LOCK:
-        for label, job in list(_JOBS.items()):
+        for key, job in list(_JOBS.items()):
             alive = job["proc"].poll() is None
-            snap = {"label": label, "kind": job["kind"], "since": job["since"],
+            snap = {"label": job["label"], "kind": job["kind"], "since": job["since"],
                     "alive": alive, "detail": job["detail"],
                     "log_name": Path(job["log"]).name,
                     "tail": _log_tail(Path(job["log"]))}
             if not alive:
-                _JOBS.pop(label, None)
+                # ⚠ **按 key 删**（不是按 label）：否则会连带删掉同账号**别的**在跑任务
+                # （2026-11-04 实测：sections 死 → `pop("default")` → study 被一起弹掉）
+                _JOBS.pop(key, None)
                 # 留一条给页面回看（带上结束时间，便于和「正在跑」区分）。
                 # ⚠ **不要** append 到 `out`：默认返回值必须是"还在跑的任务"，
                 # 否则第一次查询就会把已结束的当成活的 → 「停止」去杀死 pid、
                 # 新一轮启动被自己挡住（2026-11-03 被测试抓到）。
                 snap["ended_at"] = time.strftime("%H:%M:%S")
-                _LAST_JOBS[label] = snap
+                _LAST_JOBS[key] = snap
                 continue
             out.append(snap)
     if include_finished:
-        for label, snap in _LAST_JOBS.items():
-            if not any(j["label"] == label for j in out):
+        for key, snap in _LAST_JOBS.items():
+            if not any(j["label"] == snap["label"] and j["kind"] == snap["kind"]
+                       for j in out):
                 out.append(dict(snap))
     return out
 
@@ -670,17 +690,21 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
     """停一个账号正在跑的任务。"""
     label = _safe_label(settings, label)
     with _JOBS_LOCK:
-        job = _JOBS.get(label)
+        # 该账号可能有**多个**任务（study / sections / work，键是 `label|kind`），
+        # 停**每一个**还在跑的（用户点「停止」的意思是「把这个账号的活都停下」）。
+        live = [(k, j) for k, j in _JOBS.items()
+                if j["label"] == label and j["proc"].poll() is None]
         # 已结束的任务留在 `_JOBS` 里等 `_jobs_snapshot` 收进 `_LAST_JOBS` 回看；
         # 但**不能被当成活的去停**（否则会对一个已死的 pid 报「已停止」，
         # 用户以为停了，实际什么都没发生 —— 2026-11-03 测试抓到）。
-        if job is not None and job["proc"].poll() is not None:
-            job = None
-    if job is None:
+    if not live:
         return {"ok": False, "error": "该账号没有在跑的任务"}
-    result = _kill(job["proc"])
-    with _JOBS_LOCK:
-        _JOBS.pop(label, None)
+    results = []
+    for key, job in live:
+        results.append(_kill(job["proc"]))
+        with _JOBS_LOCK:
+            _JOBS.pop(key, None)
+    result = "、".join(results)
     db = open_question_bank(settings.data_dir / "gxks_questions.db")
     try:
         gxks_ops.record_op(db, account_label=label, action="stop",
