@@ -124,13 +124,26 @@ def _log_signature() -> dict[str, Any]:
 
 
 def _watch_logs_loop(stop: threading.Event) -> None:
-    """监视日志变化 → 推送。**只推变化的部分**，不重发全文。"""
+    """监视日志变化 → 推送。**只推变化的部分**，不重发全文。
+
+    ⚠ **路径变了要重置偏移**（2026-11-05 复核发现）：日志文件名带启动时刻
+    （`gxks-study-default-20261104-115058.log`），同一账号同一 `kind` 重新起任务时
+    会生成**新文件**，但 `_JOBS` 的 key（`label|kind`）不变。
+    若只看 `size`，`f.seek(旧文件大小)` 会**跳过新文件的开头**（新文件比旧的短时
+    甚至直接读到空）。所以 `last_path[key] != info["path"]` 时必须从 0 开始。
+    """
     last: dict[str, Any] = {}
     last_size: dict[str, int] = {}
+    last_path: dict[str, str] = {}
     while not stop.is_set():
         try:
             sig = _log_signature()
             for key, info in sig.items():
+                # 换文件了（同 key 新任务）→ 偏移归零，从头推
+                if last_path.get(key) != info["path"]:
+                    last_path[key] = info["path"]
+                    last_size[key] = 0
+                    last[key] = info
                 prev = last_size.get(key)
                 if prev is None:
                     last_size[key] = info["size"]
@@ -157,6 +170,7 @@ def _watch_logs_loop(stop: threading.Event) -> None:
                             "kind": last[key]["kind"]})
                 last.pop(key, None)
                 last_size.pop(key, None)
+                last_path.pop(key, None)
         except Exception:                                       # noqa: BLE001
             pass
         stop.wait(0.4)

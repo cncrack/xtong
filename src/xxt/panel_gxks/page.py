@@ -2379,28 +2379,49 @@ function renderOps(state) {
 //   - 整块重绘正是滚动跳动的根源（`innerHTML` 一换，滚动位置就重置）。
 //   - `/api/state` 的 4 秒轮询**保留**（进度条、账号状态仍需要），
 //     但它**不再负责日志**（`renderRunLog` 只在 SSE 断开时兜底重建）。
-const LOG_LINES = new Map();     // label -> 行数组（倒序：索引 0 = 最新）
-const LOG_JOBS = new Map();      // label -> {kind, since, ended_at, alive}
+const LOG_LINES = new Map();     // "label|kind" -> 行数组（倒序：索引 0 = 最新）
+const LOG_JOBS = new Map();      // "label|kind" -> {label, kind, since, ended_at, alive}
 
-// 用 SSE 收到的增量文本追加到对应账号的日志区
-function appendLogLines(label, text) {
+// 日志的键：`label|kind`（2026-11-05 复核修）
+// ⚠ 原来只按 `label` → 同一账号的 study 与 sections 两个任务的日志会**混在一起**
+// （后端 SSE 已经按 `label|kind` 分流推送，前端不跟上的话两边对不上）。
+const logKey = (label, kind) => String(label || "") + "|" + String(kind || "");
+
+// 当前该显示哪个任务：本账号**在跑**的优先（study > work > sections），
+// 没有在跑的再回退到「刚结束」的那条。
+function pickLogJob(jobs, label) {
+  const mine = (jobs || []).filter((j) => j.label === label);
+  const order = { study: 0, work: 1, sections: 2 };
+  const rank = (j) => order[j.kind] ?? 9;
+  const live = mine.filter((j) => j.alive).sort((a, b) => rank(a) - rank(b));
+  if (live.length) return live[0];
+  if (mine.length) return mine.sort((a, b) => rank(a) - rank(b))[0];
+  return (jobs || []).find((j) => j.alive) || (jobs || [])[0];
+}
+
+// 用 SSE 收到的增量文本追加到对应「账号+任务」的日志区
+function appendLogLines(label, kind, text) {
   const lines = String(text || "").split(/\r?\n/).filter((s) => s.length);
   if (!lines.length) return;
-  let arr = LOG_LINES.get(label);
-  if (!arr) { arr = []; LOG_LINES.set(label, arr); }
+  const key = logKey(label, kind);
+  let arr = LOG_LINES.get(key);
+  if (!arr) { arr = []; LOG_LINES.set(key, arr); }
   // **倒序**：新行插到最前面 → 最新永远在最上面（用户要求）
   for (const ln of lines) arr.unshift(ln);
   // 只保留最近 400 行，避免长时间运行后 DOM 过大
   if (arr.length > 400) arr.length = 400;
-  if (label === LABEL) renderLogBox();
+  // 只有「当前正在显示的那个任务」才立刻重绘
+  const cur = pickLogJob((STATE && STATE.jobs) || [], LABEL);
+  if (cur && logKey(cur.label, cur.kind) === key) renderLogBox();
 }
 
 function renderLogBox() {
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
   const label = LABEL;
-  const job = LOG_JOBS.get(label) || (STATE && STATE.jobs || []).find((j) => j.label === label);
-  const arr = LOG_LINES.get(label) || [];
+  const job = pickLogJob((STATE && STATE.jobs) || [], label);
+  const key = job ? logKey(job.label, job.kind) : logKey(label, "study");
+  const arr = LOG_LINES.get(key) || [];
   if (!arr.length && !job) {
     box.innerHTML = '<div class="empty">当前没有运行中的任务（刷课 / 做练习 / 刷新节列表的实时输出会显示在这里）。</div>';
     if (meta) meta.textContent = "";
@@ -2436,16 +2457,15 @@ function renderRunLog(state) {
   }
   // 优先看**本账号正在跑**的；没有在跑的，就回退到本账号**刚结束**的那条
   // （2026-11-03 用户要求：跑完了还能回看日志）。`alive===false` 是后端留的尾巴。
-  const mine = jobs.filter((j) => j.label === state.label);
-  const cur = mine.find((j) => j.alive) || mine[0] ||
-              jobs.find((j) => j.alive) || jobs[0];
+  const cur = pickLogJob(jobs, state.label);
   const running = cur.alive !== false;
-  // 记下任务信息，供 SSE 增量渲染用
-  LOG_JOBS.set(cur.label, cur);
-  // **兜底重建**：本地没有这个账号的日志行（SSE 还没推过、或页面刚打开）→
+  // 记下任务信息，供 SSE 增量渲染用（键 `label|kind`，同账号两任务不混）
+  const curKey = logKey(cur.label, cur.kind);
+  LOG_JOBS.set(curKey, cur);
+  // **兜底重建**：本地没有这个任务的日志行（SSE 还没推过、或页面刚打开）→
   // 用 state 里的 tail 初始化一次。之后由 SSE 增量追加。
-  if (!LOG_LINES.has(cur.label) && (cur.tail || []).length) {
-    LOG_LINES.set(cur.label, (cur.tail || []).slice().reverse());
+  if (!LOG_LINES.has(curKey) && (cur.tail || []).length) {
+    LOG_LINES.set(curKey, (cur.tail || []).slice().reverse());
   }
   if (meta) {
     meta.textContent = "· " + (cur.label || "") + "（" + (cur.kind || "") +
@@ -2477,7 +2497,7 @@ function renderRunLog(state) {
   const shown = tail.slice().reverse();
   // 用 `LOG_LINES` 里的**累计行**（SSE 推来的增量已合并进去），
   // 而不是只有 tail 的最后 12 行 —— 否则轮询会把 SSE 已收到的更长历史覆盖掉。
-  const merged = LOG_LINES.get(cur.label);
+  const merged = LOG_LINES.get(curKey);
   const lines = (merged && merged.length >= shown.length) ? merged : shown;
   box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
     '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
@@ -2753,7 +2773,9 @@ function connectEvents() {
     let d;
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (!d || !d.label) return;
-    appendLogLines(d.label, d.text || "");
+    // ⚠ 带上 kind：后端按 `label|kind` 分流，前端不传就会把
+    // 同账号的 study 与 sections 日志混到一条里（2026-11-05 复核修）
+    appendLogLines(d.label, d.kind || "study", d.text || "");
   });
   EVT.addEventListener("job-ended", () => {
     // 任务结束：拉一次整体状态（把「已结束」状态、结束时间同步过来）

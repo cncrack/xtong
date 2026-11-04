@@ -940,15 +940,21 @@ class GxksDriver:
                 #
                 # 但页面自己的计时器（`m_time`，墙钟）**每采样都有**，零平台开销。
                 # 每 30 秒发一行 `tick`，用户就能看出「在走」，不必等 5 分钟。
+                #
+                # ⚠ **不能拿「clock 变了」当触发条件**（2026-11-05 复核发现）：
+                # `m_time` **每秒都在涨**，于是每次采样都命中「变了」分支、
+                # 把 `last_tick_at` 一直刷新 → `elif` 永远不成立 → **tick 永不发出**。
+                # 正确做法：只按**时间间隔**发；`clock` 仅用于判断「是不是真的在走」
+                # （计时器不动 = 视频停了/卡了，不发心跳，留给 `no_report`/`stalled` 报）。
                 clock = sample.get("clock")
                 if isinstance(clock, int) and clock >= 0:
-                    if last_clock is None or clock != last_clock:
-                        last_clock = clock
-                        last_tick_at = now
+                    if last_clock is not None and clock == last_clock:
+                        last_tick_at = now          # 没在走：不刷新心跳基准
                     elif now - last_tick_at >= 30:
                         last_tick_at = now
                         emit("tick", clock=clock, t=sample.get("t"),
                              updates=sample.get("updates"))
+                    last_clock = clock
 
                 # 上报节奏（Q16）：计时不看网络，但**记账看网络**——断网时 `m_time` 照走、
                 # 那一分钟的 `updateTime` 却丢了。页面每上报一次就多一个带该 src 的 script，
