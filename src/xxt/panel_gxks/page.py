@@ -2089,7 +2089,9 @@ async function reloginSession() {
   await post("/api/session/relogin");
 }
 
-const SEC_OPEN = { todo: true, done: false };  // 折叠状态记这里：4 秒轮询会整块重绘，不能只靠 DOM
+// 两个分区**默认都展开**（2026-11-05 用户：「已完成默认是折叠的，按理默认应该是打开的才对」）。
+// 折叠状态记这里而不是只靠 DOM：4 秒轮询会整块重绘，DOM 上的 open 会丢。
+const SEC_OPEN = { todo: true, done: true };
 let SEC_SIG = "";                              // 数据签名没变就不重建 → 折叠状态、选中文字都不被打扰
 
 const numv = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };

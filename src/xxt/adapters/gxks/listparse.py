@@ -78,9 +78,29 @@ def parse_exam_id(onclick: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def practice_ready(practice_locked: bool | None, exam_id: int | str | None) -> bool:
+    """这一节的**练习**能不能做（唯一口径，2026-11-05 抽出来共用）。
+
+    判据只认平台给的两个信号：
+    - `practice_locked`：「参加练习」的 onclick 是不是 `alert('请先完成学习！')`；
+    - `exam_id`：解锁后 onclick 变成 `showExam(<id>)`，能解析出练习 ID。
+
+    ## 为什么要抽成函数（2026-11-05 复核发现的 bug）
+
+    这个公式原来**只写在 `scripts/gxks_sections.py::_slim()` 里**，
+    而刷课脚本 `run_gxks.py` 回写缓存时直接用 `r.get("practice_ready")` ——
+    **但 `read_row()` 返回的行里没有这个字段**（它只有 `practice_locked`/`exam_id`，
+    `practice_ready` 是 `_slim()` 算出来的）→ 回写时 `None` → `update_row` 跳过不更新
+    → 缓存里「未解锁」永远不消失。
+
+    实测 1307「3.4 当代中国军事思想」：`locked=False exam_id=15265`（平台已解锁）
+    但缓存里 `practice_ready=False`（11-04 刷新时的旧值）→ 面板显示「未解锁」。
+    """
+    return bool(not practice_locked and exam_id)
+
+
 def parse_state(state_text: str | None) -> str:
     """把状态文案归一成 `done` / `learning` / `not_started` / `unknown`。
-
     三个文案都已实测（2026-10-29）：未学习 / 学习中 / 已完成。
     命中不了就返回 `unknown`，让上层显式处理，而不是猜成“没学完”然后无限重试。
 

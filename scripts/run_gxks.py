@@ -39,6 +39,7 @@ from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
 from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import ledger as gledger  # noqa: E402
+from xxt.adapters.gxks import listparse as glist  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import netcheck  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
@@ -309,8 +310,15 @@ def main() -> int:
                                   done_minutes=r.get("done_minutes"),
                                   state=r.get("state"),
                                   state_text=r.get("state_text"),
-                                  practice_ready=r.get("practice_ready"),
-                                  # ⚠ 练习解锁状态一起回写（2026-11-04）：
+                                  # ⚠ `practice_ready` **必须自己算**（2026-11-05 复核发现）：
+                                  # `read_row()` 返回的行里**没有** `practice_ready` 字段
+                                  # （它只有 `practice_locked` / `exam_id`，`practice_ready`
+                                  # 是 `_slim()` 算出来的）→ 直接 `r.get("practice_ready")`
+                                  # 永远是 None → `update_row` 跳过不更新 → 缓存里
+                                  # 「未解锁」永远不消失（实测 1307 就是这样卡住的）。
+                                  practice_ready=glist.practice_ready(
+                                      r.get("practice_locked"), r.get("exam_id")),
+                                  # 练习解锁状态一起回写（2026-11-04）：
                                   # 平台在达标后**异步**开放练习（onclick 从
                                   # `alert('请先完成学习！')` 变成 `showExam(<id>)`）。
                                   # 不回写这两个字段 → 缓存里「未解锁」永远不消失，
@@ -445,7 +453,8 @@ def main() -> int:
                                   done_minutes=fresh.get("done_minutes"),
                                   state=fresh.get("state"),
                                   state_text=fresh.get("state_text"),
-                                  practice_ready=fresh.get("practice_ready"),
+                                  practice_ready=glist.practice_ready(
+                                      fresh.get("practice_locked"), fresh.get("exam_id")),
                                   practice_locked=fresh.get("practice_locked"),
                                   exam_id=fresh.get("exam_id"),
                                   name=str(fresh.get("name") or nm),

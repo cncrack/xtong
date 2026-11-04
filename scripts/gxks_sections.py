@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from xxt.adapters.gxks import accounts as gaccounts  # noqa: E402
 from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
+from xxt.adapters.gxks import listparse  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import sections_cache  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
@@ -82,7 +83,10 @@ def _slim(row: dict, page: int) -> dict:
     out["page"] = page
     # 面板要一眼看出"这节能不能做练习"，判定只认平台给的 onclick：
     # 锁着时 onclick 是 alert('请先完成学习！')，解锁后才是 showExam(id)。
-    out["practice_ready"] = bool(not row.get("practice_locked") and row.get("exam_id"))
+    # ⚠ 公式抽到 `listparse.practice_ready()`（2026-11-05）：刷课脚本回写缓存时
+    # 也要用同一个口径，否则两边算出不同结果（实测 1307 因此一直显示「未解锁」）。
+    out["practice_ready"] = listparse.practice_ready(
+        row.get("practice_locked"), row.get("exam_id"))
     return out
 
 
