@@ -97,11 +97,27 @@ class TestHotReloadDefault(unittest.TestCase):
         from xxt.store import gxks_panel_settings as gp
         self.assertTrue(gp.DEFAULTS.get("reload", False))
 
-    def test_spawn_uses_detached_process(self):
-        """刷课子进程必须脱离父进程的 Job Object。"""
+    def test_spawn_uses_create_no_window(self):
+        """刷课子进程必须 `CREATE_NO_WINDOW`（不弹黑窗口）。
+
+        ⚠ **不能用 `DETACHED_PROCESS`**：它对控制台程序（venv 转发器
+        `Scripts\\python.exe` 就是）会**分配新控制台** → 屏幕上弹出黑窗口
+        （2026-11-04 实测踩到，用户截图报「这种验证功能的窗口以后告诉我」）。
+        而且 Windows 规定两者**互斥**。
+        `CREATE_NO_WINDOW` 同样让子进程脱离父控制台（父进程退出不影响它），
+        满足「面板重启不杀刷课」的要求。
+        """
         src = inspect.getsource(A._spawn_script)
-        self.assertIn("DETACHED_PROCESS", src,
-                      "刷课子进程要 DETACHED_PROCESS（否则面板重启会连带杀掉它）")
+        # ⚠ docstring 里会提到 DETACHED_PROCESS（说明为什么不用它），
+        # 所以只看**真正参与标志计算的那几行**。
+        flag_lines = [ln for ln in src.splitlines()
+                      if "getattr(subprocess" in ln or "flags = (" in ln
+                      or "flags = " in ln]
+        flags_code = "\n".join(flag_lines)
+        self.assertIn("CREATE_NO_WINDOW", flags_code,
+                      "刷课子进程要 CREATE_NO_WINDOW（否则弹黑窗口）")
+        self.assertNotIn("DETACHED_PROCESS", flags_code,
+                         "DETACHED_PROCESS 会给控制台程序分配新控制台 → 弹黑窗口")
         self.assertIn("creationflags=flags", src)
 
     def test_serve_reads_setting(self):

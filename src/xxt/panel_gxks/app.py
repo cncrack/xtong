@@ -265,8 +265,21 @@ def _spawn_script(settings: Settings, label: str, kind: str,
     或手动重启）会把正在跑的刷课任务一起杀掉 → 日志末尾 `KeyboardInterrupt` →
     任务中断、**不会自动切下一节**（2026-11-04 连续踩到两次）。
 
-    `DETACHED_PROCESS` 让子进程脱离父进程的进程组 ⇒ 面板重启/退出都不影响它。
-    配合 `CREATE_NEW_PROCESS_GROUP`，Ctrl+C 也不会误杀它。
+    ## ⚠ 用 `CREATE_NO_WINDOW`，**不要用 `DETACHED_PROCESS`**（2026-11-04 实测踩到）
+
+    第一次改用了 `DETACHED_PROCESS`，结果**屏幕上弹出一个黑窗口**
+    （标题 `E:\\xxt-gxks\\.venv\\Scripts\\python.exe`）—— 因为
+    `DETACHED_PROCESS` 对**控制台程序**（venv 转发器 `Scripts\\python.exe` 就是）
+    会**分配一个新控制台**，于是就弹窗了。
+
+    而且 Windows 规定 `DETACHED_PROCESS` 与 `CREATE_NO_WINDOW` **互斥**。
+
+    正确组合：**`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`**：
+    - `CREATE_NO_WINDOW` → **不弹黑窗口**，且同样让子进程脱离父控制台
+      （父进程退出不影响它，满足「面板重启不杀刷课」的要求）；
+    - `CREATE_NEW_PROCESS_GROUP` → Ctrl+C 不会误杀它。
+
+    实测（2026-11-04）：加上后既无黑窗口，重启面板后刷课任务仍在跑。
     """
     log_dir = settings.data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -277,7 +290,7 @@ def _spawn_script(settings: Settings, label: str, kind: str,
     handle = open(log_path, "ab")
     flags = 0
     if os.name == "nt":
-        flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+        flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                  | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     try:
         proc = subprocess.Popen(argv, cwd=str(ROOT), stdout=handle,
