@@ -155,6 +155,11 @@ def main() -> int:
     wanted = [s.strip() for s in args.sections.split(",")] if args.sections else None
     tag = f"{args.label}_" if args.label else ""
     finished: list[dict] = []
+    # 需要在**全部刷完后**统一重读练理解锁状态的节（2026-11-04）：
+    # 平台达标后异步开放练习（onclick 从 `alert('请先完成学习！')` 变成 `showExam(<id>)`）。
+    # ⚠ **不能在刷课途中重读列表** —— 列表页与播放页抢同一个 iframe，
+    # 重读会把播放页冲掉（视频重建、`m_time` 归零）。所以攒起来，结束后一次性做。
+    need_practice_check: list[tuple[str, str]] = []
 
     # ---- 当日额度（本地账本）----
     # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
@@ -383,36 +388,17 @@ def main() -> int:
         except Exception as exc:                            # noqa: BLE001
             print(f"⚠ 记账失败（不影响播放）：{exc}")
 
-        # **练理解锁后重读一次**（2026-11-04 用户实拍「已完成但显示未解锁」）：
-        # 平台在达标后**异步**开放练习（onclick 从 `alert('请先完成学习！')`
-        # 变成 `showExam(<id>)`），解锁可能比达标晚几十秒到几分钟。
-        # 这里趁**已经离开播放页**（`leave_player()` 之后）回读一次列表，
-        # 把 `practice_locked` / `exam_id` 同步进缓存 → 面板的「做练习」按钮会出现。
-        # 回读只针对**当前这一节**，代价约 8 秒（翻页来回一次）。
-        try:
-            locked = final.get("practice_locked")
-            if locked is not False:          # 还锁着才需要重读（已解锁就不用白花 8 秒）
-                page.wait_for_timeout(3000)  # 等平台把练习放出来
-                fresh = drv.read_row(section)
-                if fresh:
-                    gcache.update_row(Path("data/debug"), acc_label, course_value,
-                                      section,
-                                      done_minutes=fresh.get("done_minutes"),
-                                      state=fresh.get("state"),
-                                      state_text=fresh.get("state_text"),
-                                      practice_ready=fresh.get("practice_ready"),
-                                      practice_locked=fresh.get("practice_locked"),
-                                      exam_id=fresh.get("exam_id"),
-                                      name=str(fresh.get("name") or row.get("name") or ""),
-                                      required_minutes=fresh.get("required_minutes"),
-                                      idx=fresh.get("idx"),
-                                      category=str(fresh.get("category") or ""))
-                    if fresh.get("practice_ready"):
-                        print(f"[OK] 练习已解锁：{section} 练习 ID {fresh.get('exam_id')}")
-                    else:
-                        print(f"[..] 练习还没解锁（平台异步开放，稍后再看）：{section}")
-        except Exception as exc:                          # noqa: BLE001
-            print(f"[WARN] 练理解锁重读失败（不影响播放）：{type(exc).__name__}")
+        # **练理解锁状态：不在这里重读**（2026-11-04 我犯的错）。
+        #
+        # 我原来在这里（每节收工后）回读一次列表，想把平台异步开放的练习解锁状态
+        # 同步进缓存。**但列表页和播放页抢同一个 iframe** —— 回读列表 = 把播放页冲掉
+        # → 视频重建、`m_time` 归零 → 日志刷 `rebuild` / `paused`。
+        # 实测：1307 在 11:00、11:04 各被冲了一次（学时仍上传，但进度被打断）。
+        #
+        # ⇒ 改成：**全部刷完之后统一重读一次**（那时已经没有播放要保护了）。
+        # 需要回读的节记在 `need_practice_check` 里。
+        if final.get("practice_locked") is not False:
+            need_practice_check.append((section, str(row.get("name") or "")))
 
         if idx < args.max_sections:
             # 拟人化节奏：默认每 3 节插一次 4~10 分钟长歇；其余节间 45~180 秒随机短歇。
@@ -437,6 +423,37 @@ def main() -> int:
                "不限" if mins_limit <= 0 else mins_limit)
         print(f"今日累计：{q['sections']} 节 / {q['minutes']:.0f} 分钟"
               f"（额度 {lim[0]} 节 / {lim[1]} 分钟）")
+    # **全部刷完后**统一重读练理解锁状态（2026-11-04）：
+    # 平台达标后异步开放练习，这里回读一次列表把 `practice_locked` / `exam_id`
+    # 同步进缓存 → 面板的「做练习」按钮会出现。
+    # ⚠ **必须放在最后**：刷课途中重读列表会冲掉播放页（视频重建、`m_time` 归零）。
+    if need_practice_check:
+        print(f"\n=== 回读练理解锁状态（{len(need_practice_check)} 节）===")
+        try:
+            page.wait_for_timeout(3000)      # 等平台把练习放出来
+            for sid, nm in need_practice_check:
+                fresh = drv.read_row(sid)
+                if not fresh:
+                    print(f"[..] {sid} {nm} 读不到（跳过）")
+                    continue
+                gcache.update_row(Path("data/debug"), acc_label, course_value, sid,
+                                  done_minutes=fresh.get("done_minutes"),
+                                  state=fresh.get("state"),
+                                  state_text=fresh.get("state_text"),
+                                  practice_ready=fresh.get("practice_ready"),
+                                  practice_locked=fresh.get("practice_locked"),
+                                  exam_id=fresh.get("exam_id"),
+                                  name=str(fresh.get("name") or nm),
+                                  required_minutes=fresh.get("required_minutes"),
+                                  idx=fresh.get("idx"),
+                                  category=str(fresh.get("category") or ""))
+                if fresh.get("practice_ready"):
+                    print(f"[OK] 练习已解锁：{sid} {nm}（练习 ID {fresh.get('exam_id')}）")
+                else:
+                    print(f"[..] 练习还没解锁（平台异步开放，稍后再看）：{sid} {nm}")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"[WARN] 练理解锁重读失败（不影响已完成的学习）：{type(exc).__name__}")
+
     # 收尾时滚动刷新登录态快照（用户 2026-11-02：「记录登录信息，后期自己登陆」）
     # 票随时可能被服务端换掉；跑完再存一次，下次开跑注入的就是最新那张。
     try:

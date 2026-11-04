@@ -46,35 +46,50 @@ class TestUpdateRowWritesPracticeFields(unittest.TestCase):
 
 
 class TestPracticeUnlockReread(unittest.TestCase):
-    """达标后要主动重读一次（平台异步开放）。"""
+    """达标后要主动重读一次（平台异步开放），但**必须放在全部刷完之后**。
+
+    ## 我犯的错（2026-11-04）
+
+    我原来在**每节收工后**就回读一次列表，想同步练理解锁状态。
+    **但列表页与播放页抢同一个 iframe** → 重读把播放页冲掉 → 视频重建、
+    `m_time` 归零 → 日志刷 `rebuild` / `paused`。
+
+    实测 1307 在 11:00、11:04 各被冲了一次（学时仍上传，但进度被打断）。
+
+    ⇒ 改成：攒进 `need_practice_check`，**全部刷完之后**统一重读一次。
+    """
 
     def _run_src(self) -> str:
         return Path("scripts/run_gxks.py").read_text(encoding="utf-8")
 
-    def test_rereads_after_leave_player(self):
+    def test_collects_instead_of_reading_immediately(self):
+        """刷课途中**只收集**，不重读。"""
         src = self._run_src()
-        # 重读必须发生在 leave_player 之后（列表页与播放页抢同一个 iframe）
-        self.assertIn("leave_player", src)
-        reread_pos = src.find("练习已解锁")
-        leave_pos = src.find("drv.leave_player()")
-        self.assertGreater(reread_pos, leave_pos,
-                           "重读要在离开播放页之后（否则会冲掉播放）")
+        self.assertIn("need_practice_check.append", src)
+        # 收集点后面不能紧跟 read_row
+        seg = src.split("need_practice_check.append", 1)[1].split("if idx < args.max_sections", 1)[0]
+        self.assertNotIn("read_row", seg,
+                         "刷课途中不能重读列表（会冲掉播放页）")
+
+    def test_reads_after_all_sections_done(self):
+        """重读要放在**全部刷完之后**（汇总之后）。"""
+        src = self._run_src()
+        read_pos = src.find("回读练理解锁状态")
+        self.assertGreater(read_pos, -1, "找不到收尾的重读逻辑")
+        summary_pos = src.find("=== 本次汇总 ===")
+        self.assertGreater(read_pos, summary_pos,
+                           "重读必须放在汇总之后（那时已经没有播放要保护）")
 
     def test_reads_row_and_updates_cache(self):
         src = self._run_src()
-        self.assertIn("drv.read_row(section)", src)
-        self.assertIn("practice_locked=fresh.get(\"practice_locked\")", src)
-        self.assertIn("exam_id=fresh.get(\"exam_id\")", src)
-
-    def test_only_when_still_locked(self):
-        """已解锁就别白花 8 秒重读。"""
-        src = self._run_src()
-        self.assertIn("if locked is not False:", src)
+        self.assertIn("drv.read_row(sid)", src)
+        self.assertIn('practice_locked=fresh.get("practice_locked")', src)
+        self.assertIn('exam_id=fresh.get("exam_id")', src)
 
     def test_failure_does_not_break_playback(self):
         """重读失败不能影响刷课。"""
         src = self._run_src()
-        self.assertIn("练理解锁重读失败（不影响播放）", src)
+        self.assertIn("练理解锁重读失败", src)
 
 
 if __name__ == "__main__":
