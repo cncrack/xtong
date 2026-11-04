@@ -433,7 +433,11 @@ def main() -> int:
         try:
             page.wait_for_timeout(3000)      # 等平台把练习放出来
             for sid, nm in need_practice_check:
-                fresh = drv.read_row(sid)
+                # ⚠ 用 `find_section([sid])`（逐页找），**不能用 `read_row`**
+                # （2026-11-05 复核发现）：`read_row` 只读**当前页**，而这几节可能
+                # 分布在不同的页（实测 1306 在第 2 页、1307~1309 在第 3 页）→
+                # 当前停在第 3 页时读 1306 会返回 None，静默打印「读不到（跳过）」。
+                fresh = drv.find_section([str(sid)])
                 if not fresh:
                     print(f"[..] {sid} {nm} 读不到（跳过）")
                     continue

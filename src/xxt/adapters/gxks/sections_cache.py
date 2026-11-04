@@ -171,7 +171,9 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
         if practice_locked is not None and r.get("practice_locked") != bool(practice_locked):
             r["practice_locked"] = bool(practice_locked)
             changed = True
-        if exam_id is not None and r.get("exam_id") != exam_id:
+        # `exam_id` 统一按字符串比较：调用方可能传 int（回读的行）也可能传 str
+        # （命令行参数），直接 `!=` 会把「30 vs "30"」当成变了、白写一次文件。
+        if exam_id is not None and str(r.get("exam_id")) != str(exam_id):
             r["exam_id"] = exam_id
             changed = True
         break

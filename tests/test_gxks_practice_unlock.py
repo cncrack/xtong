@@ -82,7 +82,11 @@ class TestPracticeUnlockReread(unittest.TestCase):
 
     def test_reads_row_and_updates_cache(self):
         src = self._run_src()
-        self.assertIn("drv.read_row(sid)", src)
+        # ⚠ 用 `find_section`（逐页找）而不是 `read_row`（只读当前页）：
+        # 实测 1306 在第 2 页、1307~1309 在第 3 页，`read_row` 会读不到跨页的节
+        # （静默打印「读不到（跳过）」）。2026-11-05 复核发现。
+        self.assertIn("drv.find_section(", src)
+        self.assertNotIn("fresh = drv.read_row(sid)", src)
         self.assertIn('practice_locked=fresh.get("practice_locked")', src)
         self.assertIn('exam_id=fresh.get("exam_id")', src)
 
