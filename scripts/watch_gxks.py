@@ -41,7 +41,8 @@ from xxt.adapters.gxks import selectors
 CDP = "http://127.0.0.1:9222"
 LOUD_KINDS = {"give_up", "progress", "rebuild", "hidden", "no_report", "margin_reached",
               "session_lost", "report_bad", "ended_reached",
-              "replay_short", "replay_filled", "replay_failed", "ended_short"}
+              "replay_short", "replay_filled", "replay_failed", "ended_short",
+              "tick"}
 QUIET_STATES = {"ok"}
 
 
@@ -103,6 +104,10 @@ def make_printer(log_path: Path):
                          f" → 已够要求，收工（不再追余量）")
             elif kind == "replay_failed":
                 extra = " 补播重载失败 → 转人工"
+            elif kind == "tick":
+                # 心跳（2026-11-04）：`progress` 要回读列表才知道平台的学时，
+                # 间隔 5 分钟；这里显示页面自己的墙钟计时器 → 一眼看出「在走」。
+                extra = f" 学习中（页面计时 {ev.get('clock')} 秒）"
             print(f"[{stamp}] {kind}{extra}", flush=True)
         last["state"] = kind
 

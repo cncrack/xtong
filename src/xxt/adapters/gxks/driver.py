@@ -795,6 +795,9 @@ class GxksDriver:
         pause_recoveries = 0
         last_updates: int | None = None
         last_update_at = started
+        # 心跳用（2026-11-04）：页面自己的计时器 `m_time`（墙钟，每采样都有）
+        last_clock: int | None = None
+        last_tick_at = started
         next_read = started
         last_row: dict[str, Any] | None = None
 
@@ -920,6 +923,23 @@ class GxksDriver:
 
             if sample:
                 prev, prev_at = sample, now
+
+                # **心跳**（2026-11-04 用户问「这个跳动的周期是多长，原来是有的」）：
+                # `progress` 行要**回读列表**才知道平台的学时，间隔是
+                # `read_progress_every`（默认 5 分钟，距达标 ≤10 分钟才降到 60 秒）
+                # —— 所以日志看着像「不动」。
+                #
+                # 但页面自己的计时器（`m_time`，墙钟）**每采样都有**，零平台开销。
+                # 每 30 秒发一行 `tick`，用户就能看出「在走」，不必等 5 分钟。
+                clock = sample.get("clock")
+                if isinstance(clock, int) and clock >= 0:
+                    if last_clock is None or clock != last_clock:
+                        last_clock = clock
+                        last_tick_at = now
+                    elif now - last_tick_at >= 30:
+                        last_tick_at = now
+                        emit("tick", clock=clock, t=sample.get("t"),
+                             updates=sample.get("updates"))
 
                 # 上报节奏（Q16）：计时不看网络，但**记账看网络**——断网时 `m_time` 照走、
                 # 那一分钟的 `updateTime` 却丢了。页面每上报一次就多一个带该 src 的 script，
