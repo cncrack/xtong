@@ -92,7 +92,6 @@ payload = await asyncio.to_thread(q.get, True, 15.0)
 ## 事故与教训
 
 ### 我替用户关了「碍眼的黑窗口」→ **杀掉了正在学的 1307**
-
 那个黑窗口**不是遗留垃圾**，是我自己加 `DETACHED_PROCESS` 给**正在跑的任务**
 分配的新控制台。`CloseMainWindow()` = 给该进程组发 `CTRL_CLOSE_EVENT`
 → 进程终止 → 1307 死在 37/48。
@@ -164,3 +163,44 @@ payload = await asyncio.to_thread(q.get, True, 15.0)
 
 - 改 `scripts/start_chrome.ps1` 后**必须确认 BOM 还在**（否则 PS 5.1 按 GBK 读 → 解析失败）
 - 改 `src/xxt/panel_gxks/app.py` 的 `_spawn_script` 时**不要改回 `DETACHED_PROCESS`**（会弹黑窗口）
+
+---
+
+## 补充（12:15 又查出一个真 bug）：`_JOBS` 用 `label` 做键
+
+### 现象
+
+12:03 的定时汇报里，**刷课任务明明在跑**（日志每分钟写 `progress 0/20`），
+但面板 `/api/state` 的 `jobs` 里**只有那条已结束的「刷新节列表」** —— study 不见了。
+用户看到的面板也是「没有任务在跑」。
+
+### 根因
+
+```python
+_JOBS[label] = {...}          # 起任务：只用 label 做键
+...
+_JOBS.pop(label, None)        # 清理死任务
+```
+
+| 时间 | 发生什么 |
+|---|---|
+| 11:42 | 起 `sections` 任务 → `_JOBS["default"] = sections` |
+| 11:50 | 起 `study` 任务 → **覆盖**成 `_JOBS["default"] = study` |
+| 12:03 | `_jobs_snapshot()` 发现 sections 已死 → **`pop("default")`** → **study 被一起弹掉** |
+
+`study` 进程其实还在跑（独立进程），只是**面板看不见它**了：
+「停止」按钮失效、运行日志不显示、卡片状态不对。
+
+**这也解释了用户为什么说「我点了 2 个停止」** —— 面板认为没任务，点了没反应。
+
+### 修法
+
+键改成 `label|kind`（`_job_key()`）：
+- 同一账号的 `study` / `sections` / `work` **各占一条**；
+- 清理时**按 key 删**，不会连带删掉别的在跑任务；
+- `_stop_one` 改成「停该账号**所有**还在跑的任务」（用户点停止的本意）；
+- `_log_signature()` 与 SSE 监视循环的指纹字典同步改成按 key
+  （原来也按 label，同账号两任务会互相覆盖 → 推送漏）。
+
+**测试**：`tests/test_gxks_jobs_key.py`（4 例，含「一条结束不能踢掉另一条在跑的」）。
+
