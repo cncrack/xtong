@@ -79,6 +79,8 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
                section_id: str | int, *, done_minutes: int | float | None = None,
                state: str | None = None, state_text: str | None = None,
                practice_ready: bool | None = None,
+               practice_locked: bool | None = None,
+               exam_id: int | str | None = None,
                name: str = "", required_minutes: int | float | None = None,
                idx: int | None = None, category: str = "") -> bool:
     """把某一节的最新状态**本地回写**进缓存，返回是否写成功。
@@ -161,6 +163,17 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
             r["state_text"] = state_text
         if practice_ready is not None:
             r["practice_ready"] = bool(practice_ready)
+        # ⚠ **练习解锁状态也要回写**（2026-11-04 用户实拍：「已完成但显示未解锁」）：
+        # 平台在达标后会**异步**开放练习（onclick 从 `alert('请先完成学习！')`
+        # 变成 `showExam(<id>)`）。回读的行里本来就带 `practice_locked` / `exam_id`，
+        # 但原来只写 `practice_ready` → 缓存里「未解锁」永远不消失，
+        # 而且 `exam_id` 一直是 None → 面板的「做练习」按钮永远不显示。
+        if practice_locked is not None and r.get("practice_locked") != bool(practice_locked):
+            r["practice_locked"] = bool(practice_locked)
+            changed = True
+        if exam_id is not None and r.get("exam_id") != exam_id:
+            r["exam_id"] = exam_id
+            changed = True
         break
 
     # summary 与 gxks_sections.py 的口径保持一致

@@ -305,6 +305,13 @@ def main() -> int:
                                   state=r.get("state"),
                                   state_text=r.get("state_text"),
                                   practice_ready=r.get("practice_ready"),
+                                  # ⚠ 练习解锁状态一起回写（2026-11-04）：
+                                  # 平台在达标后**异步**开放练习（onclick 从
+                                  # `alert('请先完成学习！')` 变成 `showExam(<id>)`）。
+                                  # 不回写这两个字段 → 缓存里「未解锁」永远不消失，
+                                  # 而且 `exam_id` 一直是 None → 面板的「做练习」按钮不显示。
+                                  practice_locked=r.get("practice_locked"),
+                                  exam_id=r.get("exam_id"),
                                   name=str(r.get("name") or row.get("name") or ""),
                                   required_minutes=r.get("required_minutes"),
                                   idx=r.get("idx"),
@@ -375,6 +382,37 @@ def main() -> int:
                            course=str(args.course or ""))
         except Exception as exc:                            # noqa: BLE001
             print(f"⚠ 记账失败（不影响播放）：{exc}")
+
+        # **练理解锁后重读一次**（2026-11-04 用户实拍「已完成但显示未解锁」）：
+        # 平台在达标后**异步**开放练习（onclick 从 `alert('请先完成学习！')`
+        # 变成 `showExam(<id>)`），解锁可能比达标晚几十秒到几分钟。
+        # 这里趁**已经离开播放页**（`leave_player()` 之后）回读一次列表，
+        # 把 `practice_locked` / `exam_id` 同步进缓存 → 面板的「做练习」按钮会出现。
+        # 回读只针对**当前这一节**，代价约 8 秒（翻页来回一次）。
+        try:
+            locked = final.get("practice_locked")
+            if locked is not False:          # 还锁着才需要重读（已解锁就不用白花 8 秒）
+                page.wait_for_timeout(3000)  # 等平台把练习放出来
+                fresh = drv.read_row(section)
+                if fresh:
+                    gcache.update_row(Path("data/debug"), acc_label, course_value,
+                                      section,
+                                      done_minutes=fresh.get("done_minutes"),
+                                      state=fresh.get("state"),
+                                      state_text=fresh.get("state_text"),
+                                      practice_ready=fresh.get("practice_ready"),
+                                      practice_locked=fresh.get("practice_locked"),
+                                      exam_id=fresh.get("exam_id"),
+                                      name=str(fresh.get("name") or row.get("name") or ""),
+                                      required_minutes=fresh.get("required_minutes"),
+                                      idx=fresh.get("idx"),
+                                      category=str(fresh.get("category") or ""))
+                    if fresh.get("practice_ready"):
+                        print(f"[OK] 练习已解锁：{section} 练习 ID {fresh.get('exam_id')}")
+                    else:
+                        print(f"[..] 练习还没解锁（平台异步开放，稍后再看）：{section}")
+        except Exception as exc:                          # noqa: BLE001
+            print(f"[WARN] 练理解锁重读失败（不影响播放）：{type(exc).__name__}")
 
         if idx < args.max_sections:
             # 拟人化节奏：默认每 3 节插一次 4~10 分钟长歇；其余节间 45~180 秒随机短歇。
