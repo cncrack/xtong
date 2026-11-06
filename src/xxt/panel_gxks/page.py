@@ -264,6 +264,9 @@ mark.hit{background:#fff3bf;color:inherit;padding:0 1px;border-radius:2px;
 .acct-batch b{font-size:12.5px;white-space:nowrap}
 /* 统计与批量操作之间的竖分隔线 */
 .bb-sep{flex:0 0 auto;width:1px;height:16px;background:var(--line);margin:0 3px}
+/* 按钮里的补充说明（如「开始学习（跳过 2 个在跑）」）：比按钮字小一号且不抢色，
+   窄屏也保持单行不撑破（2026-11-06 用户问「运行中为何还能勾选」时加） */
+.bb-note{font-size:11px;opacity:.75;margin-left:2px}
 /* 列宽策略（2026-11-02 修）：
    原来 table-layout:auto，没设 width 的「账号」列会吸走全部余量 →
    名字靠左、右边留一大片空白。改成 fixed + 百分比，余量按比例分给各列。 */
@@ -1074,8 +1077,12 @@ function acctTr(c, accRow, cur) {
     ? Infinity : Number(t.left_sections) || 0;
   let html = '<tr class="' + (active ? "cur " : "") + (c.enabled ? "" : "off") +
     '" data-label="' + esc(c.label) + '">';
+  // ⚠ 运行中的账号**仍可勾选**（2026-11-06 用户问「已有账号在学，为何还能选」）：
+  // 批量「停止」恰恰需要选中在跑的账号。所以不禁用，只在 title 里说清后果。
   html += '<td><input type="checkbox" class="acct-pick"' +
-    (SEL.has(c.label) ? " checked" : "") + ' data-label="' + esc(c.label) + '"></td>';
+    (SEL.has(c.label) ? " checked" : "") +
+    (c.job ? ' title="该账号正在跑：批量「开始学习」会自动跳过它；批量「停止」用它"' : "") +
+    ' data-label="' + esc(c.label) + '"></td>';
   html += '<td class="num muted">' + esc(pf.seq || "") + "</td>";
   // 搜索命中处高亮：用户搜"甲"时能直接看出这行为什么被筛出来
   const q = (FILTER.q || "").trim();
@@ -1209,9 +1216,22 @@ function renderBatchBar(shown) {
     box.innerHTML = html;
     return;
   }
+  // 选中的账号里有几个**正在跑**（2026-11-06 用户问「已有一号在学，为何还能勾」）：
+  // 不能禁用复选框 —— 批量「停止」恰恰要选运行中的。改为在按钮上**提前说清**：
+  // 「开始学习」会跳过它们，「停止」只会停它们。
+  const picked = shown.filter((c) => SEL.has(c.label));
+  const runningSel = picked.filter((c) => c.job).length;
+  const startTag = runningSel
+    ? '开始学习<span class="bb-note">（跳过 ' + runningSel + " 个在跑）</span>"
+    : "开始学习";
   html += '<b>已选 ' + n + ' 个</b>' +
-    '<button class="mini primary" onclick="batchAction(\'start\')">开始学习</button>' +
-    '<button class="mini" onclick="batchAction(\'stop\')">停止</button>' +
+    (runningSel ? '<span class="tag t-learn">其中 ' + runningSel + " 个运行中</span>" : "") +
+    '<button class="mini primary" onclick="batchAction(\'start\')" title="' +
+    (runningSel ? "已在跑的账号会自动跳过，只启动空闲的；不重复开" : "启动选中账号的学习任务")
+    + '">' + startTag + "</button>" +
+    '<button class="mini" onclick="batchAction(\'stop\')" title="' +
+    (runningSel ? "停掉选中的运行中账号（没在跑的会提示没有任务）" : "停掉选中账号的学习任务")
+    + '">停止</button>' +
     '<button class="mini" onclick="batchAction(\'enable\')">启用</button>' +
     '<button class="mini" onclick="batchAction(\'disable\')">停用</button>' +
     '<button class="mini danger" onclick="batchAction(\'delete\')">删除</button>' +
@@ -1403,9 +1423,25 @@ async function batchAction(action) {
   if (!labels.length) return;
   const CN = { start: "开始学习", stop: "停止", enable: "启用",
                disable: "停用", delete: "删除" };
+  // 选中里有几个正在跑：只在「开始学习」前提醒（其余动作不受影响）
+  const cards = (STATE && STATE.cards) || [];
+  const runningSel = action === "start"
+    ? labels.filter((l) => {
+        const c = cards.find((x) => x.label === l);
+        return !!(c && c.job);
+      })
+    : [];
   if (action === "delete") {
     if (!confirm("删除选中的 " + labels.length + " 个账号？\n\n" +
       labels.join("、") + "\n\n只删账号表里这些条目；登录态快照与 profile 目录会保留。")) {
+      return;
+    }
+  } else if (action === "start" && runningSel.length) {
+    // 已有账号在跑时要先把话说清：不会重复开，会跳过（2026-11-06 用户问过这点）
+    if (!confirm("对选中的 " + labels.length + " 个账号执行「开始学习」？\n\n" +
+      "其中 " + runningSel.length + " 个正在跑（" + runningSel.join("、") +
+      "），会被自动跳过 —— 不会重复开同一个账号。\n" +
+      "只启动剩下 " + (labels.length - runningSel.length) + " 个空闲的。")) {
       return;
     }
   } else if (!confirm("对选中的 " + labels.length + " 个账号执行「" +
@@ -1422,8 +1458,32 @@ async function batchAction(action) {
     if (n > 12) n = 12;
     body.max_sections = n;
   }
-  const data = await apiPost("/api/accounts/batch", body);
-  toast(data.message || data.error || "已提交", !data.ok);
+  const data = await (async () => {
+    // 批量 N 个账号可能有 N 次端口探测，响应比单个慢得多；不设闸时连点会重复提交，
+    // 第二次必然全「已在跑」→ 满屏跳过提示（2026-11-06）。
+    if (BUSY) return null;
+    BUSY = true;
+    try {
+      return await apiPost("/api/accounts/batch", body);
+    } finally {
+      BUSY = false;
+    }
+  })();
+  if (!data) return;                                 // 上一批还没回来：忽略这次点击
+  // 汇总文案里已有「跳过 N 个（… 已在跑）」。只要没有**真失败**就按成功提示，
+  // 否则用户看到红色 toast 会以为批量挂了一半（2026-11-06）。
+  const realFail = Number(data.failed) || 0;
+  // 「浏览器没起」是最常见的失败原因，且**用户能自己解决** → 用持久提示条
+  // 把原文（端口号 + 启动命令）摊开，而不是 3 秒就消失的 toast。
+  const noBrowser = (data.results || []).filter((r) => !r.ok && r.need_browser);
+  if (noBrowser.length) {
+    // 用后端给的 `label` 显示，不用 display：编号与账号表一致，方便对着找那一行
+    showNotice("⚠ " + noBrowser.map((r) =>
+      String(r.message || (r.label + " 启动失败"))).join("<br><br>").replace(/\n/g, "<br>"),
+      true);
+  } else {
+    toast(data.message || data.error || "已提交", realFail > 0);
+  }
   if (data.ok && action === "delete") SEL.clear();
   load();
 }
@@ -1466,8 +1526,27 @@ function pick(label) {
   load();
 }
 
-function startStudy(label, n) {
-  post("/api/study", { label: label, max_sections: n });
+// 单账号「学习」：把「浏览器没起」这条**可照做**的提示摊开。
+// `post()` 只弹通用 toast 看 message/error，端口号与启动命令会被截断/一闪而过。
+// （2026-11-06 由 `startStudy` 改名扩写；原函数只发请求、失败只说一句泛化的话。）
+async function startStudySafe(label, n) {
+  // 与 `post()` 一样防连点：双击「学习」会起两个进程（后端虽会拦「已在跑」，
+  // 但第二次必然报错弹红条，体验差）。BUSY 与 `post()` 共用同一把闸。
+  if (BUSY) return;
+  BUSY = true;
+  let data = null;
+  try {
+    data = await apiPost("/api/study", { label: label, max_sections: n });
+  } finally {
+    BUSY = false;
+  }
+  if (data && data.ok) { toast(data.message || "已开始", false); load(); return; }
+  if (data && data.need_browser) {
+    showNotice("⚠ " + String(data.error || "").replace(/\n/g, "<br>"), true);
+  } else {
+    toast((data && (data.error || data.message)) || "没能启动", true);
+  }
+  load();
 }
 
 // 按行内输入框里的节数开始学习（2026-11-04）。
@@ -1482,7 +1561,9 @@ function startStudyN(btn) {
   if (n > max) { n = max; if (box) box.value = String(max); }
   if (n > 12) n = 12;
   SEC_N.set(label, n);           // 记住这次的选择
-  startStudy(label, n);
+  // 走 `startStudySafe`：浏览器没起时要把「端口 + 启动命令」摊开给人看，
+  // 而不是弹一句一闪而过的「开始刷课」（2026-11-06）。
+  startStudySafe(label, n);
 }
 
 // 记住「本次跑几节」的用户输入（2026-11-04）。

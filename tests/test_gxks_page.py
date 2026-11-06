@@ -99,7 +99,8 @@ class TestAccountTable(unittest.TestCase):
         self.assertIn("function pick(", PAGE)
 
     def test_row_buttons_present(self):
-        for fn in ("function startStudy(", "function stopJob(", "function refreshSectionsFor("):
+        for fn in ("function startStudySafe(", "function stopJob(",
+                   "function refreshSectionsFor("):
             self.assertIn(fn, PAGE)
 
     # ---------------------------------------------------------------- 多选与批量
@@ -120,6 +121,37 @@ class TestAccountTable(unittest.TestCase):
         # 批量删除不可逆：前端先 confirm，后端再要 confirm 标记
         self.assertIn("删除选中的 ", PAGE)
         self.assertIn("confirm: true", PAGE)
+
+    def test_running_accounts_stay_selectable_but_say_why(self):
+        """运行中的账号**仍可勾选**，但必须说清后果（2026-11-06 用户提问）。
+
+        不能直接禁用复选框：批量「停止」恰恰需要选中正在跑的账号。
+        所以只在 title / 按钮文案里解释「开始学习会跳过它」。
+        """
+        tr = PAGE.split("function acctTr(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("acct-pick", tr)
+        self.assertNotIn("disabled", tr.split("acct-pick")[1].split(">")[0],
+                         "运行中不许直接禁用复选框——批量停止要用到它")
+        self.assertIn("批量「开始学习」会自动跳过它", tr)
+
+    def test_batch_bar_warns_about_running_selection(self):
+        """批量栏要提前算出「选中的里有几个在跑」，并写进按钮文案。"""
+        bar = PAGE.split("function renderBatchBar(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("runningSel", bar)
+        self.assertIn("跳过 ", bar)
+        self.assertIn("其中 ", bar)          # 「其中 N 个运行中」标签
+
+    def test_batch_start_confirm_explains_skipping(self):
+        body = PAGE.split("async function batchAction(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("会被自动跳过", body)
+        self.assertIn("不会重复开", body)
+
+    def test_start_study_surfaces_browser_error(self):
+        """单账号学习也要把「浏览器没起」的原文摊开（不能一闪而过的 toast）。"""
+        self.assertIn("async function startStudySafe(", PAGE)
+        body = PAGE.split("async function startStudySafe(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("need_browser", body)
+        self.assertIn("showNotice", body)
 
     # ---------------------------------------------------------------- 搜索与筛选
 

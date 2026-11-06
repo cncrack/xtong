@@ -125,13 +125,33 @@ class TestGxksPanel(unittest.TestCase):
         self.assertIn("14670", argv)
 
     def test_study_spawns_with_account_port(self):
-        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn:
+        # 端口探活必须替身成 True：`_study_one` 现在**先确认浏览器开着**
+        # （2026-11-06 加）。不替身的话这条测试会随本机 9222 是否真有 Chrome
+        # 而红绿不定 —— 之前它"能过"纯属开发机正好开着浏览器。
+        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn, \
+             mock.patch("xxt.panel_gxks.app.gchrome.port_alive", return_value=True):
             spawn.return_value = mock.Mock(pid=1)
             self.client.post("/api/study", json={"label": "jia", "max_sections": 99})
             argv = list(spawn.call_args.args[4:])
         self.assertEqual(argv[argv.index("--port") + 1], "9222")
         # 上限收紧到 12：面板不给“一次刷一整天”的入口
         self.assertEqual(argv[argv.index("--max-sections") + 1], "12")
+
+    def test_study_refuses_when_browser_down(self):
+        """浏览器没开：**提前拦下**，不起进程。
+
+        2026-11-06 用户问「多个账号要一个个点吗」时发现：`run_gxks.py` 连不上 CDP
+        会立刻退出，而面板已经回了 `ok:true` → 用户看到"启动了但什么都没发生"。
+        批量启动会把这个坑放大 N 倍，所以起步前统一拦。
+        """
+        with mock.patch("xxt.panel_gxks.app._spawn_script") as spawn, \
+             mock.patch("xxt.panel_gxks.app.gchrome.port_alive", return_value=False):
+            body = self.client.post("/api/study", json={"label": "jia"}).json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["need_browser"])
+        self.assertIn("9222", body["error"])
+        self.assertIn("启动并登录", body["error"])
+        spawn.assert_not_called()
 
     def test_sections_refresh_spawns_all_pages(self):
         # 端口探活必须 mock 成 True：接口**先探浏览器端口**（2026-11-03 加），

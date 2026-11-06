@@ -109,30 +109,73 @@ class TestAccountsBatch(unittest.TestCase):
 
     # ---------------------------------------------------------------- 开始（走与单个相同的逻辑）
 
-    def test_start_spawns_each_account(self):
-        with mock.patch.object(panel_app, "_spawn_script") as spawn:
+    def _start(self, labels, **kw) -> dict:
+        """批量启动的统一夹具：端口探活替身成活（否则 2026-11-06 加的端口闸会全拦下）。"""
+        with mock.patch.object(panel_app, "_spawn_script") as spawn, \
+             mock.patch.object(panel_app.gchrome, "port_alive", return_value=True):
             spawn.return_value = mock.Mock(pid=4321)
-            body = self._batch(["a1", "a2"], "start", max_sections=5)
+            body = self._batch(labels, "start", **kw)
+        self.spawn = spawn
+        return body
+
+    def test_start_spawns_each_account(self):
+        body = self._start(["a1", "a2"], max_sections=5)
         self.assertTrue(body["ok"])
-        self.assertEqual(spawn.call_count, 2)
-        argv = list(spawn.call_args.args[4:])
+        self.assertEqual(self.spawn.call_count, 2)
+        argv = list(self.spawn.call_args.args[4:])
         # 端口按各自的账号表走，不猜
         self.assertIn("--port", argv)
 
     def test_start_skips_account_already_running(self):
-        """批量启动与单个启动同语义：已有任务在跑的**跳过**，其余照跑。"""
+        """批量启动与单个启动同语义：已有任务在跑的**跳过**，其余照跑。
+
+        「已在跑」是**预期内的跳过**，不是失败：汇总里要分开数，
+        否则用户看到「1 个没做成」会以为出错了（2026-11-06）。
+        """
         proc = mock.Mock(pid=1)
         proc.poll.return_value = None
         panel_app._JOBS["a1"] = {"proc": proc, "label": "a1", "kind": "study",
                                  "since": "12:00:00", "log": Path("nope.log"),
                                  "detail": ""}
-        with mock.patch.object(panel_app, "_spawn_script") as spawn:
-            spawn.return_value = mock.Mock(pid=2)
-            body = self._batch(["a1", "a2"], "start")
-        self.assertEqual(spawn.call_count, 1)          # 只起了 a2
+        body = self._start(["a1", "a2"])
+        self.assertEqual(self.spawn.call_count, 1)     # 只起了 a2
         self.assertEqual(body["done"], 1)
-        self.assertEqual(body["failed"], 1)
-        self.assertIn("a1", body["error"])
+        self.assertEqual(body["skipped"], 1)           # 跳过 ≠ 失败
+        self.assertEqual(body["failed"], 0)
+        self.assertTrue(body["ok"])                    # 没有真失败 → 不该弹红提示
+        self.assertIn("跳过 1 个", body["message"])
+        self.assertIn("a1", body["message"])
+
+    def test_start_reports_accounts_without_browser(self):
+        """浏览器没开的账号：不起进程，回包里带 `need_browser` 供前端摊开提示。"""
+        with mock.patch.object(panel_app, "_spawn_script") as spawn, \
+             mock.patch.object(panel_app.gchrome, "port_alive", return_value=False):
+            body = self._batch(["a1", "a2"], "start")
+        spawn.assert_not_called()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["failed"], 2)
+        for r in body["results"]:
+            self.assertTrue(r["need_browser"], f"{r['label']} 应标记 need_browser")
+            self.assertIn("9222" if r["label"] == "a1" else "9223", r["message"])
+
+    def test_non_start_actions_do_not_probe_ports(self):
+        """停止/启用/停用/删除不看浏览器 —— 白探一轮最坏吃满 timeout（2026-11-06）。"""
+        with mock.patch.object(panel_app.gchrome, "ports_alive") as ports_alive, \
+             mock.patch.object(panel_app.gchrome, "port_alive") as port_alive:
+            self._batch(["a1", "a2"], "enable")
+        ports_alive.assert_not_called()
+        port_alive.assert_not_called()
+
+    def test_start_probes_ports_concurrently(self):
+        """批量启动必须**并发**探活：否则 N 个账号最坏 N × 0.5 秒。"""
+        with mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: True, 9223: True}) as ports_alive, \
+             mock.patch.object(panel_app, "_spawn_script") as spawn:
+            spawn.return_value = mock.Mock(pid=1)
+            body = self._batch(["a1", "a2"], "start")
+        ports_alive.assert_called_once()
+        self.assertEqual(sorted(ports_alive.call_args.args[0]), [9222, 9223])
+        self.assertEqual(body["done"], 2)
 
     # ---------------------------------------------------------------- 停止
 

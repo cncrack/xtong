@@ -1046,12 +1046,71 @@ def _read_json(path: Path | None) -> dict[str, Any] | None:
 # 走**同一段逻辑**——否则批量那条路早晚会跟单个那条走偏（比如漏掉"在跑就不重复起"）。
 
 
+def _require_browser_port(settings: Settings, acc: Any,
+                          alive: bool | None = None) -> dict[str, Any] | None:
+    """起任务前先确认浏览器还开着；没开就返回一条**可照做**的拒绝回包，否则 None。
+
+    ## 为什么要提前拦（2026-11-06 用户问「多个账号要一个个点吗」时发现）
+
+    `run_gxks.py` 第一步就是 `open_session()` 连 CDP。浏览器没开时它会
+
+    ```
+    [FAIL] 连不上 CDP http://127.0.0.1:9222
+    ```
+
+    然后**立刻退出**（`return 2`）。面板这边已经 `ok:true` 提示「开始刷课」了，
+    用户看到的是「启动了但什么都没发生」，日志里躺着一行失败。
+
+    批量启动把这个坑放大 N 倍：7 个账号里有几个浏览器没开，就是几个白起的进程。
+
+    `refresh_sections` 早就做了这件事（2026-11-03），但**单账号学习和批量学习
+    这两条主路反而漏了** —— 说明只在一处手写判断迟早会漏，所以抽成函数共用。
+
+    managed 后端不探测：那种形态下浏览器由脚本自己起，端口本来就不该有人听。
+
+    `alive` 允许批量调用方把**一次并发探好**的结果传进来：串行探 N 个账号
+    最坏 N × 0.5 秒（见 `chrome.port_alive` 的 timeout 说明），7 个账号能拖 3.5 秒。
+    """
+    if gbrowser.backend_of(settings) == "managed":
+        return None
+    if alive is None:
+        try:
+            alive = gchrome.port_alive(acc.port)
+        except Exception:                                  # noqa: BLE001  探活失败按没开处理
+            alive = False
+    if alive:
+        return None
+    name = acc.display or acc.label
+    # profile 目录**不能写死** `data/profiles/<label>`：账号表允许自定义 `profile`，
+    # 写死的话给的启动命令会开错目录 —— 用户照着敲只会得到一个没有登录态的浏览器。
+    try:
+        profile = gbrowser.cdp_profile(settings, acc.label, acc)
+    except (gbrowser.SessionError, ValueError, OSError):
+        profile = Path("data") / "profiles" / acc.label
+    return {"ok": False, "need_browser": True,
+            "error": f"「{name}」的浏览器没启动（端口 {acc.port} 连不上）。\n"
+                     "先在右侧「浏览器与会话」点「启动并登录」，或手动执行：\n"
+                     f'"{gchrome.find_chrome() or "chrome.exe"}" '
+                     f'--remote-debugging-port={acc.port} '
+                     f'--user-data-dir="{profile}"'}
+
+
 def _study_one(settings: Settings, label: str,
-               max_sections: object = None, sections: object = None) -> dict[str, Any]:
-    """给一个账号起刷课子进程。返回面板回包（`ok`/`error`/`message`）。"""
+               max_sections: object = None, sections: object = None,
+               port_alive: bool | None = None) -> dict[str, Any]:
+    """给一个账号起刷课子进程。返回面板回包（`ok`/`error`/`message`）。
+
+    `port_alive` 供批量调用方传入**已经并发探好**的结果（见 `_require_browser_port`）。
+    """
     acc = _account(settings, label)
     if any(j["label"] == acc.label for j in _jobs_snapshot()):
-        return {"ok": False, "error": "该账号已有任务在跑"}
+        # `skipped` 与「失败」分开：批量启动时「已在跑」是**预期内的跳过**，不是错误。
+        # 混在一起会让汇总显示「2 个没做成」，用户以为出问题了（2026-11-06）。
+        return {"ok": False, "skipped": True,
+                "error": "该账号已有任务在跑"}
+    refused = _require_browser_port(settings, acc, port_alive)
+    if refused:
+        return refused
     n = int(max_sections or 3)
     args = ["--label", acc.label, "--account-label", acc.label,
             "--port", str(acc.port),
@@ -1254,13 +1313,10 @@ def create_app(settings: Settings) -> FastAPI:
         # **先探浏览器端口**（2026-11-03 实测的坑）：Chrome 没开时脚本要连 CDP 才报
         # `ECONNREFUSED`，表现是「点了刷新 → 任务跑一下 → 消失」，用户不知道要开浏览器。
         # 这里提前拦下，直接在按钮旁给出可照做的提示，不用白等一分钟。
-        if not gchrome.port_alive(acc.port):
-            return {"ok": False, "need_browser": True,
-                    "error": f"浏览器没启动（端口 {acc.port} 连不上）。"
-                             "点右侧「启动并登录」自动拉起，或手动执行：\n"
-                             f'"{gchrome.find_chrome() or "chrome.exe"}" '
-                             f'--remote-debugging-port={acc.port} '
-                             f'--user-data-dir="data/profiles/{label}"'}
+        # 2026-11-06 抽成 `_require_browser_port`，与单账号/批量学习共用同一份判据。
+        refused = _require_browser_port(settings, acc)
+        if refused:
+            return refused
         args = ["--label", label, "--port", str(acc.port), "--all"]
         course = sections_cache.safe_course(body.get("course"))
         if course:
@@ -1642,10 +1698,19 @@ def create_app(settings: Settings) -> FastAPI:
                 return {"ok": False,
                         "error": "这批会把账号删光；请至少留一个账号"}
 
+        # 端口探活**只对「开始学习」有意义**，且要**一次并发做完**再逐个判定：
+        # 串行探 N 个账号最坏 N × timeout（批量 7 个能拖 3.5 秒）；
+        # 停止/启用/停用/删除根本不看浏览器，白探一轮纯浪费（2026-11-06）。
+        alive_map: dict[int, bool] = {}
+        if action == "start":
+            ports = {a.label: a.port for a in gaccounts.load_accounts()}
+            alive_map = gchrome.ports_alive(
+                [ports[l] for l in labels if l in ports])
         results: list[dict[str, Any]] = []
         for label in labels:
             if action == "start":
-                got = _study_one(settings, label, body.get("max_sections"))
+                got = _study_one(settings, label, body.get("max_sections"),
+                                 port_alive=alive_map.get(ports.get(label, 0)))
             elif action == "stop":
                 got = _stop_one(settings, label)
             elif action in ("enable", "disable"):
@@ -1668,19 +1733,30 @@ def create_app(settings: Settings) -> FastAPI:
                 else:
                     got = {"ok": False, "error": "账号表里没有它"}
             results.append({"label": label, "ok": bool(got.get("ok")),
+                            "skipped": bool(got.get("skipped")),
+                            "need_browser": bool(got.get("need_browser")),
                             "message": str(got.get("message") or got.get("error") or "")})
 
         done = [r for r in results if r["ok"]]
-        failed = [r for r in results if not r["ok"]]
+        skipped = [r for r in results if not r["ok"] and r["skipped"]]
+        failed = [r for r in results if not r["ok"] and not r["skipped"]]
         names = "、".join(r["label"] for r in done) or "（无）"
+        # 汇总文案必须把三类分开说，否则用户分不清「跳过的」和「真出错的」。
+        # `ok` 只反映**有没有真失败**：全是「已在跑」的跳过时仍算成功，
+        # 否则前端会弹红 toast，像批量挂了（2026-11-06）。
+        note = ""
+        if skipped:
+            note += f"；跳过 {len(skipped)} 个（{ '、'.join(r['label'] for r in skipped) } 已在跑）"
         if failed:
             why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
-            return {"ok": bool(done), "results": results, "done": len(done),
-                    "failed": len(failed),
-                    "error": f"{len(failed)} 个没做成——{why}",
-                    "message": f"完成 {len(done)} 个（{names}）"}
-        return {"ok": True, "results": results, "done": len(done), "failed": 0,
-                "message": f"完成 {len(done)} 个（{names}）"}
+            more = "" if len(failed) <= 5 else f" 等 {len(failed)} 个"
+            return {"ok": False, "results": results, "done": len(done),
+                    "skipped": len(skipped), "failed": len(failed),
+                    "error": f"{len(failed)} 个没做成{more}——{why}",
+                    "message": f"完成 {len(done)} 个（{names}）{note}"}
+        return {"ok": True, "results": results, "done": len(done),
+                "skipped": len(skipped), "failed": 0,
+                "message": f"完成 {len(done)} 个（{names}）{note}"}
 
     # ---------------------------------------------------------------- AI 配置（为 B5 做准备）
     #
