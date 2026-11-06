@@ -358,8 +358,13 @@ table.acct-tbl td.c-today .c-r24{display:block;margin-top:1px;
 /* 批量行略降一级：字号更小、边界更柔 */
 .bgrp-batch .bgrp-btn{font-size:11.5px;padding:4px 7px}
 .bgrp-batch{flex-wrap:wrap}
+/* 「已选 N 个」提示（2026-11-06）：
+   ⚠ 空着时**完全不占位**（`display:none`），不再像上一版那样常驻一行「未选中」——
+   用户说「未选中是做什么，感觉没有用」。只有真选中了才有意义，所以没选中就藏起来，
+   把那一行的高度还给按钮（4 个批量按钮因此能挤进一行）。 */
 .b-note{flex:1 1 100%;color:var(--dim);font-size:11.5px;margin:1px 0 0;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b-note:empty{display:none}
 @media (max-width:760px){
   /* 手机宽度：一列一个，按钮 38px 高（手指可点） */
   .bgrp-btn{flex:1 1 100%;min-height:38px}
@@ -758,17 +763,17 @@ button.mini{padding:3px 9px;font-size:13px}
     <div class="bgrp bgrp-batch">
       <span class="bgrp-title" title="批量：对多个账号一起操作（勾选在表格最左侧复选框）">批量</span>
       <button id="btn-ball" class="bgrp-btn bgrp-btn--sub" type="button" onclick="batchSelectAll()"
-        title="选中当前筛选里可见、且浏览器没开或没在跑的账号">全选待启动</button>
+        title="选中当前筛选里可见、且浏览器没开或没在跑的账号（再点一次取消）">全选</button>
       <button id="btn-bstudy" class="bgrp-btn primary" type="button"
         onclick="batchBrowserAction('start-and-study')"
-        title="一键：起浏览器 → 等端口就绪 → 开始学习（每个约 10~40 秒）">一键启动并学习</button>
+        title="一键：起浏览器 → 等端口就绪 → 开始学习（每个约 10~40 秒）">启动并学习</button>
       <button id="btn-bbrowser" class="bgrp-btn bgrp-btn--sub" type="button"
         onclick="batchBrowserAction('start-browser')"
-        title="只启动浏览器（不开始学习）：为选中的账号逐个拉起 Chrome，每个约 10~40 秒">只启动浏览器</button>
+        title="只启动浏览器（不开始学习）：为选中的账号逐个拉起 Chrome，每个约 10~40 秒">只启浏览器</button>
       <button id="btn-bstopall" class="bgrp-btn bgrp-btn--sub" type="button"
         onclick="batchBrowserAction('stop')"
-        title="停掉选中账号的学习任务（没在跑的会跳过，不算失败）">批量停止</button>
-      <span class="b-note" id="b-batch-note">未选中</span>
+        title="停掉选中账号的学习任务（没在跑的会跳过，不算失败）">停止</button>
+      <span class="b-note" id="b-batch-note"></span>
     </div>
     <div id="browser"></div>
 
@@ -2443,14 +2448,23 @@ function renderBrowserBatch() {
   const n = BATCH_SEL.size;
   const note = el("b-batch-note");
   if (note) {
-    const names = [...BATCH_SEL].slice(0, 4).join("、");
+    // ⚠ 没选中时**置空**（不是写「未选中」）—— 配合 CSS `.b-note:empty{display:none}`，
+    // 让这一行完全不占高度，4 个批量按钮才能挤进同一行（2026-11-06 用户要求）。
+    // 有选中时显示「已选 N 个（甲、乙…）」，这才是真正需要看的信息。
+    const names = [...BATCH_SEL].slice(0, 5).join("、");
     note.textContent = n
-      ? "已选 " + n + " 个" + (n > 4 ? "（" + names + " 等）" : "（" + names + "）")
-      : "未选中";
+      ? "已选 " + n + " 个：" + names + (n > 5 ? " 等" : "") + "（可在表格勾选调整）"
+      : "";
   }
   for (const id of ["btn-bbrowser", "btn-bstudy", "btn-bstopall"]) {
     const b = el(id);
     if (b) b.disabled = n === 0;
+  }
+  // 「全选」按钮也跟着置灰：可见账号全都不可选（都在跑）时点了也没用
+  const selAll = el("btn-ball");
+  if (selAll) {
+    const pickable = ((STATE && STATE.cards) || []).filter((c) => !c.job);
+    selAll.disabled = pickable.length === 0;
   }
 }
 

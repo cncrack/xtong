@@ -1083,6 +1083,38 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertNotIn(".bgrp-btn{flex:1 1 44%", PAGE)
         self.assertNotIn(".bgrp-title{flex:1 1 100%", PAGE)
 
+    def test_batch_row_fits_in_one_line(self):
+        """批量行 4 个按钮必须能挤进一行（2026-11-06 用户：「批量停止能不能和上面同一行」）。
+
+        侧栏内容宽最窄约 315px；按 11.5px 字号 + 左右 7px padding + 1px 边框算，
+        4 个按钮（全选/启动并学习/只启浏览器/停止）+ 38px 标题 + 4 个 5px gap ≈ 288px。
+        这条测试锁住**文案长度**：谁把「停止」改回「批量停止」、把「只启浏览器」
+        改回「只启动浏览器」，总宽就会超出一行、又变成两行。
+        """
+        FONT, PAD, BORDER, GAP, TITLE = 11.5, 14, 2, 5, 38
+
+        def width(text: str) -> float:
+            return sum(FONT if ord(ch) > 0x2000 else FONT * 0.55 for ch in text)
+
+        total = TITLE + GAP
+        for text in ("全选", "启动并学习", "只启浏览器", "停止"):
+            self.assertIn(">" + text + "</button>", PAGE,
+                          f"批量按钮文案「{text}」变了，需重算一行是否放得下")
+            total += width(text) + PAD + BORDER + GAP
+        self.assertLessEqual(total, 315,
+                             f"批量行总宽 {total:.0f}px 超过最窄侧栏 315px，会换行")
+
+    def test_empty_selection_note_takes_no_space(self):
+        """没选中时那行提示**完全不占高度**（用户：「未选中是做什么，感觉没有用」）。
+
+        做法：JS 置空 textContent + CSS `.b-note:empty{display:none}`；
+        必须成对存在，只改一边都会留一个空白行或显示「未选中」。
+        """
+        self.assertIn(".b-note:empty{display:none}", PAGE)
+        body = PAGE.split("function renderBrowserBatch(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn(': "";', body)          # 没选中时置空
+        self.assertNotIn('"未选中"', body)    # 不再写那句无用文案
+
     def test_lifecycle_buttons_keep_semantics(self):
         """启动是主操作、停止是危险操作，语义不能因为重排丢掉。"""
         self.assertIn('id="btn-bstart" class="bgrp-btn primary"', PAGE)
