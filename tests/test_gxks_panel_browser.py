@@ -155,10 +155,16 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertIn("没找到 Chrome", body["error"])
 
     def test_start_success_registers_pid_then_stop_kills_it(self):
+        # pid 777 是合成的：`started_by_panel` 现在要求「登记过 + 进程还活着」，
+        # 真实环境里那个 pid 当然不存在。这里把存活判定与镜像名一起替身，
+        # 测的是**登记 → 认 → 停**这条链路，不是 Windows 的 pid 语义。
         with mock.patch.object(panel_app, "_start_chrome_interactive",
                                return_value={"ok": True, "pid": 777}) as start, \
              mock.patch.object(panel_app, "_chrome_start_message",
                                return_value="已登录"), \
+             mock.patch.object(panel_app.runmark, "pid_alive", return_value=True), \
+             mock.patch.object(panel_app.gchrome, "process_image",
+                               return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe"), \
              mock.patch.object(panel_app, "_kill_pid", return_value="已停止") as kill:
             body = self.client.post("/api/browser/start", json={"label": "jia"}).json()
             self.assertTrue(body["ok"])

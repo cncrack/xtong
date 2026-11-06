@@ -681,7 +681,7 @@ button.mini{padding:3px 9px;font-size:13px}
       <button id="btn-bstart" class="bgrp-btn primary" onclick="startBrowser()"
         title="用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）">启动并登录</button>
       <button id="btn-bstop" class="bgrp-btn danger"
-        onclick="post('/api/browser/stop', { label: browserLabel() })"
+        onclick="stopBrowser()"
         title="只停面板自己拉起的那个 Chrome">停止</button>
       <button id="btn-bcopy" class="mini" type="button" onclick="copyChromeCmd()"
         title="复制该账号的 Chrome 启动命令（面板在非交互会话里无法启动 GUI 程序时用）">复制命令</button>
@@ -2085,6 +2085,24 @@ async function startBrowser() {
   if (data && data.ok && data.message) {
     showNotice("✅ " + data.message.replace(/\n/g, "<br>"));
   }
+}
+
+// 停浏览器 = **杀 Chrome 进程**，与行内「停止」（停学习任务、Chrome 留着）不是一回事
+// （2026-11-06 用户问「两处停止有什么区别」）。有任务在跑时必须先说清后果：
+// Chrome 一死，刷课子进程立刻丢 CDP 连接、任务报错退出，那一节的学时可能白刷。
+async function stopBrowser() {
+  const who = browserLabel();
+  const card = ((STATE && STATE.cards) || []).find((c) => c.label === who);
+  const running = !!(card && card.job);
+  if (running) {
+    const ok = confirm("「" + ((card && (card.display || card.label)) || who) +
+      "」的学习任务正在跑。\n\n" +
+      "停浏览器会关掉 Chrome，任务当场断连、这一节可能刷不完。\n" +
+      "只想停刷课、把浏览器留着 → 先点该账号行里的「停止」。\n\n" +
+      "仍然要关掉浏览器吗？");
+    if (!ok) return;
+  }
+  await post("/api/browser/stop", { label: who });
 }
 
 async function checkSession() {

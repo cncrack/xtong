@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from ...core import runmark
 from . import selectors
 
 #: **绕过系统代理**的 opener：本机 `127.0.0.1` 永远不该走代理。
@@ -181,3 +183,123 @@ def start(chrome: str | Path, *, port: int, profile: str | Path,
 def default_start_url() -> str:
     """启动时打开哪一页：学习入口（人登录完就能直接点课）。"""
     return selectors.MAIN_PAGE
+
+
+# ------------------------------------------------------------ 归属判定（谁起的这个 Chrome）
+
+#: Chrome 在 `--user-data-dir` 里放的**单实例锁**：一个 profile 同时只能被一个
+#: Chrome 实例持有。它的 mtime ≈ 该实例启动时刻，因此能配 `runmark.pid_owns_file`
+#: 判断「占着这份 profile 的，是不是监听这个端口的那个进程」。
+#:
+#: ⚠ **不要**改用 `DevToolsActivePort`：本机实测它只在
+#: `--remote-debugging-port=0`（随机端口）时才写；面板用的是显式端口，
+#: 那个文件根本不存在（2026-11-06 实测踩到，原方案当场失效）。
+_PROFILE_LOCK = "lockfile"
+
+
+def listening_pid(port: int) -> int:
+    """谁在监听这个 TCP 端口 → pid；查不到返回 0。
+
+    用 `GetExtendedTcpTable`（ctypes，毫秒级）而不是 `netstat -ano` 子进程：
+    `/api/state` 每 4 秒轮询一次，起子进程会把界面拖慢。
+    """
+    if sys.platform != "win32":
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Row(ctypes.Structure):
+            _fields_ = [("state", wintypes.DWORD),
+                        ("local_addr", wintypes.DWORD),
+                        ("local_port", wintypes.DWORD),
+                        ("remote_addr", wintypes.DWORD),
+                        ("remote_port", wintypes.DWORD),
+                        ("pid", wintypes.DWORD)]
+
+        af_inet, table_listener = 2, 3
+        iphlpapi = ctypes.windll.iphlpapi
+        size = wintypes.DWORD(0)
+        iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False,
+                                    af_inet, table_listener, 0)
+        if not size.value:
+            return 0
+        buf = ctypes.create_string_buffer(size.value)
+        if iphlpapi.GetExtendedTcpTable(buf, ctypes.byref(size), False,
+                                        af_inet, table_listener, 0) != 0:
+            return 0
+        count = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD))[0]
+        rows = ctypes.cast(ctypes.addressof(buf) + ctypes.sizeof(wintypes.DWORD),
+                           ctypes.POINTER(_Row))
+        for i in range(int(count)):
+            # dwLocalPort 低 16 位是**网络字节序**，要转回主机序才能比
+            if socket.ntohs(rows[i].local_port & 0xFFFF) == int(port):
+                return int(rows[i].pid)
+    except Exception:                                      # noqa: BLE001  拿不到就当不知道
+        return 0
+    return 0
+
+
+def process_image(pid: int) -> str:
+    """进程的完整可执行文件路径；查不到返回 ""。
+
+    用来兜最后一道：pid 复用时它可能是个完全无关的进程，绝不能 taskkill。
+    """
+    if sys.platform != "win32" or int(pid) <= 0:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED
+        if not h:
+            return ""
+        try:
+            size = wintypes.DWORD(32768)
+            path = ctypes.create_unicode_buffer(size.value)
+            if not ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                    h, 0, path, ctypes.byref(size)):
+                return ""
+            return path.value
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:                                      # noqa: BLE001
+        return ""
+
+
+def owner_pid(profile: str | Path, port: int) -> int:
+    """**这份 profile 的 Chrome 是否正占着该调试端口**；是则返回它的 pid，否则 0。
+
+    ## 为什么需要（2026-11-06 用户实拍「停止浏览器」灰着 / 点了不敢杀）
+
+    「停止浏览器」原来只认面板**内存**里的登记表（`_BROWSERS`）。面板一重启表就空了
+    → 明明是面板自己刚拉起的 Chrome，界面却显示「不是面板起的」，按钮点了也不敢杀，
+    只能让用户手动关窗口。
+
+    这里改成看**现场证据**，重启前后都成立（三道全过才返回 pid）：
+
+    ① 端口确实有人在听 —— `listening_pid`；
+    ② 听的人**是 Chrome** —— `process_image` 末段是 `chrome.exe`
+       （防 pid 复用把无关进程当成浏览器）；
+    ③ 它**占着这份 profile** —— profile 的 `lockfile` 存在，且进程创建时间
+       不晚于该文件 mtime（`runmark.pid_owns_file`，与任务认领同一套判据）。
+
+    用户日常的 Chrome 用的是**自己的** profile，第 ③ 条过不去 —— 动不到它。
+    """
+    pid = listening_pid(port)
+    if pid <= 0:
+        return 0
+    image = process_image(pid)
+    if image and "chrome" not in Path(image).name.lower():
+        return 0
+    lock = Path(profile) / _PROFILE_LOCK
+    try:
+        if not lock.is_file():
+            return 0
+        mtime = lock.stat().st_mtime
+    except OSError:
+        return 0
+    created = runmark.pid_create_time(pid)
+    if created > 0 and created > mtime + 5:     # 5 秒容忍：时间戳精度 / 时钟抖动
+        return 0                                # 这个 pid 是后来才有的 → 不是它占的 profile
+    return pid

@@ -42,9 +42,16 @@ class TestBrowserButtonsUseShownAccount(unittest.TestCase):
                       "浏览器区按钮要作用于**当前显示**的账号（悬停优先）")
 
     def test_stop_button_passes_browser_label(self):
-        """右侧「停止」按钮必须显式传当前显示的账号，不能靠 `post()` 的默认 `LABEL`。"""
+        """右侧「停止」按钮必须作用于**当前显示**的账号，不能靠 `post()` 的默认 `LABEL`。
+
+        2026-11-06 改成走 `stopBrowser()`（多了「任务跑着时先确认」），
+        但这条约定不变：取账号必须经 `browserLabel()`。
+        """
         seg = PAGE.split('id="btn-bstop"', 1)[1].split(">", 1)[0]
-        self.assertIn("browserLabel()", seg)
+        self.assertIn("stopBrowser()", seg)
+        body = PAGE.split("async function stopBrowser()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("browserLabel()", body,
+                      "停止浏览器必须作用于当前显示的账号（悬停优先）")
         self.assertNotIn('onclick="post(\'/api/browser/stop\')"', PAGE,
                          "裸调 /api/browser/stop 会用选中的 LABEL → 悬停时停错账号")
 

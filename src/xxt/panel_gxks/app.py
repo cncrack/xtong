@@ -772,6 +772,210 @@ def _kill_pid(pid: int) -> str:
         return f"停止失败：{exc}"
 
 
+# ------------------------------------------------------- 浏览器登记（面板重启后仍认得出）
+
+def _browser_registry_path(settings: Settings) -> Path:
+    """浏览器登记文件：面板重启后靠它把「自己起的 Chrome」认回来。
+
+    ## 为什么需要（2026-11-06 用户实拍）
+
+    `_BROWSERS` 是**内存表**。面板一重启就空了 → 自己刚拉起的 Chrome 变成
+    「不是面板起的」：界面上「停止」按钮灰着，接口也不敢杀，只能让用户手动关窗口。
+    与任务登记（`gxks_jobs.json`）同一思路，落盘即可跨重启。
+    """
+    return settings.data_dir / "gxks_browsers.json"
+
+
+def _read_browser_registry(settings: Settings) -> dict[str, Any]:
+    p = _browser_registry_path(settings)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_browser_registry(settings: Settings, data: dict[str, Any]) -> None:
+    p = _browser_registry_path(settings)
+    try:
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def _remember_browser(settings: Settings, label: str, pid: int,
+                      port: int, profile: Path | str) -> None:
+    """记下「面板为这个账号起了 Chrome」（内存 + 落盘）。"""
+    info = {"pid": int(pid), "port": int(port), "profile": str(profile),
+            "since": time.strftime("%H:%M:%S"),
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    with _BROWSER_LOCK:
+        _BROWSERS[label] = dict(info)
+    data = _read_browser_registry(settings)
+    data[label] = info
+    _save_browser_registry(settings, data)
+
+
+def _forget_browser(settings: Settings, label: str) -> None:
+    data = _read_browser_registry(settings)
+    if data.pop(label, None) is not None:
+        _save_browser_registry(settings, data)
+
+
+def _browser_owner_pid(settings: Settings, label: str, port: int) -> int:
+    """面板为该账号起的 Chrome 进程 pid；认不出返回 0（调用方不得杀）。
+
+    判据两道，**任一成立即可**：
+
+    ① **登记过**（内存或落盘）+ 现场证据对得上 `gchrome.owner_pid()`
+       —— 正常路径，pid 复用也拦得住；
+    ② 没登记但**现场证据成立**：`data/profiles/<label>` 是本工具专用目录，
+       它的 `lockfile` 正被一个 chrome.exe 占着、且该进程就在听这个调试端口。
+       这条专门兜「登记表是后来才加的、旧 Chrome 没有登记」的情况
+       （用户 2026-11-06 实拍：09:13:59 起的 Chrome 认不出来）。
+     """
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), label)
+    with _BROWSER_LOCK:
+        own = _BROWSERS.get(label)
+    if own is None:
+        own = _read_browser_registry(settings).get(label)
+
+    if isinstance(own, dict):
+        try:
+            profile = Path(str(own.get("profile")
+                                or gbrowser.cdp_profile(settings, label, acc)))
+        except (gbrowser.SessionError, OSError, ValueError):
+            profile = None
+        if profile is not None:
+            live = gchrome.owner_pid(profile, int(own.get("port") or port))
+            if live > 0:
+                return live
+            # 证据链不完整（端口还没起来 / 锁文件被清）时，退回登记 pid + 镜像名守卫
+            pid = int(own.get("pid") or 0)
+            if pid and runmark.pid_alive(pid):
+                image = gchrome.process_image(pid)
+                if image and "chrome" in Path(image).name.lower():
+                    return pid
+
+    # ② 没登记也能靠现场证据认定（本工具专用 profile）
+    return _owned_pid(settings, label, acc, port)
+
+
+def _browser_registered_alive(own: dict[str, Any] | None) -> bool:
+    """登记过的浏览器是否**还活着**（决定「停止」按钮能不能点）。
+
+    只判 pid，不探端口：端口探测在本机可能因防火墙规则吃满一个 timeout，
+    拿它当「活没活」会让按钮每 4 秒闪一次。pid 复用由镜像名兜一道。
+    """
+    if not isinstance(own, dict):
+        return False
+    pid = int(own.get("pid") or 0)
+    if pid <= 0:
+        return True
+    if not runmark.pid_alive(pid):
+        return False
+    image = gchrome.process_image(pid)
+    return (not image) or ("chrome" in Path(image).name.lower())
+
+
+def _owned_pid(settings: Settings, label: str, acc: Any, port: int) -> int:
+    """只看现场证据，判断这个账号的专用 profile 是否正被 Chrome 占着该端口。
+
+    `data/profiles/<label>` 是**本工具专用**目录（用户日常 Chrome 用自己的 profile），
+    所以「这份 profile 的 lockfile 被占 + 该端口在听 + 听的是 chrome.exe」
+    就足以断定是本工具起的，无需依赖内存/落盘登记。
+    """
+    if not label or not port:
+        return 0
+    try:
+        profile = gbrowser.cdp_profile(settings, label, acc)
+    except (gbrowser.SessionError, OSError, ValueError):
+        return 0
+    return gchrome.owner_pid(profile, port)
+
+
+def adopt_orphan_browsers(settings: Settings) -> list[dict[str, Any]]:
+    """启动时把「面板起过、现在还在跑」的 Chrome 认回 `_BROWSERS`。
+
+    ## 两个来源，缺一不可（2026-11-06）
+
+    ① **落盘登记**：正常路径。面板重启后照登记把 pid 认回来；
+    ② **现场证据**：兜底。登记表是这次才加的 —— 之前那个版本起的 Chrome
+       没有登记（用户实拍的就是这种：09:13:59 起，面板 09:13:59 也重启了）。
+       光靠 ① 会让用户以为「还是修不好」，所以对账号表里每个账号再探一次
+       `_owned_pid()`：认得出就补登记，认不出才放弃。
+
+    认定不了的旧条目**顺手清掉**，不留垃圾 —— 否则下次还会拿一个死 pid 去猜。
+    """
+    data = _read_browser_registry(settings)
+    adopted: list[dict[str, Any]] = []
+    stale: list[str] = []
+
+    for label, info in list(data.items()):
+        if not isinstance(info, dict):
+            stale.append(label)
+            continue
+        try:
+            pid = int(info.get("pid") or 0)
+            port = int(info.get("port") or 0)
+            profile = Path(str(info.get("profile") or ""))
+        except (TypeError, ValueError):
+            stale.append(label)
+            continue
+        # 先信登记的 pid（活着且确实是 chrome）；pid 换了（Chrome 自更新重启、
+        # 或启动脚本没回报 pid）再用现场证据找真正占着这份 profile 的那个。
+        live = pid if _browser_registered_alive({"pid": pid}) else 0
+        if live <= 0 and port:
+            live = gchrome.owner_pid(profile, port) if profile else 0
+        if live <= 0:
+            stale.append(label)
+            continue
+        with _BROWSER_LOCK:
+            _BROWSERS[label] = {**info, "pid": live}
+        adopted.append({"label": label, "pid": live, "port": port})
+    if stale:
+        for label in stale:
+            data.pop(label, None)
+        _save_browser_registry(settings, data)
+
+    # ② 现场证据兜底：没登记、但本工具 profile 的 Chrome 正占着端口的，补登。
+    known = set(data) | {a["label"] for a in adopted}
+    try:
+        rows = _account_rows()
+    except Exception:                                      # noqa: BLE001
+        rows = []
+    # 端口探活必须**并发**：单次探测最坏一个 timeout，串行 7 个账号要把面板
+    # 启动拖慢好几秒（同 `chrome.ports_alive` 的理由）。
+    alive = gchrome.ports_alive([int(r.get("port") or 0) for r in rows])
+    for row in rows:
+        label = str(row.get("label") or "")
+        port = int(row.get("port") or 0)
+        if not label or label in known or not alive.get(port):
+            continue
+        acc = gaccounts.find_by_label(gaccounts.load_accounts(), label)
+        pid = _owned_pid(settings, label, acc, port)
+        if pid <= 0:
+            continue
+        try:
+            profile = gbrowser.cdp_profile(settings, label, acc)
+            since = time.strftime("%H:%M:%S",
+                                  time.localtime((Path(str(profile)) / "lockfile")
+                                                 .stat().st_mtime))
+        except (OSError, ValueError, gbrowser.SessionError):
+            profile = ""
+            since = time.strftime("%H:%M:%S")
+        _remember_browser(settings, label, pid, port, profile or "")
+        with _BROWSER_LOCK:
+            if label in _BROWSERS:
+                _BROWSERS[label]["since"] = since
+        adopted.append({"label": label, "pid": pid, "port": port})
+
+    return [{"label": a["label"], "pid": a["pid"], "port": a["port"]}
+            for a in adopted]
+
+
 def _browser_state(settings: Settings, label: str,
                    alive: bool | None = None) -> dict[str, Any]:
     """浏览器/会话的**本地**状态：只探本地调试端口，**不访问平台**。
@@ -790,20 +994,26 @@ def _browser_state(settings: Settings, label: str,
         managed_dir, cdp_dir = False, None
     with _BROWSER_LOCK:
         own = _BROWSERS.get(label)
+    if own is None:                      # 面板重启过：落盘登记仍然有效
+        own = _read_browser_registry(settings).get(label)
+    port_alive = (bool(alive) if alive is not None
+                  else (gchrome.port_alive(acc.port) if acc else False))
     return {
         "backend": backend,
         "chrome": str(chrome) if chrome else "",
         "chrome_ok": chrome is not None,
         "port": acc.port if acc else 0,
-        "port_alive": (bool(alive) if alive is not None
-                       else (gchrome.port_alive(acc.port) if acc else False)),
+        "port_alive": port_alive,
         "profile_set": bool(acc and acc.profile),
         "profile": str(cdp_dir) if cdp_dir else "",
         "profile_name": (Path(acc.profile).name if acc and acc.profile
                          else (f"data/{gbrowser.PROFILE_ROOT}/{label}" if cdp_dir else "")),
         "managed_profile": managed_dir,
-        "started_by_panel": bool(own),
-        "since": own["since"] if own else "",
+        # 登记过 **且** 进程还活着才算「面板启动」：Chrome 关掉后登记会残留，
+        # 光看 bool(own) 会一直撒谎（用户 2026-11-06 实拍里那句「面板启动 · 09:13:59」）。
+        # 只判 pid 不探端口：端口探测会吃满 timeout，按钮会每 4 秒闪一次。
+        "started_by_panel": _browser_registered_alive(own),
+        "since": (own or {}).get("since", ""),
         "can_start": backend == "cdp" and chrome is not None and cdp_dir is not None,
         # 登录态快照：本站 cookie 全是会话级，关浏览器就没了 → 只能靠这份文件兜底
         "state": gbrowser.state_summary(gbrowser.state_path(settings, label)) if label else {},
@@ -962,6 +1172,13 @@ def create_app(settings: Settings) -> FastAPI:
     except Exception:                                      # noqa: BLE001
         _adopted = []
 
+    # **认领自己起过的 Chrome**（2026-11-06 用户实拍「停止」灰着）：同一思路，
+    # 否则重启后明明是面板拉起的浏览器，界面却说「不是面板起的」，按钮也不敢杀。
+    try:
+        adopt_orphan_browsers(settings)
+    except Exception:                                      # noqa: BLE001
+        pass
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         # ⚠ 必须显式禁缓存（2026-11-02 用户反复"看不到新功能"的真因）：
@@ -1112,11 +1329,8 @@ def create_app(settings: Settings) -> FastAPI:
         started = _start_chrome_interactive(acc.label, acc.port)
         if not started.get("ok"):
             return {"ok": False, "error": started.get("error") or "Chrome 没起来"}
-        with _BROWSER_LOCK:
-            _BROWSERS[acc.label] = {"pid": int(started.get("pid") or 0),
-                                    "since": time.strftime("%H:%M:%S"),
-                                    "port": acc.port,
-                                    "profile": str(gbrowser.cdp_profile(settings, acc.label, acc))}
+        _remember_browser(settings, acc.label, int(started.get("pid") or 0),
+                          acc.port, gbrowser.cdp_profile(settings, acc.label, acc))
         _record(settings, acc.label, "browser-start",
                 f"面板启动 Chrome（端口 {acc.port}，交互式任务）")
         return {"ok": True,
@@ -1124,13 +1338,29 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/browser/stop")
     def browser_stop(body: dict) -> dict:
+        """停掉面板为这个账号拉起的 Chrome。
+
+        ## 归属判定改成「看证据」而不是「看内存」（2026-11-06 用户实拍）
+
+        原来只读内存表 `_BROWSERS`，面板一重启就忘干净：明明是自己刚起的 Chrome，
+        界面显示「不是面板起的」、按钮还点不动，只能让用户手动关窗口。
+        现在 `gchrome.owner_pid()` 用 profile 里 `DevToolsActivePort` 的 uuid
+        与端口 `/json/version` 对撞 —— 这份 profile 的 Chrome 正占着这个调试端口，
+        才认；对不上就是别人的浏览器，一律不碰。
+        """
         label = _safe_label(settings, str(body.get("label") or ""))
-        with _BROWSER_LOCK:
-            own = _BROWSERS.pop(label, None)
-        if own is None:
+        acc = _account(settings, label)
+        pid = _browser_owner_pid(settings, label, acc.port)
+        if pid <= 0:
+            with _BROWSER_LOCK:
+                _BROWSERS.pop(label, None)
+            _forget_browser(settings, label)
             return {"ok": False, "error": "这个浏览器不是面板起的，不敢盲杀（会误杀你日常的 "
                                           "Chrome）；请在那个窗口里手动关"}
-        result = _kill_pid(int(own["pid"]))
+        result = _kill_pid(pid)
+        with _BROWSER_LOCK:
+            _BROWSERS.pop(label, None)
+        _forget_browser(settings, label)
         _record(settings, label, "browser-stop", f"面板停止 Chrome（{result}）")
         return {"ok": True, "message": result}
 
