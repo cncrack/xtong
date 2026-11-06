@@ -890,6 +890,17 @@ button.mini{padding:3px 9px;font-size:13px}
             只在<b>批量 ≥2 个</b>时生效；单个账号永远立即开跑。
           </div>
         </div>
+        <div class="fld">
+          <label for="f-fleet">全局日时长上限</label>
+          <span><input id="f-fleet" type="number" min="0" max="1440" step="10" value="0"> 分钟</span>
+          <div class="hint">
+            <b>所有账号合计</b>一天最多学多久（默认 <b>0 = 不限</b>）。<br>
+            与上面的「同时学习上限」是两回事：那个限<b>同时几个</b>，这个限<b>一天总共多少</b>。<br>
+            也与账号表里的「每日时长」不同：那个是<b>每个账号各自</b>的额度，
+            这个防的是「这台机器/这个出口 IP 一天总时长异常」。<br>
+            ⚠ 开得太小会让前几个账号把配额吃光、后面的号一天都跑不了 —— 想用请按实际规模算。
+          </div>
+        </div>
         <div class="form-actions">
           <span class="sp"></span>
           <button type="button" onclick="savePanelSettings()">保存面板设置</button>
@@ -1247,6 +1258,22 @@ function renderBatchBar(shown) {
   const concLimit = Number((STATE && STATE.limit_concurrency) || 2) || 2;
   const concLive = Number((STATE && STATE.live_study) || 0) || 0;
   const room = Math.max(0, concLimit - concLive);
+  // 全局日总量闸（P2b）：0 = 不限，只有真设了上限才显示这一项（否则是噪音）
+  const fleetUsed = Number((STATE && STATE.fleet_minutes_today) || 0) || 0;
+  const fleetLimit = Number((STATE && STATE.fleet_limit_minutes) || 0) || 0;
+  const fleetFull = fleetLimit > 0 && fleetUsed >= fleetLimit;
+  // 排队中的任务（P2b）：告诉用户"已经排上了，不用再点"
+  const queuedRows = (STATE && STATE.queue) || [];
+  const queueTag = queuedRows.length
+    ? '<span class="tag t-ai" title="排队中：有账号跑完会自动开始' +
+      (queuedRows.length ? "：" + esc(queuedRows.map((q) => q.label).join("、")) : "") +
+      '">排队中 ' + queuedRows.length + "</span>"
+    : "";
+  const fleetTag = fleetLimit > 0
+    ? '<span class="tag ' + (fleetFull ? "t-low" : "t-done") +
+      '" title="今天所有账号合计已学 / 全局上限（在「面板设置」里改，0=不限）">今日合计 ' +
+      Math.round(fleetUsed) + "/" + fleetLimit + " 分</span>"
+    : "";
   const startTag = runningSel
     ? '开始学习<span class="bb-note">（跳过 ' + runningSel + " 个在跑）</span>"
     : "开始学习";
@@ -1264,10 +1291,13 @@ function renderBatchBar(shown) {
     '<span class="tag ' + (room > 0 ? "t-learn" : "t-low") +
     '" title="全局同时学习上限（在「账号设置 → 面板设置」里改）">并发 ' +
     concLive + "/" + concLimit + "</span>" +
+    fleetTag +
+    queueTag +
     '<button class="mini primary" onclick="batchAction(\'start\')" title="' +
     (runningSel ? "已在跑的账号会自动跳过，只启动空闲的；不重复开" : "启动选中账号的学习任务")
-    + (room > 0 ? "；本次最多再起 " + room + " 个（并发上限 " + concLimit + "）"
-                : "；⚠ 并发已满，点了会被拒，请先停一个或调高上限")
+    + (fleetFull ? "；⚠ 今日全局时长已满，点了会被拒"
+       : (room > 0 ? "；本次最多再起 " + room + " 个（并发上限 " + concLimit + "）"
+                   : "；并发已满，多出的会**排队**，有空位自动开始"))
     + '">' + startTag + "</button>" +
     browserBtn +
     '<button class="mini" onclick="batchAction(\'stop\')" title="' +
@@ -1555,10 +1585,24 @@ async function batchAction(action) {
       String(r.message || (r.label + " 启动失败"))).join("<br><br>").replace(/\n/g, "<br>"),
       true);
   } else if (blockedN) {
+    // `blocked` 有三种来源，提示要分开说（2026-11-06 P2b）：
+    //   有任务在跑（需先停）/ 全局日时长已满 —— 解法完全不同。
     const bl = (data.results || []).filter((r) => !r.ok && r.blocked);
-    showNotice("⚠ 有 " + blockedN + " 个账号正在跑，需先「停止」再" + CN[action] +
-      "：<br>" + bl.map((r) => "「" + r.label + "」").join("、"), true);
+    const byFleet = bl.filter((r) => r.fleet_full);
+    const byBusy = bl.filter((r) => !r.fleet_full);
+    const parts = [];
+    if (byBusy.length) {
+      parts.push("有 " + byBusy.length + " 个账号正在跑，需先「停止」再" + CN[action] +
+        "：" + byBusy.map((r) => "「" + r.label + "」").join("、"));
+    }
+    if (byFleet.length) {
+      parts.push(byFleet.length + " 个因「今日全局时长已满」未启动：" +
+        byFleet.map((r) => "「" + r.label + "」").join("、") +
+        " —— 到「面板设置」调高「全局日时长上限」或明天再跑");
+    }
+    showNotice("⚠ " + parts.join("<br><br>"), true);
   } else {
+    // 排队不算失败：用绿 toast 说明"已排上，会自动开始"，别让用户以为要再点一次
     toast(data.message || data.error || "已提交", realFail > 0);
   }
   if (data.ok && action === "delete") SEL.clear();
@@ -2916,10 +2960,12 @@ async function loadPanelSettings() {
     const s = (d && d.settings) || {};
     const rel = el("f-reload"), poll = el("f-poll");
     const conc = el("f-concurrency"), jit = el("f-jitter");
+    const fleet = el("f-fleet");
     if (rel) rel.checked = s.reload !== false;
     if (poll) poll.value = s.poll_seconds || 4;
     if (conc) conc.value = s.max_concurrency || 2;
     if (jit) jit.value = (s.start_jitter === 0) ? 0 : (s.start_jitter || 30);
+    if (fleet) fleet.value = s.fleet_daily_minutes || 0;
     if (s.poll_seconds && s.poll_seconds * 1000 !== POLL_MS) {
       setPoll(s.poll_seconds);
     }
@@ -2929,6 +2975,7 @@ async function loadPanelSettings() {
 async function savePanelSettings() {
   const rel = el("f-reload"), poll = el("f-poll");
   const conc = el("f-concurrency"), jit = el("f-jitter");
+  const fleet = el("f-fleet");
   const body = {
     reload: !!(rel && rel.checked),
     poll_seconds: Math.max(1, Math.min(60, Number(poll && poll.value) || 4)),
@@ -2936,6 +2983,8 @@ async function savePanelSettings() {
     max_concurrency: Math.max(1, Math.min(20, Number(conc && conc.value) || 2)),
     // 0~120：0 = 不错峰（允许）
     start_jitter: Math.max(0, Math.min(120, Number(jit && jit.value) || 0)),
+    // 0~1440：**这里 0 确实是不限**（与上面那一项相反）
+    fleet_daily_minutes: Math.max(0, Math.min(1440, Number(fleet && fleet.value) || 0)),
   };
   try {
     const r = await fetch("/api/panel/settings", {

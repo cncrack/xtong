@@ -342,6 +342,174 @@ def _spawn_script(settings: Settings, label: str, kind: str,
 
 # ---------------------------------------------------------------- 任务登记（认领孤儿）
 
+# ---------------------------------------------------------------- 排队（P2b，2026-11-06）
+
+#: 排队中的学习任务：`{label: {...,"queued_at":...}}`（按 label 唯一，同账号不重复排队）
+_QUEUE: dict[str, dict[str, Any]] = {}
+_QUEUE_LOCK = threading.Lock()
+_QUEUE_THREAD: threading.Thread | None = None
+
+
+def _queue_path(settings: Settings) -> Path:
+    """队列落盘文件：面板重启后靠它把「排队中的任务」重建回来。
+
+    与 `gxks_jobs.json`（**已在跑**的任务）刻意分开成两个文件：
+    那个回答「谁在跑」，这个回答「谁在等」，语义不同、清理时机也不同
+    （跑完要清，排队被打断也要清）。
+    """
+    return settings.data_dir / "gxks_queue.json"
+
+
+def _read_queue(settings: Settings) -> dict[str, dict[str, Any]]:
+    p = _queue_path(settings)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_queue(settings: Settings) -> None:
+    """把内存队列写盘（原子替换）。"""
+    p = _queue_path(settings)
+    with _QUEUE_LOCK:
+        snapshot = {k: dict(v) for k, v in _QUEUE.items()}
+    try:
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def _queue_add(settings: Settings, label: str, max_sections: int,
+               jitter: float = 0.0) -> None:
+    """把一个暂时起不了（并发满）的任务放进队列。"""
+    with _QUEUE_LOCK:
+        _QUEUE[label] = {"label": label, "max_sections": int(max_sections),
+                         "jitter": float(jitter),
+                         "queued_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                         "since": time.strftime("%H:%M:%S")}
+    _save_queue(settings)
+
+
+def _queue_drop(settings: Settings, label: str) -> bool:
+    """从队列移除一个账号，返回**是否真的移除了**（供停止接口判断要不要多报一句）。"""
+    with _QUEUE_LOCK:
+        had = _QUEUE.pop(label, None) is not None
+    if had:
+        _save_queue(settings)
+    return had
+
+
+def _queue_snapshot() -> list[dict[str, Any]]:
+    """排队清单（按入队时间先后 —— 先来先跑）。"""
+    with _QUEUE_LOCK:
+        rows = [dict(v) for v in _QUEUE.values()]
+    rows.sort(key=lambda r: str(r.get("queued_at") or ""))
+    return rows
+
+
+def adopt_queue(settings: Settings) -> list[dict[str, Any]]:
+    """启动时把落盘的队列读回内存（面板重启不丢排队）。
+
+    与孤儿任务认领的区别：这里**不需要**判 pid —— 排队的任务还没起进程。
+    但要**剔除已经在跑或已不存在的账号**（否则会重复起 / 起一个幽灵）。
+    """
+    data = _read_queue(settings)
+    if not data:
+        return []
+    known = {a.label for a in gaccounts.load_accounts()}
+    running = {j["label"] for j in _jobs_snapshot()}
+    kept: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
+    for label, info in data.items():
+        if (label in known and label not in running
+                and isinstance(info, dict)):
+            kept[label] = dict(info)
+        else:
+            dropped.append(label)
+    with _QUEUE_LOCK:
+        _QUEUE.clear()
+        _QUEUE.update(kept)
+    if dropped:
+        _save_queue(settings)
+    return _queue_snapshot()
+
+
+def _queue_pump(settings: Settings) -> int:
+    """把队列里**有空位**的任务起掉，返回本次起了几个。
+
+    只在三种时机调用：① 起任务时被并发闸挡住（进队）② 有任务结束 ③ 后台循环。
+
+    ⚠ 必须**先判空位再起**：并发闸是全局的，队列里排 5 个也只该起 `room` 个。
+    """
+    started = 0
+    while True:
+        limit = _concurrency_limit(settings)
+        room = limit - _live_study_count()
+        if room <= 0:
+            break
+        rows = _queue_snapshot()
+        if not rows:
+            break
+        # 队头优先（先来先跑）；杀掉一个就跑一个。
+        head = rows[0]
+        label = str(head.get("label") or "")
+        with _QUEUE_LOCK:
+            _QUEUE.pop(label, None)
+        # 全局日总量闸（P2b）也要判：今天合计学够了就别再起，直接清队列
+        if _check_fleet_daily(settings):
+            with _QUEUE_LOCK:
+                _QUEUE.clear()
+            _save_queue(settings)
+            break
+        got = _study_one(settings, label,
+                         max_sections=head.get("max_sections"),
+                         jitter=float(head.get("jitter") or 0),
+                         check_concurrency=False)
+        if got.get("ok"):
+            started += 1
+        elif not got.get("skipped"):
+            # 真起不来（浏览器没开 / 账号没了）：不要留在队列里反复空转
+            pass
+        _save_queue(settings)
+    return started
+
+
+def _queue_worker(settings: Settings) -> None:
+    """后台循环：每 20 秒看一次队列，有空位就起。
+
+    ## 为什么需要它
+
+    队列的意义是「排队等着，有空位自动跑」。没有循环的话，只有用户下一次点击
+    才会触发 `_queue_pump` —— 那就等于没排队（还得手动再点一次）。
+
+    ## 间隔为什么是 20 秒
+
+    刷课一节 20~45 分钟，20 秒的调度延迟完全无感；
+    太短会白耗 CPU 且每次都要探端口（`port_alive` 最坏吃一个 timeout）。
+    """
+    while True:
+        time.sleep(20)
+        try:
+            if _queue_snapshot():
+                _queue_pump(settings)
+        except Exception:                                  # noqa: BLE001
+            # 调度线程绝不能死：它死了队列就永远不动了，且用户看不出来。
+            time.sleep(60)
+
+
+def _ensure_queue_worker(settings: Settings) -> None:
+    global _QUEUE_THREAD
+    if _QUEUE_THREAD is not None and _QUEUE_THREAD.is_alive():
+        return
+    _QUEUE_THREAD = threading.Thread(target=_queue_worker, args=(settings,),
+                                     name="gxks-queue", daemon=True)
+    _QUEUE_THREAD.start()
+
+
 def _registry_path(settings: Settings) -> Path:
     """任务登记文件：面板重启后靠它把「还在跑但自己不知道」的任务认领回来。
 
@@ -525,12 +693,37 @@ def _jobs_snapshot(include_finished: bool = False) -> list[dict[str, Any]]:
     for data_dir, label, kind in finished:
         if data_dir:
             _drop_job_registry(data_dir, label, kind)
+    # 有任务自然结束 → 队列里可能有空位了，立刻泵一次（P2b，2026-11-06）。
+    # 不能等后台循环（20 秒）才动：用户刚看到一个任务跑完，队列应该马上接上。
+    # ⚠ 只在**真有任务结束**时触发，不能每次快照都泵（这个函数被 4 秒轮询高频调用）。
+    if finished and len(finished[0]) == 3:
+        _on_job_finished(finished[0][0])
     if include_finished:
         for key, snap in _LAST_JOBS.items():
             if not any(j["label"] == snap["label"] and j["kind"] == snap["kind"]
                        for j in out):
                 out.append(dict(snap))
     return out
+
+
+def _on_job_finished(data_dir: str) -> None:
+    """有任务自然结束时调（P2b）：队列里可能腾出空位了，立刻泵一次。
+
+    用 `data_dir` 反推 `Settings` 而不是给 `_jobs_snapshot` 加参数 ——
+    那个函数被 `_stop_one` / `_account_cards` / `/api/state` 等多处调用，
+    加参数会牵连一片；而且它本来就是"只读快照"，不该知道排队的事。
+
+    泵失败只吞：调度出问题不该让 4 秒轮询的接口 500。
+    """
+    if not data_dir:
+        return
+    try:
+        from ..config import Settings as _S
+        s = _S(root=Path(data_dir).parent)
+        if _queue_snapshot():
+            _queue_pump(s)
+    except Exception:                                      # noqa: BLE001
+        pass
 
 
 def _start(settings: Settings, label: str, kind: str,
@@ -1153,6 +1346,59 @@ def _check_concurrency(settings: Settings) -> dict[str, Any] | None:
                      "要么先「停止」一个，要么到「账号设置 → 面板设置」把上限调高。"}
 
 
+def _fleet_daily_limit(settings: Settings) -> int:
+    """读「全部账号合计日时长上限」（分钟，0 = 不限）。"""
+    try:
+        n = int(gxks_panel_settings.load(_db_path(settings))
+                .get("fleet_daily_minutes", 0) or 0)
+    except Exception:                                      # noqa: BLE001
+        return 0
+    return max(0, min(1440, n))
+
+
+def _fleet_minutes_today(settings: Settings) -> float:
+    """今日**所有账号合计**已学分钟数（账本口径，与 `fleet_daily_minutes` 配对展示）。"""
+    try:
+        total = gledger.today_totals(_ledger_path(settings), account="")
+        return round(float(total.get("minutes") or 0), 1)
+    except Exception:                                      # noqa: BLE001
+        return 0.0
+
+
+def _check_fleet_daily(settings: Settings) -> dict[str, Any] | None:
+    """全局日总量闸：**所有账号今日合计时长**已达上限就拒绝，否则 None。
+
+    ## 与「账号日额度」的区别（`PLAN-GXKS.md` §11.6 / 额度口径表）
+
+    | 闸 | 维度 | 防的是 |
+    |---|---|---|
+    | 账号 `daily_sections` / `daily_minutes` | **单账号** | 一个号一天学 8 小时很可疑 |
+    | `fleet_daily_minutes`（本项） | **全部账号合计** | 这台机器/出口 IP 一天总时长异常 |
+
+    默认 **0 = 不限**（方案标注"建议不开，但要有"）：它是最粗的一刀，
+    开得太小会让前几个账号把配额吃光、后面的号一天都跑不了。
+
+    ## 为什么用**账本**而不是"实时计时"
+
+    账本（`data/gxks_ledger.jsonl`）是**唯一权威**（模块 docstring 早就定了）。
+    实时计时会漏掉"刚跑完的那节还没记账"与"面板重启前的消耗"，
+    而账本在每次任务收尾时写、且跨进程可见。
+    """
+    limit = _fleet_daily_limit(settings)
+    if limit <= 0:
+        return None
+    # 复用 `_fleet_minutes_today`，别再写一遍账本读取 ——
+    # 两处各写一份的话，将来改口径（比如含未记账的当场消耗）必然只改一处。
+    used = _fleet_minutes_today(settings)
+    if used < limit:
+        return None
+    return {"ok": False, "blocked": True, "fleet_full": True,
+            "used": round(used, 1), "limit": limit,
+            "error": f"今天所有账号合计已学 {used:.0f} 分钟，达到全局上限 {limit} 分钟。\n"
+                     "要再跑就去「账号设置 → 面板设置」调高「全局日时长上限」，"
+                     "或今天到此为止（明天自动清零）。"}
+
+
 def _study_one(settings: Settings, label: str,
                max_sections: object = None, sections: object = None,
                port_alive: bool | None = None,
@@ -1178,6 +1424,11 @@ def _study_one(settings: Settings, label: str,
         full = _check_concurrency(settings)
         if full:
             return full
+        # 全局日总量闸（P2b）：所有账号合计今天已学够 → 谁也别再起。
+        # 与并发闸并列放在这里：两者都是"起之前"的拒绝，不该等到跑起来才发现。
+        fleet = _check_fleet_daily(settings)
+        if fleet:
+            return fleet
     n = int(max_sections or 3)
     args = ["--label", acc.label, "--account-label", acc.label,
             "--port", str(acc.port),
@@ -1194,8 +1445,12 @@ def _study_one(settings: Settings, label: str,
 
 
 def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
-    """停一个账号正在跑的任务。"""
+    """停一个账号正在跑的任务，并把它从队列里撤掉。"""
     label = _safe_label(settings, label)
+    # **排队中的也要撤**（P2b，2026-11-06）：用户点「停止」的意思是"这个账号别跑了"。
+    # 如果只杀进程不管队列，排队中的那个正好被后台循环拉起来 —— 会出现
+    # 「点了停止，20 秒后它自己又开始了」这种最让人火大的行为。
+    queued = _queue_drop(settings, label)
     with _JOBS_LOCK:
         # 该账号可能有**多个**任务（study / sections / work，键是 `label|kind`），
         # 停**每一个**还在跑的（用户点「停止」的意思是「把这个账号的活都停下」）。
@@ -1205,6 +1460,9 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
         # 但**不能被当成活的去停**（否则会对一个已死的 pid 报「已停止」，
         # 用户以为停了，实际什么都没发生 —— 2026-11-03 测试抓到）。
     if not live:
+        # 没在跑，但**可能是在排队**：撤掉排队也算"停止成功"（用户要的效果达成了）。
+        if queued:
+            return {"ok": True, "message": "已取消排队（它本来还没开始跑）"}
         # 与「开始学习」遇到在跑账号对称：这是**预期内的跳过**，不是错误。
         # 不区分的话，批量停 5 个账号里有 4 个本来空闲，汇总会报「4 个没做成」弹红条
         # （2026-11-06 用户问「停止/启用/停用是否也能批量」时实测发现）。
@@ -1358,6 +1616,15 @@ def create_app(settings: Settings) -> FastAPI:
     except Exception:                                      # noqa: BLE001
         pass
 
+    # **恢复队列**（P2b，2026-11-06）：排队中的任务不是进程，重启后靠落盘文件重建。
+    # 顺序很重要：必须在孤儿任务认领**之后**，否则会把"已经在跑"的账号又排一遍。
+    try:
+        adopt_queue(settings)
+        if _queue_snapshot():
+            _ensure_queue_worker(settings)     # 有排队才起后台循环，空队列不白跑
+    except Exception:                                      # noqa: BLE001
+        pass
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         # ⚠ 必须显式禁缓存（2026-11-02 用户反复"看不到新功能"的真因）：
@@ -1414,6 +1681,11 @@ def create_app(settings: Settings) -> FastAPI:
             "limit_concurrency": _concurrency_limit(settings),
             "live_study": _live_study_count(),
             "start_jitter": _start_jitter(settings),
+            # 全局日总量闸（P2b）：批量栏要显示「今日合计/上限」，超了给红标签。
+            "fleet_minutes_today": _fleet_minutes_today(settings),
+            "fleet_limit_minutes": _fleet_daily_limit(settings),
+            # 排队中的任务（P2b）：前端要显示「排队中 N 个」，并让用户能撤。
+            "queue": _queue_snapshot(),
             # `include_finished=True`：刚结束的任务也带上（`alive: false`），
             # 这样页面能继续显示最后一次的日志尾巴（2026-11-03 用户要求）。
             # 其他接口仍用默认 False，不会把已结束的当"在跑"。
@@ -1473,8 +1745,30 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/study")
     def do_study(body: dict) -> dict:
-        return _study_one(settings, str(body.get("label") or ""),
-                          body.get("max_sections"), body.get("sections"))
+        """单账号开始学习。
+
+        ## 并发满时**入队**而不是拒绝（P2b，2026-11-06）
+
+        以前 `_study_one` 满了就回 `blocked: true`，用户得自己再点一次。
+        现在改成：满了就进队列，等有空位由后台循环自动起 —— 这才是
+        `PLAN-GXKS.md` §11.5 说的「否则按并发上限排队」。
+
+        ⚠ 只在**把这个账号加进队列**后返回 `queued`，前端据此显示「排队中」。
+        """
+        label = str(body.get("label") or "")
+        got = _study_one(settings, label, body.get("max_sections"),
+                         body.get("sections"))
+        if got.get("concurrency_full"):
+            n = int(body.get("max_sections") or 3)
+            _queue_add(settings, _account(settings, label).label,
+                       max(1, min(int(n), 12)))
+            _ensure_queue_worker(settings)
+            return {"ok": True, "queued": True,
+                    "message": f"{label} 已排队：现在并发已满（{got.get('live')}/"
+                               f"{got.get('limit')}），等有账号跑完就自动开始"}
+        if got.get("ok"):
+            _ensure_queue_worker(settings)
+        return got
 
     @app.post("/api/stop")
     def do_stop(body: dict) -> dict:
@@ -1831,6 +2125,7 @@ def create_app(settings: Settings) -> FastAPI:
         #   room = 上限 - 已在跑；最多个起 room 个，其余的标 blocked 并说清原因。
         start_room: int | None = None
         batch_jitter = 0.0
+        fleet_refused: dict[str, Any] | None = None
         if action == "start":
             limit = _concurrency_limit(settings)
             start_room = max(0, limit - _live_study_count())
@@ -1840,13 +2135,22 @@ def create_app(settings: Settings) -> FastAPI:
             batch_jitter = _start_jitter(settings)
             if len(labels) < 2:
                 batch_jitter = 0.0
+            # 全局日总量闸（P2b）：**整批**先判一次。它不按账号细分，
+            # 一旦今天合计学够了，这一批一个都不该起。
+            fleet_refused = _check_fleet_daily(settings)
         for label in labels:
             if action == "start":
-                if start_room is not None and started_n >= start_room:
-                    got = {"ok": False, "blocked": True, "concurrency_full": True,
-                           "error": (f"同时学习上限是 {limit} 个，这一批只能再起 "
-                                     f"{start_room} 个；这个先不起。"
-                                     "先「停止」一些或到「面板设置」调高上限")}
+                if fleet_refused:
+                    got = dict(fleet_refused)      # 全局日总量已满 → 整批同理由
+                elif start_room is not None and started_n >= start_room:
+                    # 并发满 → **入队**（P2b），等下有空位自动起。
+                    # `PLAN-GXKS.md` §11.5 要的就是这个语义："否则按并发上限排队"。
+                    _queue_add(settings, label,
+                               max(1, min(int(body.get("max_sections") or 3), 12)),
+                               jitter=batch_jitter)
+                    got = {"ok": False, "queued": True,
+                           "message": (f"已排队（并发上限 {limit} 个已满，"
+                                       "有账号跑完会自动开始）")}
                 else:
                     got = _study_one(settings, label, body.get("max_sections"),
                                      port_alive=alive_map.get(ports.get(label, 0)),
@@ -1883,7 +2187,9 @@ def create_app(settings: Settings) -> FastAPI:
             results.append({"label": label, "ok": bool(got.get("ok")),
                             "skipped": bool(got.get("skipped")),
                             "blocked": bool(got.get("blocked")),
+                            "queued": bool(got.get("queued")),
                             "concurrency_full": bool(got.get("concurrency_full")),
+                            "fleet_full": bool(got.get("fleet_full")),
                             "need_browser": bool(got.get("need_browser")),
                             "message": str(got.get("message") or got.get("error") or "")})
 
@@ -1893,19 +2199,29 @@ def create_app(settings: Settings) -> FastAPI:
         #   blocked = 状态前提不满足（有任务在跑，先停再做）→ 用户可自行解决，黄提示
         #   failed  = 真出错（未知代号 / 写盘失败 / 浏览器没起）→ 红提示
         skipped = [r for r in results if not r["ok"] and r["skipped"]]
-        blocked = [r for r in results if not r["ok"] and not r["skipped"] and r["blocked"]]
+        queued = [r for r in results if not r["ok"] and r["queued"]]
+        blocked = [r for r in results if not r["ok"] and not r["skipped"]
+                   and not r["queued"] and r["blocked"]]
         failed = [r for r in results
-                  if not r["ok"] and not r["skipped"] and not r["blocked"]]
+                  if not r["ok"] and not r["skipped"] and not r["queued"]
+                  and not r["blocked"]]
         names = "、".join(r["label"] for r in done) or "（无）"
         note = ""
         if skipped:
             # 跳过的原因各不相同（已在跑 / 没在跑），取各自原文更有用
             note += f"；跳过 {len(skipped)} 个（{ '、'.join(r['label'] for r in skipped) }）"
+        if queued:
+            # 排队 = **受理由**，不是失败：等有空位自动起（P2b，2026-11-06）
+            note += (f"；{len(queued)} 个已排队等空位"
+                     f"（{ '、'.join(r['label'] for r in queued) }）")
         if blocked:
-            # `blocked` 有两种来源，文案必须分开说 —— 否则「并发已满」会被读成
+            # `blocked` 有三种来源，文案必须分开说 —— 否则「并发已满」会被读成
             # 「有任务在跑要先去停」，用户会白找一圈（2026-11-06）。
-            full = [r for r in blocked if r.get("concurrency_full")]
-            other = [r for r in blocked if not r.get("concurrency_full")]
+            fleet = [r for r in blocked if r.get("fleet_full")]
+            full = [r for r in blocked
+                    if not r.get("fleet_full") and r.get("concurrency_full")]
+            other = [r for r in blocked
+                     if not r.get("fleet_full") and not r.get("concurrency_full")]
             if other:
                 note += (f"；{len(other)} 个需先停止"
                          f"（{ '、'.join(r['label'] for r in other) }）")
@@ -1913,18 +2229,23 @@ def create_app(settings: Settings) -> FastAPI:
                 note += (f"；{len(full)} 个因并发已满未启动"
                          f"（{ '、'.join(r['label'] for r in full) }）"
                          "——想都启动就停几个或到「面板设置」调高上限")
+            if fleet:
+                note += (f"；{len(fleet)} 个因「全局日时长已满」未启动"
+                         f"（{ '、'.join(r['label'] for r in fleet) }）"
+                         "——要接着跑就到「面板设置」调高「全局日时长上限」")
         if failed:
             why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
             more = "" if len(failed) <= 5 else f" 等 {len(failed)} 个"
             return {"ok": False, "results": results, "done": len(done),
-                    "skipped": len(skipped), "blocked": len(blocked),
-                    "failed": len(failed),
+                    "skipped": len(skipped), "queued": len(queued),
+                    "blocked": len(blocked), "failed": len(failed),
                     "error": f"{len(failed)} 个没做成{more}——{why}",
                     "message": f"完成 {len(done)} 个（{names}）{note}"}
-        # `ok` 只反映**有没有真失败**：全是跳过/需先停止时仍算成功，
+        # `ok` 只反映**有没有真失败**：全是跳过/排队/需先停止时仍算成功，
         # 否则前端会弹红 toast，像批量挂了。
         return {"ok": True, "results": results, "done": len(done),
-                "skipped": len(skipped), "blocked": len(blocked), "failed": 0,
+                "skipped": len(skipped), "queued": len(queued),
+                "blocked": len(blocked), "failed": 0,
                 "message": f"完成 {len(done)} 个（{names}）{note}"}
 
     # ---------------------------------------------------------------- AI 配置（为 B5 做准备）

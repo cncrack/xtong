@@ -67,6 +67,16 @@ DEFAULTS: dict[str, Any] = {
     # 批量启动时每个账号之间随机等 0~N 秒（错峰）。
     # 默认 30：同一秒批量起 5 个任务，是「集群行为」最明显的形态（PLAN §7.3 错峰要求）。
     "start_jitter": 30,
+    # ------------------------------------------------ 全局日总量闸（P2b，2026-11-06）
+    #
+    # `PLAN-GXKS.md` §11.6 的 `runtime.fleet_daily_minutes`：**所有账号合计**的日学习时长上限。
+    # 与「每个账号自己的日额度」是两个维度：
+    #   账号额度 → 防**单账号**行为异常（一个号一天学 8 小时很可疑）；
+    #   全局合计 → 防**这台机器/这个出口 IP** 一天总时长异常（10 个号各学 2 小时 = 20 小时）。
+    #
+    # 默认 **0 = 不限**。方案里写的是 0（"0=不限"，且标注"建议不开，但要有"），
+    # 因为它是最粗的一刀，开得太小会让前几个账号把配额吃光、后面的号一天都跑不了。
+    "fleet_daily_minutes": 0,
 }
 
 
@@ -117,6 +127,13 @@ def load(db_path: Path) -> dict[str, Any]:
                 # 0 = 不错峰（允许），上限 120 秒：再长用户会觉得"点了半天没反应"
                 try:
                     out[name] = max(0, min(120, int(raw)))
+                except ValueError:
+                    pass
+            elif name == "fleet_daily_minutes":
+                # 0 = 不限（**这里 0 确实是不限**，与 max_concurrency 相反）。
+                # 上限 1440 分钟 = 24 小时，超过就没有意义了。
+                try:
+                    out[name] = max(0, min(1440, int(raw)))
                 except ValueError:
                     pass
     except sqlite3.Error:
@@ -205,6 +222,12 @@ def save(db_path: Path, items: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 j = int(DEFAULTS["start_jitter"])
             _write(conn, PREFIX + "start_jitter", str(j))
+        if "fleet_daily_minutes" in items:
+            try:
+                f = max(0, min(1440, int(items["fleet_daily_minutes"])))
+            except (TypeError, ValueError):
+                f = int(DEFAULTS["fleet_daily_minutes"])
+            _write(conn, PREFIX + "fleet_daily_minutes", str(f))
         conn.commit()
     except sqlite3.Error:
         pass
