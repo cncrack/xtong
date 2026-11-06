@@ -869,6 +869,27 @@ button.mini{padding:3px 9px;font-size:13px}
           <span><input id="f-poll" type="number" min="1" max="60" step="1" value="4"> 秒</span>
           <div class="hint">面板每隔几秒拉一次数据（4 秒是默认值）。调大能省资源，调小更实时。</div>
         </div>
+        <!-- 并发闸（P2a，2026-11-06）：同时跑几个账号的学习任务 -->
+        <div class="fld">
+          <label for="f-concurrency">同时学习上限</label>
+          <span><input id="f-concurrency" type="number" min="1" max="20" step="1" value="2"> 个账号</span>
+          <div class="hint">
+            <b>全局</b>同时跑几个账号的学习任务（默认 <b>2</b>，可改 1~20）。<br>
+            满了就不让再起，会提示「先停一个或调高上限」。<br>
+            ⚠ 这不是「每天学几节」——那个是每个账号自己的日额度（见账号表）。<br>
+            ⚠ 为什么不默认给大：本站并发面<b>还没验证过</b>；本机 10 个 Chrome 约 4~6GB 内存，
+            且多账号同 IP 同时刷最容易被关联。想放开就自己调，出问题调回来即可。
+          </div>
+        </div>
+        <div class="fld">
+          <label for="f-jitter">启动错峰</label>
+          <span><input id="f-jitter" type="number" min="0" max="120" step="1" value="30"> 秒</span>
+          <div class="hint">
+            批量启动时，每个账号开跑前<b>随机等 0~N 秒</b>（默认 30，0=不错峰）。<br>
+            同一秒批量起好几个是"集群行为"最明显的形态，错开更像人。<br>
+            只在<b>批量 ≥2 个</b>时生效；单个账号永远立即开跑。
+          </div>
+        </div>
         <div class="form-actions">
           <span class="sp"></span>
           <button type="button" onclick="savePanelSettings()">保存面板设置</button>
@@ -1221,6 +1242,11 @@ function renderBatchBar(shown) {
   // 「开始学习」会跳过它们，「停止」只会停它们。
   const picked = shown.filter((c) => SEL.has(c.label));
   const runningSel = picked.filter((c) => c.job).length;
+  // 并发闸状态（P2a，2026-11-06）：让用户在**点之前**看到「上限几个、已经占了几个」，
+  // 否则点了才被拒会莫名其妙。上限来自面板设置，跟着 /api/state 一起回来。
+  const concLimit = Number((STATE && STATE.limit_concurrency) || 2) || 2;
+  const concLive = Number((STATE && STATE.live_study) || 0) || 0;
+  const room = Math.max(0, concLimit - concLive);
   const startTag = runningSel
     ? '开始学习<span class="bb-note">（跳过 ' + runningSel + " 个在跑）</span>"
     : "开始学习";
@@ -1234,8 +1260,14 @@ function renderBatchBar(shown) {
     : "";
   html += '<b>已选 ' + n + ' 个</b>' +
     (runningSel ? '<span class="tag t-learn">其中 ' + runningSel + " 个运行中</span>" : "") +
+    // 并发状态：满了用红标签，没满用中性标签（用户一眼看出还能不能再起）
+    '<span class="tag ' + (room > 0 ? "t-learn" : "t-low") +
+    '" title="全局同时学习上限（在「账号设置 → 面板设置」里改）">并发 ' +
+    concLive + "/" + concLimit + "</span>" +
     '<button class="mini primary" onclick="batchAction(\'start\')" title="' +
     (runningSel ? "已在跑的账号会自动跳过，只启动空闲的；不重复开" : "启动选中账号的学习任务")
+    + (room > 0 ? "；本次最多再起 " + room + " 个（并发上限 " + concLimit + "）"
+                : "；⚠ 并发已满，点了会被拒，请先停一个或调高上限")
     + '">' + startTag + "</button>" +
     browserBtn +
     '<button class="mini" onclick="batchAction(\'stop\')" title="' +
@@ -2883,8 +2915,11 @@ async function loadPanelSettings() {
     const d = await r.json();
     const s = (d && d.settings) || {};
     const rel = el("f-reload"), poll = el("f-poll");
+    const conc = el("f-concurrency"), jit = el("f-jitter");
     if (rel) rel.checked = s.reload !== false;
     if (poll) poll.value = s.poll_seconds || 4;
+    if (conc) conc.value = s.max_concurrency || 2;
+    if (jit) jit.value = (s.start_jitter === 0) ? 0 : (s.start_jitter || 30);
     if (s.poll_seconds && s.poll_seconds * 1000 !== POLL_MS) {
       setPoll(s.poll_seconds);
     }
@@ -2893,9 +2928,14 @@ async function loadPanelSettings() {
 
 async function savePanelSettings() {
   const rel = el("f-reload"), poll = el("f-poll");
+  const conc = el("f-concurrency"), jit = el("f-jitter");
   const body = {
     reload: !!(rel && rel.checked),
     poll_seconds: Math.max(1, Math.min(60, Number(poll && poll.value) || 4)),
+    // 1~20：**不许 0**（0 会被读成"不限"，而这一项的意思正是"限几个"）
+    max_concurrency: Math.max(1, Math.min(20, Number(conc && conc.value) || 2)),
+    // 0~120：0 = 不错峰（允许）
+    start_jitter: Math.max(0, Math.min(120, Number(jit && jit.value) || 0)),
   };
   try {
     const r = await fetch("/api/panel/settings", {

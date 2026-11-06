@@ -88,6 +88,27 @@ class TestPanelSettingsStore(unittest.TestCase):
         self.assertFalse(got["ok"])
         self.assertTrue(got["error"])
 
+    def test_save_creates_meta_table_when_missing(self):
+        """**保存必须真的写进去**（2026-11-06 查出的真 bug）。
+
+        原来 `save()` 里 `_write` 直接 INSERT，而库里没有 `meta` 表时抛
+        `no such table: meta`，被 `except sqlite3.Error: pass` **静默吞掉** →
+        接口回「已保存」、`load()` 却还是默认值，表现为「设置改了没效果」。
+        """
+        empty = Path(self.tmp.name) / "empty.db"      # 全新的空库，没有 meta 表
+        sqlite3.connect(str(empty)).close()
+        saved = gxks_panel_settings.save(empty, {"max_concurrency": 4})
+        self.assertEqual(saved["max_concurrency"], 4)
+        # 再从磁盘读一遍，确认是**落盘**了而不是内存里改了
+        self.assertEqual(gxks_panel_settings.load(empty)["max_concurrency"], 4)
+
+    def test_save_of_new_keys_persists(self):
+        """并发/错峰这两项要真的能存下来（P2a）。"""
+        gxks_panel_settings.save(self.db, {"max_concurrency": 7, "start_jitter": 45})
+        got = gxks_panel_settings.load(self.db)
+        self.assertEqual(got["max_concurrency"], 7)
+        self.assertEqual(got["start_jitter"], 45)
+
 
 class TestPanelSettingsPage(unittest.TestCase):
     """页面上的设置入口（用户：「这个设置配置项了，在页面上哪里？」）。"""

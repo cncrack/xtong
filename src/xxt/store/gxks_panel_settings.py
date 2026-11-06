@@ -54,6 +54,19 @@ DEFAULTS: dict[str, Any] = {
     # 所以热重载可以安全地默认开着 —— 用户改代码后不用手动重启面板。
     "reload": True,
     "poll_seconds": 4,
+    # ---------------------------------------------------------- 并发闸（P2a，2026-11-06）
+    #
+    # 「同时学习上限」= **全局**同时跑几个账号的学习任务。
+    # 与「账号日额度」是两回事：额度防单账号行为异常，并发防本机资源 + 出口 IP 特征。
+    #
+    # 默认 **2**，不是 PLAN-GXKS 里暂定的 10 —— 那份方案的风险页自己写了
+    # 「配置写 10，但首日先手动压到 2~3 跑通，确认无 503/验证码再放开」。
+    # 本机 10 个 Chrome 约 4~6GB 内存，且并发面在本站**完全未验证**（D12：核实期固定 1）。
+    # 所以默认取保守值，想放开由用户在面板上改。
+    "max_concurrency": 2,
+    # 批量启动时每个账号之间随机等 0~N 秒（错峰）。
+    # 默认 30：同一秒批量起 5 个任务，是「集群行为」最明显的形态（PLAN §7.3 错峰要求）。
+    "start_jitter": 30,
 }
 
 
@@ -91,6 +104,19 @@ def load(db_path: Path) -> dict[str, Any]:
             elif name == "poll_seconds":
                 try:
                     out[name] = max(1, min(60, int(raw)))
+                except ValueError:
+                    pass
+            elif name == "max_concurrency":
+                # 1~20 之间钳制。**不许 0**：0 会被读成"不限"，而这一项的意思正是
+                # "限几个"，语义反过来最危险（与额度那种 0=不限 不是一个东西）。
+                try:
+                    out[name] = max(1, min(20, int(raw)))
+                except ValueError:
+                    pass
+            elif name == "start_jitter":
+                # 0 = 不错峰（允许），上限 120 秒：再长用户会觉得"点了半天没反应"
+                try:
+                    out[name] = max(0, min(120, int(raw)))
                 except ValueError:
                     pass
     except sqlite3.Error:
@@ -144,12 +170,20 @@ def save(db_path: Path, items: dict[str, Any]) -> dict[str, Any]:
     """保存面板设置（只认白名单键），返回保存后的完整设置。
 
     写失败**不抛** —— 设置存不下不该让面板整个不可用，返回原值即可。
+
+    ⚠ **必须保证 `meta` 表存在**（2026-11-06 踩到）：库里没有 `meta` 表时，
+    `_write` 抛 `no such table: meta`，被下面那个 `except sqlite3.Error: pass`
+    **静默吞掉** → 调用方拿到"正常"回包、`load()` 却还是默认值，
+    表现为「面板上改了设置、保存也说成功，但一点效果都没有」。
+    现在建表这一步用 `CREATE TABLE IF NOT EXISTS`（幂等），失败才真的吞。
     """
     try:
         conn = sqlite3.connect(str(db_path), timeout=5)
     except sqlite3.Error:
         return load(db_path)
     try:
+        conn.execute("CREATE TABLE IF NOT EXISTS meta "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
         if "reload" in items:
             _write(conn, PREFIX + "reload",
                    "true" if items["reload"] else "false")
@@ -159,6 +193,18 @@ def save(db_path: Path, items: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 sec = int(DEFAULTS["poll_seconds"])
             _write(conn, PREFIX + "poll_seconds", str(sec))
+        if "max_concurrency" in items:
+            try:
+                n = max(1, min(20, int(items["max_concurrency"])))
+            except (TypeError, ValueError):
+                n = int(DEFAULTS["max_concurrency"])
+            _write(conn, PREFIX + "max_concurrency", str(n))
+        if "start_jitter" in items:
+            try:
+                j = max(0, min(120, int(items["start_jitter"])))
+            except (TypeError, ValueError):
+                j = int(DEFAULTS["start_jitter"])
+            _write(conn, PREFIX + "start_jitter", str(j))
         conn.commit()
     except sqlite3.Error:
         pass

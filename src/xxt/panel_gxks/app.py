@@ -1095,12 +1095,75 @@ def _require_browser_port(settings: Settings, acc: Any,
                      f'--user-data-dir="{profile}"'}
 
 
+def _live_study_count() -> int:
+    """当前**正在跑的 study 任务数**（并发闸的唯一依据）。
+
+    只数 `kind == "study"`：节列表刷新、练习作答虽然也是子进程，但它们是
+    **短任务**（1 分钟 / 几分钟），且受「该账号已有任务在跑」那条约束挡住，
+    不占学习并发位。若把它们也计入，用户点一次「刷新节列表」就可能把学习挤掉。
+    """
+    with _JOBS_LOCK:
+        live = [j for j in _JOBS.values()
+                if j.get("kind") == "study" and j["proc"].poll() is None]
+    return max(0, len(live))
+
+
+def _concurrency_limit(settings: Settings) -> int:
+    """读「同时学习上限」（1~20，默认 2）。读不到就回 2 —— 闸宁严勿松。"""
+    try:
+        n = int(gxks_panel_settings.load(_db_path(settings))
+                .get("max_concurrency", 2))
+    except Exception:                                      # noqa: BLE001
+        return 2
+    return max(1, min(20, n))
+
+
+def _start_jitter(settings: Settings) -> float:
+    """读「启动错峰」秒数（0~120，默认 30）。0 = 不错峰。"""
+    try:
+        n = float(gxks_panel_settings.load(_db_path(settings))
+                  .get("start_jitter", 30) or 0)
+    except Exception:                                      # noqa: BLE001
+        return 30.0
+    return max(0.0, min(120.0, n))
+
+
+def _check_concurrency(settings: Settings) -> dict[str, Any] | None:
+    """并发闸：已满就返回拒绝回包，否则 None。
+
+    ## 为什么是「拒绝」而不是「排队」（P2a，2026-11-06 与用户确认）
+
+    完整队列要求常驻调度循环 + 面板重启后重建队列（与孤儿任务认领同类问题），
+    改动大。P2a 先做**软闸**：满了就明确告诉用户「已满 X 个，请先停一个或调高上限」，
+    行为可预期、不加后台循环。队列留作 P2b。
+
+    ## 为什么默认是 2 而不是方案里的 10
+
+    `PLAN-GXKS.md` §7.3 的风险页自己写了「配置写 10，但首日先手动压到 2~3 跑通，
+    确认无 503/验证码再放开」。而 D12 明确核实期只能 1 个会话 —— 并发面在**本站完全未验证**。
+    默认保守、由用户在面板上调，比默认激进再出事要正确。
+    """
+    limit = _concurrency_limit(settings)
+    live = _live_study_count()
+    if live < limit:
+        return None
+    return {"ok": False, "blocked": True, "concurrency_full": True,
+            "live": live, "limit": limit,
+            "error": f"同时学习上限是 {limit} 个，现在已经有 {live} 个在跑。\n"
+                     "要么先「停止」一个，要么到「账号设置 → 面板设置」把上限调高。"}
+
+
 def _study_one(settings: Settings, label: str,
                max_sections: object = None, sections: object = None,
-               port_alive: bool | None = None) -> dict[str, Any]:
+               port_alive: bool | None = None,
+               check_concurrency: bool = True,
+               jitter: float = 0.0) -> dict[str, Any]:
     """给一个账号起刷课子进程。返回面板回包（`ok`/`error`/`message`）。
 
     `port_alive` 供批量调用方传入**已经并发探好**的结果（见 `_require_browser_port`）。
+    `check_concurrency` 供批量调用方关掉**逐个**判定：批量要先按上限算出「这一批能起几个」，
+    否则逐个判会一直看到同一个 `live` 数，起不到闸的作用。
+    `jitter` = 开跑前随机等 0~N 秒（**批量错峰**，P2a）。单个账号不传（默认 0，立即开跑）。
     """
     acc = _account(settings, label)
     if any(j["label"] == acc.label for j in _jobs_snapshot()):
@@ -1111,14 +1174,23 @@ def _study_one(settings: Settings, label: str,
     refused = _require_browser_port(settings, acc, port_alive)
     if refused:
         return refused
+    if check_concurrency:
+        full = _check_concurrency(settings)
+        if full:
+            return full
     n = int(max_sections or 3)
     args = ["--label", acc.label, "--account-label", acc.label,
             "--port", str(acc.port),
             "--max-sections", str(max(1, min(n, 12)))]
     if sections:
         args += ["--sections", str(sections)]
+    if jitter > 0:
+        # 错峰必须**在子进程里**等（`run_gxks.py --start-jitter`），不能在面板里 sleep：
+        # 面板阻塞会把整个 api 卡住，批量 5 个就是几分钟无响应。
+        args += ["--start-jitter", f"{jitter:g}"]
     return _start(settings, acc.label, "study", "run_gxks.py", *args,
-                  message=f"开始刷课，最多 {n} 节；随时可停")
+                  message=(f"开始刷课，最多 {n} 节；随时可停"
+                           + (f"（错峰：先随机等最多 {jitter:g} 秒）" if jitter > 0 else "")))
 
 
 def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
@@ -1337,6 +1409,11 @@ def create_app(settings: Settings) -> FastAPI:
             "course": sections_course,
             "courses_cached": courses_cached,
             "auto_submit": bool(settings.raw.get("gxks", {}).get("auto_submit", False)),
+            # 并发闸状态（P2a，2026-11-06）：批量栏要显示「并发 2/2」并在满时给红标签。
+            # `live_study` 只数 study 任务（节列表/练习不占学习并发位，见 `_live_study_count`）。
+            "limit_concurrency": _concurrency_limit(settings),
+            "live_study": _live_study_count(),
+            "start_jitter": _start_jitter(settings),
             # `include_finished=True`：刚结束的任务也带上（`alive: false`），
             # 这样页面能继续显示最后一次的日志尾巴（2026-11-03 用户要求）。
             # 其他接口仍用默认 False，不会把已结束的当"在跑"。
@@ -1746,10 +1823,38 @@ def create_app(settings: Settings) -> FastAPI:
             alive_map = gchrome.ports_alive(
                 [ports[l] for l in labels if l in ports])
         results: list[dict[str, Any]] = []
+        # ---- 并发闸（P2a，2026-11-06）：先算「这一批还能起几个」再逐个起 ----
+        #
+        # 为什么不能靠 `_study_one` 里逐个判：那个 `live` 数是**起之前**的计数，
+        # 循环里起完第一个后它没刷新（`_spawn_script` 会写进 `_JOBS`，所以其实会变，
+        # 但被测的间隔/竞态太难保证）。这里**显式算配额**更可预期：
+        #   room = 上限 - 已在跑；最多个起 room 个，其余的标 blocked 并说清原因。
+        start_room: int | None = None
+        batch_jitter = 0.0
+        if action == "start":
+            limit = _concurrency_limit(settings)
+            start_room = max(0, limit - _live_study_count())
+            started_n = 0
+            # 随机错峰（P2a）：同一秒批量起 N 个是"集群行为"最明显的形态。
+            # 只在**批量起 ≥2 个**时才加，单个账号不该凭空等 30 秒。
+            batch_jitter = _start_jitter(settings)
+            if len(labels) < 2:
+                batch_jitter = 0.0
         for label in labels:
             if action == "start":
-                got = _study_one(settings, label, body.get("max_sections"),
-                                 port_alive=alive_map.get(ports.get(label, 0)))
+                if start_room is not None and started_n >= start_room:
+                    got = {"ok": False, "blocked": True, "concurrency_full": True,
+                           "error": (f"同时学习上限是 {limit} 个，这一批只能再起 "
+                                     f"{start_room} 个；这个先不起。"
+                                     "先「停止」一些或到「面板设置」调高上限")}
+                else:
+                    got = _study_one(settings, label, body.get("max_sections"),
+                                     port_alive=alive_map.get(ports.get(label, 0)),
+                                     check_concurrency=False,
+                                     jitter=batch_jitter)
+                    # 真起来了才占一个配额（被浏览器闸/已在跑挡下的不占）
+                    if got.get("ok"):
+                        started_n += 1
             elif action == "start-browser":
                 got = _browser_start_one(settings, label, run_session=_session_script)
             elif action == "stop":
@@ -1778,6 +1883,7 @@ def create_app(settings: Settings) -> FastAPI:
             results.append({"label": label, "ok": bool(got.get("ok")),
                             "skipped": bool(got.get("skipped")),
                             "blocked": bool(got.get("blocked")),
+                            "concurrency_full": bool(got.get("concurrency_full")),
                             "need_browser": bool(got.get("need_browser")),
                             "message": str(got.get("message") or got.get("error") or "")})
 
@@ -1796,7 +1902,17 @@ def create_app(settings: Settings) -> FastAPI:
             # 跳过的原因各不相同（已在跑 / 没在跑），取各自原文更有用
             note += f"；跳过 {len(skipped)} 个（{ '、'.join(r['label'] for r in skipped) }）"
         if blocked:
-            note += f"；{len(blocked)} 个需先停止（{ '、'.join(r['label'] for r in blocked) }）"
+            # `blocked` 有两种来源，文案必须分开说 —— 否则「并发已满」会被读成
+            # 「有任务在跑要先去停」，用户会白找一圈（2026-11-06）。
+            full = [r for r in blocked if r.get("concurrency_full")]
+            other = [r for r in blocked if not r.get("concurrency_full")]
+            if other:
+                note += (f"；{len(other)} 个需先停止"
+                         f"（{ '、'.join(r['label'] for r in other) }）")
+            if full:
+                note += (f"；{len(full)} 个因并发已满未启动"
+                         f"（{ '、'.join(r['label'] for r in full) }）"
+                         "——想都启动就停几个或到「面板设置」调高上限")
         if failed:
             why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
             more = "" if len(failed) <= 5 else f" 等 {len(failed)} 个"
