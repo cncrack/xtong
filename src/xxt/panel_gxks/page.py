@@ -313,20 +313,36 @@ table.acct-tbl td.c-today .c-r24{display:block;margin-top:1px;
   background:#eef0f3;overflow:hidden;vertical-align:middle;margin-left:5px}
 .mini-bar i{display:block;height:100%;background:#3fb27f}
 .mini-bar i.warn{background:#f2b45c}
-/* 浏览器卡的按钮组（2026-11-02 重排）：两组各占一行，组内等宽、标签在左。
-   原来 5 个按钮平铺一行，宽度随文字长短不一、主次不分。 */
-.bgrp{display:flex;align-items:center;gap:6px;margin:0 0 8px}
-.bgrp-lab{flex:0 0 42px;color:var(--dim);font-size:12px;white-space:nowrap}
-.bgrp-btn{flex:1 1 0;min-width:0;padding:5px 6px;font-size:12.5px;
+/* 浏览器卡的按钮组（2026-11-02 重排；2026-11-06 再排一次）
+   ---------------------------------------------------------------
+   原来：每组 = 「标签 42px + N 个按钮 flex:1 1 0 均分」。
+   侧栏只有 ~350px（主区 8fr / 侧栏 4fr），减内边距后剩 ~320px：
+      标签 42 + gap 6 -> 三按钮各 ~90px
+      「启动并登录」5 个字约 62px（12.5px 字）勉强塞下，
+      但批量行 4 个元素 -> 全被 ellipsis 截成「启动并...」。难读且无主次。
+   现在分三层：
+     1 .bgrp-title 组标题占**整行**（浏览器/会话/批量 各一行小字），
+       不再和按钮抢那 42px -> 每行按钮可用宽度整体变宽；
+     2 .bgrp-btn 按钮**两列网格**（flex:1 1 44%），每个约 150px，
+       5 个字稳稳单行；元素为奇数时最后一个自动占满整行；
+     3 批量行是**次级操作**，用 .bgrp-btn--sub 收一点重量，
+       只有「一键启动并学习」保留 primary —— 它才是批量里最该点的那个。
+   窄屏（<=760px）单列化 + 38px 高，按 AGENTS 界面约定 2/4。 */
+.bgrp{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+/* 组标题：flex-basis 100% = 独占一整行 */
+.bgrp-title{flex:1 1 100%;color:var(--dim);font-size:11.5px;line-height:1.4;
+            letter-spacing:.02em;margin:0 0 1px}
+/* 按钮两列：flex:1 1 44% = 可涨可缩、初始 44% 宽（44% x 2 + gap 6px 约 94%）。
+   min-width:0 是 flex 里出省略号的前提，否则按内容撑宽、撑破容器。 */
+.bgrp-btn{flex:1 1 44%;min-width:0;padding:6px 8px;font-size:12.5px;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* 卡片内批量条（2026-11-06）：多选 + 三个组合动作。
-   窄屏必须换行（AGENTS 界面约定②），按钮最小宽度保证手指可点（约定④ ≤760px）。 */
+.bgrp-btn--sub{border:1px solid var(--line);background:#fff;color:var(--txt)}
 .bgrp-batch{flex-wrap:wrap}
 .b-note{flex:1 1 100%;color:var(--dim);font-size:12px;margin:2px 0 0;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:760px){
-  .bgrp-batch .bgrp-lab{flex:0 0 auto}
-  .bgrp-batch .bgrp-btn,.bgrp-batch .mini{flex:1 1 46%;min-height:38px}
+  /* 手机宽度：一列一个，按钮 38px 高（手指可点） */
+  .bgrp-btn{flex:1 1 100%;min-height:38px}
 }
 /* 右列「账号详情」：常驻卡片（用户 2026-11-02 要求）。
    原来它是 position:fixed 的悬停浮层，跟着鼠标跑、会挡住表格；
@@ -683,25 +699,25 @@ button.mini{padding:3px 9px;font-size:13px}
     <div class="card-head">
       <h2>浏览器与会话 <span class="muted" id="browser-meta"></span></h2>
     </div>
-    <!-- 按钮重排（用户 2026-11-02：「这几个按钮要重新排列一下」）：
-         原来 5 个平铺一行、宽度不一、主次不分。现在分两组：
-           ① 生命周期：启动 / 停止（互斥，主操作）
-           ② 会话：检查 / 恢复 / 重登（按"先看有没有登录 → 没登录才恢复或重登"的顺序）
-         每组内等宽，组间留空隙，一眼能看出哪些是一类。 -->
+    <!-- 按钮布局（2026-11-02 初排；2026-11-06 再排一次）
+         初排是「42px 标签 + 按钮 flex 均分」，侧栏只有 ~320px：
+           浏览器 3 个 / 会话 3 个 / 批量 4 个 全挤一行 →
+           每个按钮 ~90px，"启动并登录" 直接出省略号，主次也分不出来。
+         现在每组：组标题**独占一行**，按钮**两列网格**（每列约 140px），
+           奇数个时最后一个自动占满整行 —— 文案不再被截。 -->
     <div class="bgrp">
-      <span class="bgrp-lab">浏览器</span>
+      <span class="bgrp-title">浏览器</span>
       <button id="btn-bstart" class="bgrp-btn primary" onclick="startBrowser()"
         title="用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）">启动并登录</button>
-      <button id="btn-bstop" class="bgrp-btn danger"
-        onclick="stopBrowser()"
+      <button id="btn-bstop" class="bgrp-btn danger" onclick="stopBrowser()"
         title="只停面板自己拉起的那个 Chrome">停止</button>
-      <button id="btn-bcopy" class="mini" type="button" onclick="copyChromeCmd()"
+      <button id="btn-bcopy" class="bgrp-btn bgrp-btn--sub" type="button" onclick="copyChromeCmd()"
         title="复制该账号的 Chrome 启动命令（面板在非交互会话里无法启动 GUI 程序时用）">复制命令</button>
       <!-- 账号密码状态放在浏览器这一行（用户 2026-11-02 建议），与「已登录」在会话行对称 -->
       <span class="b-login" id="b-cred"></span>
     </div>
     <div class="bgrp">
-      <span class="bgrp-lab">会话</span>
+      <span class="bgrp-title">会话</span>
       <button id="btn-scheck" class="bgrp-btn" onclick="checkSession()"
         title="访问平台一次，确认当前账号的登录态是否有效">检查</button>
       <button id="btn-srestore" class="bgrp-btn" onclick="restoreSession()"
@@ -714,21 +730,22 @@ button.mini{padding:3px 9px;font-size:13px}
     <!-- 批量操作（2026-11-06 用户：「如果是有多个账号，右侧栏的浏览器与会话可以
          一键启动多个账号吗…一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」）：
          这里不再需要"先跑到表格里勾选"—— 本卡片直接给出多选 + 三个组合动作。
-         ⚠ 「一键启动并学习」是最有用那个：起浏览器 → 等端口活 → 自动开始学习。 -->
+         ⚠ 「一键启动并学习」是最有用那个：起浏览器 → 等端口活 → 自动开始学习。
+         它是次级操作，但仍排两列第一行（最常点的位置），只是配色收成 sub + primary 光标。 -->
     <div class="bgrp bgrp-batch">
-      <span class="bgrp-lab">批量</span>
-      <button id="btn-ball" class="mini" type="button" onclick="batchSelectAll()"
-        title="选中当前筛选里可见、且**浏览器没开或没在跑**的账号">全选待启动</button>
-      <span class="b-note" id="b-batch-note">未选中</span>
-      <button id="btn-bbrowser" class="bgrp-btn" type="button"
-        onclick="batchBrowserAction('start-browser')"
-        title="为选中的账号逐个拉起 Chrome（每个约 10~40 秒，串行）">批量启动浏览器</button>
+      <span class="bgrp-title">批量（多账号）</span>
+      <button id="btn-ball" class="bgrp-btn bgrp-btn--sub" type="button" onclick="batchSelectAll()"
+        title="选中当前筛选里可见、且浏览器没开或没在跑的账号">全选待启动</button>
       <button id="btn-bstudy" class="bgrp-btn primary" type="button"
         onclick="batchBrowserAction('start-and-study')"
         title="一键：起浏览器 → 等端口就绪 → 开始学习（每个约 10~40 秒）">一键启动并学习</button>
-      <button id="btn-bstopall" class="bgrp-btn danger" type="button"
+      <button id="btn-bbrowser" class="bgrp-btn bgrp-btn--sub" type="button"
+        onclick="batchBrowserAction('start-browser')"
+        title="只启动浏览器（不开始学习）：为选中的账号逐个拉起 Chrome，每个约 10~40 秒">只启动浏览器</button>
+      <button id="btn-bstopall" class="bgrp-btn bgrp-btn--sub" type="button"
         onclick="batchBrowserAction('stop')"
         title="停掉选中账号的学习任务（没在跑的会跳过，不算失败）">批量停止</button>
+      <span class="b-note" id="b-batch-note">未选中</span>
     </div>
     <div id="browser"></div>
 

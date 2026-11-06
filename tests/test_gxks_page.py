@@ -599,7 +599,7 @@ class TestLoginTagOnSessionRow(unittest.TestCase):
 
     def test_placeholder_in_session_row(self):
         # 会话行的 bgrp 里要有 b-login 占位
-        m = PAGE.split('class="bgrp-lab">会话', 1)
+        m = PAGE.split('class="bgrp-title">会话', 1)
         self.assertEqual(len(m), 2, "找不到会话行")
         seg = m[1].split("</div>", 1)[0]
         self.assertIn('id="b-login"', seg)
@@ -1023,12 +1023,18 @@ class TestBrowserButtonsLayout(unittest.TestCase):
     """
 
     def test_buttons_are_grouped(self):
+        """三组按钮（浏览器 / 会话 / 批量），每组一个占整行的组标题。
+
+        2026-11-06 布局改版：`bgrp-lab`（42px 占位标签）换成 `bgrp-title`（独占整行）。
+        按钮总数 = 浏览器 3 + 会话 3 + 批量 4 = 10。
+        """
         self.assertIn('class="bgrp"', PAGE)
-        self.assertIn('class="bgrp-lab">浏览器', PAGE)
-        self.assertIn('class="bgrp-lab">会话', PAGE)
-        # 2026-11-06 加了第三组「批量」（3 个按钮）→ 5 + 3 = 8
-        self.assertIn('class="bgrp-lab">批量', PAGE)
-        self.assertEqual(PAGE.count('class="bgrp-btn'), 8, "所有按钮都要用组内样式")
+        self.assertIn('class="bgrp-title">浏览器', PAGE)
+        self.assertIn('class="bgrp-title">会话', PAGE)
+        self.assertIn('class="bgrp-title">批量', PAGE)
+        self.assertEqual(PAGE.count('class="bgrp-btn'), 10, "所有按钮都要用组内样式")
+        # 旧的 42px 占位标签必须彻底消失（否则两组样式会打架）
+        self.assertNotIn("bgrp-lab", PAGE)
 
     def test_batch_group_has_three_actions(self):
         """卡片内批量条（2026-11-06 用户：「一个一个去点启动并登录，那也挺麻烦」）。
@@ -1062,8 +1068,15 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertIn("c.port_alive ? \"\" :", tr)
 
     def test_group_css_makes_them_equal_width(self):
-        self.assertIn(".bgrp{display:flex;align-items:center;gap:6px", PAGE)
-        self.assertIn(".bgrp-btn{flex:1 1 0", PAGE)
+        """2026-11-06 布局改版：组标题独占整行 + 按钮两列网格。
+
+        原来断言 `flex:1 1 0`（一行均分），现在断言 `flex:1 1 44%`（两列），
+        以及「组标题占整行」的 `flex:1 1 100%` —— 这两条是这次布局的关键。
+        """
+        self.assertIn(".bgrp{display:flex;align-items:center;flex-wrap:wrap;gap:6px",
+                      PAGE)
+        self.assertIn(".bgrp-btn{flex:1 1 44%", PAGE)
+        self.assertIn(".bgrp-title{flex:1 1 100%", PAGE)
 
     def test_lifecycle_buttons_keep_semantics(self):
         """启动是主操作、停止是危险操作，语义不能因为重排丢掉。"""
