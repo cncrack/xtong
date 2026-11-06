@@ -88,9 +88,12 @@ section{grid-column:span 12;background:var(--card);border:1px solid var(--line);
      现在：上半段（浏览器信息）限高并在内部滚动，下半段（账号详情）保底 180px。 */
   /* 右栏现在是 4fr（更宽），浏览器区能显示更完整的内容（用户：
      「右侧栏宽度要调大些，不然浏览器与会话中有些下面内容看不全」）。
-     上半段给到 52%，剩下的留给账号详情。 */
-  .split-side>#browser{flex:0 1 auto;overflow:auto;min-height:0;max-height:52%}
-  .split-side>#acct-side{flex:1 1 auto;overflow:auto;min-height:180px;
+     2026-11-06 返工：原来 max-height:52%，加上按钮占了几行高之后，
+       **Chrome / profile 路径被挤进内部滚动区、肉眼看不见**（用户反馈「路径都没有了」）。
+       现在提到 68%，并把按钮组设为 `flex:0 0 auto`（不参与挤压），
+       确保路径那几行始终在可视范围内。 */
+  .split-side>#browser{flex:0 1 auto;overflow:auto;min-height:0;max-height:68%}
+  .split-side>#acct-side{flex:1 1 auto;overflow:auto;min-height:150px;
                          margin-top:10px;padding-top:10px;
                          border-top:1px solid var(--line)}
   /* 表格自己不要再套一层滚动：外层 #accounts 已经在滚了，
@@ -328,17 +331,34 @@ table.acct-tbl td.c-today .c-r24{display:block;margin-top:1px;
      3 批量行是**次级操作**，用 .bgrp-btn--sub 收一点重量，
        只有「一键启动并学习」保留 primary —— 它才是批量里最该点的那个。
    窄屏（<=760px）单列化 + 38px 高，按 AGENTS 界面约定 2/4。 */
-.bgrp{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 8px}
-/* 组标题：flex-basis 100% = 独占一整行 */
-.bgrp-title{flex:1 1 100%;color:var(--dim);font-size:11.5px;line-height:1.4;
-            letter-spacing:.02em;margin:0 0 1px}
-/* 按钮两列：flex:1 1 44% = 可涨可缩、初始 44% 宽（44% x 2 + gap 6px 约 94%）。
-   min-width:0 是 flex 里出省略号的前提，否则按内容撑宽、撑破容器。 */
-.bgrp-btn{flex:1 1 44%;min-width:0;padding:6px 8px;font-size:12.5px;
-          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bgrp{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin:0 0 7px}
+/* 组标题改回**行内小标签**（2026-11-06 第二次返工）：
+   上一版让它独占整行 → 3 个组就多出 3 行高度，用户说「内容少了、右侧空间浪费」。
+   现在它只是行首一个 36px 的小字标签，和按钮同处一行、不额外占高度。
+   ⚠ 与最初版本的差别：宽度从 42px 收到 **auto**（`flex:0 0 auto`），
+   并按最长标签（「批量（多账号）」太长 → 改用「批量」，见 HTML）自然对齐。 */
+.bgrp-title{flex:0 0 38px;color:var(--dim);font-size:11px;white-space:nowrap;
+            line-height:1.4}
+/* 按钮按**内容宽度**排、靠左紧凑（2026-11-06 第二次返工）
+   ---------------------------------------------------------------
+   上一版用 `flex:1 1 44%` 强行两列等宽 → 用户反馈：
+   「按钮太大太宽、右侧空间本来就小、原来面板的一些路径都没有了」。
+   确实难看：`停止` 两字占半行、`复制命令` 被拉成整行大块。
+
+   这一版：**`flex:0 0 auto`** = 宽 = 文字宽 + padding，**既不拉长也不压缩**；
+   一行放不下自动换行。短按钮（停止/检查）自然窄，长按钮自然宽，
+   右侧不再有大片空白，高度也降下来（把空间还给下面的 Chrome/profile 路径）。
+   需要给按钮留点击区，所以 padding 保持水平 9px；
+   万一某个按钮文字特别长（未来新增），`max-width:100%` 保证它不会撑破卡片，
+   配合 `min-width:0` + ellipsis 优雅降级。 */
+.bgrp-btn{flex:0 0 auto;max-width:100%;min-width:0;padding:4px 9px;
+          font-size:12px;white-space:nowrap;overflow:hidden;
+          text-overflow:ellipsis}
 .bgrp-btn--sub{border:1px solid var(--line);background:#fff;color:var(--txt)}
+/* 批量行略降一级：字号更小、边界更柔 */
+.bgrp-batch .bgrp-btn{font-size:11.5px;padding:4px 7px}
 .bgrp-batch{flex-wrap:wrap}
-.b-note{flex:1 1 100%;color:var(--dim);font-size:12px;margin:2px 0 0;
+.b-note{flex:1 1 100%;color:var(--dim);font-size:11.5px;margin:1px 0 0;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:760px){
   /* 手机宽度：一列一个，按钮 38px 高（手指可点） */
@@ -699,12 +719,15 @@ button.mini{padding:3px 9px;font-size:13px}
     <div class="card-head">
       <h2>浏览器与会话 <span class="muted" id="browser-meta"></span></h2>
     </div>
-    <!-- 按钮布局（2026-11-02 初排；2026-11-06 再排一次）
-         初排是「42px 标签 + 按钮 flex 均分」，侧栏只有 ~320px：
-           浏览器 3 个 / 会话 3 个 / 批量 4 个 全挤一行 →
-           每个按钮 ~90px，"启动并登录" 直接出省略号，主次也分不出来。
-         现在每组：组标题**独占一行**，按钮**两列网格**（每列约 140px），
-           奇数个时最后一个自动占满整行 —— 文案不再被截。 -->
+    <!-- 按钮布局（2026-11-02 初排 → 2026-11-06 两轮返工）
+         ① 初排「42px 标签 + 按钮均分」：侧栏仅 ~320px，批量行 4 元素各 ~65px
+            而「一键启动并学习」要 88px → 全被截断。
+         ② 第一轮改成「组标题占整行 + 两列等宽」：不截断了，但**过头了** —
+            `停止` 两字也占半行、`复制命令` 拉成整行大块，3 个标题又多吃 3 行高度，
+            用户反馈「按钮太大太宽、右侧空间本来就小、路径都不见了」。
+         ③ 本轮（定稿）：**组标题回到行首小标签**（不额外占高度），
+            **按钮按文字宽度紧凑排列**（`flex:0 0 auto`），一行放不下才换行。
+            短按钮自然窄、长按钮自然宽，右侧不再浪费，纵向也不撑高 -->
     <div class="bgrp">
       <span class="bgrp-title">浏览器</span>
       <button id="btn-bstart" class="bgrp-btn primary" onclick="startBrowser()"
@@ -729,11 +752,11 @@ button.mini{padding:3px 9px;font-size:13px}
     </div>
     <!-- 批量操作（2026-11-06 用户：「如果是有多个账号，右侧栏的浏览器与会话可以
          一键启动多个账号吗…一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」）：
-         这里不再需要"先跑到表格里勾选"—— 本卡片直接给出多选 + 三个组合动作。
+         本卡片直接给出多选 + 三个组合动作，不必先跑到表格里勾选。
          ⚠ 「一键启动并学习」是最有用那个：起浏览器 → 等端口活 → 自动开始学习。
-         它是次级操作，但仍排两列第一行（最常点的位置），只是配色收成 sub + primary 光标。 -->
+         标签缩短成「批量」让三行左边缘对齐（detail 在 title 里）。 -->
     <div class="bgrp bgrp-batch">
-      <span class="bgrp-title">批量（多账号）</span>
+      <span class="bgrp-title" title="批量：对多个账号一起操作（勾选在表格最左侧复选框）">批量</span>
       <button id="btn-ball" class="bgrp-btn bgrp-btn--sub" type="button" onclick="batchSelectAll()"
         title="选中当前筛选里可见、且浏览器没开或没在跑的账号">全选待启动</button>
       <button id="btn-bstudy" class="bgrp-btn primary" type="button"

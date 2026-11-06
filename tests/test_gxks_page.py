@@ -1023,16 +1023,18 @@ class TestBrowserButtonsLayout(unittest.TestCase):
     """
 
     def test_buttons_are_grouped(self):
-        """三组按钮（浏览器 / 会话 / 批量），每组一个占整行的组标题。
+        """三组按钮（浏览器 / 会话 / 批量），每组一个行首小标签。
 
-        2026-11-06 布局改版：`bgrp-lab`（42px 占位标签）换成 `bgrp-title`（独占整行）。
-        按钮总数 = 浏览器 3 + 会话 3 + 批量 4 = 10。
+        2026-11-06 两轮返工后的定稿：`bgrp-lab`（42px 占位）→ `bgrp-title`。
+        ⚠ 断言用「文本 + 类名分别检查」而不是拼完整字符串 ——
+        批量那个 span 带 `title` 属性，精确拼接会因属性位置不同而误判。
         """
         self.assertIn('class="bgrp"', PAGE)
-        self.assertIn('class="bgrp-title">浏览器', PAGE)
-        self.assertIn('class="bgrp-title">会话', PAGE)
-        self.assertIn('class="bgrp-title">批量', PAGE)
-        self.assertEqual(PAGE.count('class="bgrp-btn'), 10, "所有按钮都要用组内样式")
+        self.assertEqual(PAGE.count('class="bgrp-title"'), 3, "应有三个组标题")
+        self.assertEqual(PAGE.count('class="bgrp-btn'), 10,
+                         "按钮总数 = 浏览器 3 + 会话 3 + 批量 4")
+        for word in (">浏览器<", ">会话<", ">批量<"):
+            self.assertIn(word, PAGE, f"组标题缺少 {word}")
         # 旧的 42px 占位标签必须彻底消失（否则两组样式会打架）
         self.assertNotIn("bgrp-lab", PAGE)
 
@@ -1067,16 +1069,19 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertIn("startWithBrowser", tr)
         self.assertIn("c.port_alive ? \"\" :", tr)
 
-    def test_group_css_makes_them_equal_width(self):
-        """2026-11-06 布局改版：组标题独占整行 + 按钮两列网格。
+    def test_buttons_are_content_sized_not_stretched(self):
+        """2026-11-06 定稿布局：按钮按**文字宽度**紧凑排，不强行拉成等宽。
 
-        原来断言 `flex:1 1 0`（一行均分），现在断言 `flex:1 1 44%`（两列），
-        以及「组标题占整行」的 `flex:1 1 100%` —— 这两条是这次布局的关键。
+        用户先后两次反馈：① 挤成一行 → 文案被 ellipsis 截断；
+        ② 改成两列等宽后 → 「按钮太大太宽、右侧空间本来就小、路径都不见了」。
+        所以定稿是 `flex:0 0 auto`（宽 = 文字 + padding），一行放不下才换行；
+        组标题回到**行首小标签**（不额外占高度），并给固定 38px 让三行左边缘对齐。
         """
-        self.assertIn(".bgrp{display:flex;align-items:center;flex-wrap:wrap;gap:6px",
-                      PAGE)
-        self.assertIn(".bgrp-btn{flex:1 1 44%", PAGE)
-        self.assertIn(".bgrp-title{flex:1 1 100%", PAGE)
+        self.assertIn(".bgrp-btn{flex:0 0 auto", PAGE)
+        self.assertIn(".bgrp-title{flex:0 0 38px", PAGE)
+        # 反证：不能再回到"均分/等宽"的写法（那正是被否掉的中间版本）
+        self.assertNotIn(".bgrp-btn{flex:1 1 44%", PAGE)
+        self.assertNotIn(".bgrp-title{flex:1 1 100%", PAGE)
 
     def test_lifecycle_buttons_keep_semantics(self):
         """启动是主操作、停止是危险操作，语义不能因为重排丢掉。"""
