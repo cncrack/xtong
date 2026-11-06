@@ -112,10 +112,35 @@ class TestAccountTable(unittest.TestCase):
         self.assertIn('id="acct-all"', PAGE)          # 表头全选
 
     def test_batch_actions_cover_all_five(self):
-        """用户要求批量：开始/停止/启用/停用/删除。"""
-        for act in ("start", "stop", "enable", "disable", "delete"):
+        """用户要求批量：开始/停止/启用/停用/删除（2026-11-06 又加「启动浏览器」）。"""
+        for act in ("start", "stop", "enable", "disable", "delete", "start-browser"):
             self.assertIn("batchAction(\\'" + act + "\\')", PAGE)
         self.assertIn("/api/accounts/batch", PAGE)
+
+    def test_batch_start_browser_button_only_when_needed(self):
+        """批量「启动浏览器」（P1）：只在选中里**真有浏览器没开**时才出现。
+
+        全开着时显示这个按钮点了也没意义，只是添乱。
+        """
+        bar = PAGE.split("function renderBatchBar(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("deadSel", bar)
+        self.assertIn("port_alive", bar)
+        self.assertIn("启动浏览器", bar)
+        # 按钮要带上「有几个没开」，让用户知道点下去要等多久
+        self.assertIn("个没开", bar)
+
+    def test_batch_start_browser_warns_about_duration(self):
+        """串行起 Chrome 每个 10~40 秒，必须先告诉用户要等，否则会重复点。"""
+        body = PAGE.split("async function batchAction(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("start-browser", body)
+        self.assertIn("10~40 秒", body)
+        self.assertIn("不要重复点", body)
+
+    def test_batch_disable_and_delete_warn_about_running(self):
+        """停用/删除遇到运行中的账号会在后端被拒 → 点之前就要说清（2026-11-06）。"""
+        body = PAGE.split("async function batchAction(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('action === "disable"', body)
+        self.assertIn("请先「停止」", body)
 
     def test_batch_delete_asks_twice(self):
         # 批量删除不可逆：前端先 confirm，后端再要 confirm 标记

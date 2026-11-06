@@ -1224,13 +1224,22 @@ function renderBatchBar(shown) {
   const startTag = runningSel
     ? '开始学习<span class="bb-note">（跳过 ' + runningSel + " 个在跑）</span>"
     : "开始学习";
+  // 「启动浏览器」只在**真的有几个浏览器没开**时才显示（2026-11-06 P1）：
+  // 全都开着时这个按钮点了也没有意义，只会添乱。
+  const deadSel = picked.filter((c) => !c.port_alive).length;
+  const browserBtn = deadSel
+    ? '<button class="mini" onclick="batchAction(\'start-browser\')" title="' +
+      "为选中的账号逐个拉起 Chrome（每个约 10~40 秒，串行）；已在跑的自动跳过" +
+      '">启动浏览器<span class="bb-note">（' + deadSel + " 个没开）</span></button>"
+    : "";
   html += '<b>已选 ' + n + ' 个</b>' +
     (runningSel ? '<span class="tag t-learn">其中 ' + runningSel + " 个运行中</span>" : "") +
     '<button class="mini primary" onclick="batchAction(\'start\')" title="' +
     (runningSel ? "已在跑的账号会自动跳过，只启动空闲的；不重复开" : "启动选中账号的学习任务")
     + '">' + startTag + "</button>" +
+    browserBtn +
     '<button class="mini" onclick="batchAction(\'stop\')" title="' +
-    (runningSel ? "停掉选中的运行中账号（没在跑的会提示没有任务）" : "停掉选中账号的学习任务")
+    (runningSel ? "停掉选中的运行中账号（没在跑的会跳过，不算失败）" : "停掉选中账号的学习任务")
     + '">停止</button>' +
     '<button class="mini" onclick="batchAction(\'enable\')">启用</button>' +
     '<button class="mini" onclick="batchAction(\'disable\')">停用</button>' +
@@ -1422,18 +1431,29 @@ async function batchAction(action) {
   const labels = [...SEL];
   if (!labels.length) return;
   const CN = { start: "开始学习", stop: "停止", enable: "启用",
-               disable: "停用", delete: "删除" };
-  // 选中里有几个正在跑：只在「开始学习」前提醒（其余动作不受影响）
+               disable: "停用", delete: "删除", "start-browser": "启动浏览器" };
+  // 选中里有几个正在跑。「开始学习」会跳过它们；「停用/删除」会被它们挡住
+  // （后端拒绝：有任务在跑先停）—— 两种情况都要在**点之前**说清（2026-11-06）。
   const cards = (STATE && STATE.cards) || [];
-  const runningSel = action === "start"
+  const runningSel = (action === "start" || action === "disable" || action === "delete")
     ? labels.filter((l) => {
         const c = cards.find((x) => x.label === l);
         return !!(c && c.job);
       })
     : [];
   if (action === "delete") {
-    if (!confirm("删除选中的 " + labels.length + " 个账号？\n\n" +
-      labels.join("、") + "\n\n只删账号表里这些条目；登录态快照与 profile 目录会保留。")) {
+    let msg = "删除选中的 " + labels.length + " 个账号？\n\n" +
+      labels.join("、") + "\n\n只删账号表里这些条目；登录态快照与 profile 目录会保留。";
+    if (runningSel.length) {
+      msg += "\n\n其中 " + runningSel.length + " 个正在跑（" + runningSel.join("、") +
+        "），会被拒绝 —— 要删它们请先「停止」。";
+    }
+    if (!confirm(msg)) return;
+  } else if (action === "disable" && runningSel.length) {
+    if (!confirm("对选中的 " + labels.length + " 个账号执行「停用」？\n\n" +
+      "其中 " + runningSel.length + " 个正在跑（" + runningSel.join("、") +
+      "），会被拒绝 —— 要停用它们请先「停止」。\n" +
+      "其余 " + (labels.length - runningSel.length) + " 个会正常停用。")) {
       return;
     }
   } else if (action === "start" && runningSel.length) {
@@ -1442,6 +1462,20 @@ async function batchAction(action) {
       "其中 " + runningSel.length + " 个正在跑（" + runningSel.join("、") +
       "），会被自动跳过 —— 不会重复开同一个账号。\n" +
       "只启动剩下 " + (labels.length - runningSel.length) + " 个空闲的。")) {
+      return;
+    }
+  } else if (action === "start-browser") {
+    // 串行拉起 Chrome，每个冷启动 10~40 秒 —— 必须先告诉用户要等多久，
+    // 否则会以为「点了没反应」而重复点（2026-11-06 P1）。
+    const dead = labels.filter((l) => {
+      const c = cards.find((x) => x.label === l);
+      return !(c && c.port_alive);
+    });
+    if (!confirm("为选中的 " + labels.length + " 个账号启动浏览器？\n\n" +
+      (dead.length ? dead.length + " 个的浏览器没开（" + dead.join("、") + "），会逐个拉起。\n"
+        : "") +
+      (labels.length - dead.length ? (labels.length - dead.length) + " 个已经在运行，会跳过。\n" : "") +
+      "\n每个约 10~40 秒，**这段时间不要重复点**。完成后会自动注入登录态。")) {
       return;
     }
   } else if (!confirm("对选中的 " + labels.length + " 个账号执行「" +
@@ -1463,6 +1497,10 @@ async function batchAction(action) {
     // 第二次必然全「已在跑」→ 满屏跳过提示（2026-11-06）。
     if (BUSY) return null;
     BUSY = true;
+    if (action === "start-browser") {
+      // 串行起 Chrome 可能要好几分钟：必须让用户看到"正在做"，否则以为卡死
+      toast("正在逐个启动浏览器（每个 10~40 秒，请勿重复点击）…");
+    }
     try {
       return await apiPost("/api/accounts/batch", body);
     } finally {
@@ -1470,10 +1508,13 @@ async function batchAction(action) {
     }
   })();
   if (!data) return;                                 // 上一批还没回来：忽略这次点击
-  // 汇总文案里已有「跳过 N 个（… 已在跑）」。只要没有**真失败**就按成功提示，
-  // 否则用户看到红色 toast 会以为批量挂了一半（2026-11-06）。
+  // 三类结果性质不同（2026-11-06）：
+  //   跳过 = 本来就不需要做（已在跑 / 本来没在跑）→ 绿提示
+  //   需先停止 = 状态前提不满足，用户能自己解决 → 黄提示（把原因说清）
+  //   失败 = 真出错 → 红提示
   const realFail = Number(data.failed) || 0;
-  // 「浏览器没起」是最常见的失败原因，且**用户能自己解决** → 用持久提示条
+  const blockedN = Number(data.blocked) || 0;
+  // 「浏览器没起」是最常见的真失败，且**用户能自己解决** → 用持久提示条
   // 把原文（端口号 + 启动命令）摊开，而不是 3 秒就消失的 toast。
   const noBrowser = (data.results || []).filter((r) => !r.ok && r.need_browser);
   if (noBrowser.length) {
@@ -1481,6 +1522,10 @@ async function batchAction(action) {
     showNotice("⚠ " + noBrowser.map((r) =>
       String(r.message || (r.label + " 启动失败"))).join("<br><br>").replace(/\n/g, "<br>"),
       true);
+  } else if (blockedN) {
+    const bl = (data.results || []).filter((r) => !r.ok && r.blocked);
+    showNotice("⚠ 有 " + blockedN + " 个账号正在跑，需先「停止」再" + CN[action] +
+      "：<br>" + bl.map((r) => "「" + r.label + "」").join("、"), true);
   } else {
     toast(data.message || data.error || "已提交", realFail > 0);
   }

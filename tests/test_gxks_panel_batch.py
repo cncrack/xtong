@@ -180,6 +180,11 @@ class TestAccountsBatch(unittest.TestCase):
     # ---------------------------------------------------------------- 停止
 
     def test_stop_reports_accounts_without_job(self):
+        """「本来就没在跑」是**预期内的跳过**，不是失败（2026-11-06）。
+
+        批量停 5 个账号、其中 4 个本来空闲时，若算成 4 个失败会弹红条，
+        用户以为停止操作出错了 —— 实际什么都没错。
+        """
         proc = mock.Mock(pid=1)
         proc.poll.return_value = None
         panel_app._JOBS["a2"] = {"proc": proc, "label": "a2", "kind": "study",
@@ -188,8 +193,11 @@ class TestAccountsBatch(unittest.TestCase):
         with mock.patch.object(panel_app, "_kill", return_value="已停止"):
             body = self._batch(["a1", "a2"], "stop")
         self.assertEqual(body["done"], 1)              # a2 停了
-        self.assertEqual(body["failed"], 1)            # a1 本来没跑
-        self.assertIn("没有在跑", body["error"])
+        self.assertEqual(body["skipped"], 1)           # a1 本来没跑 → 跳过
+        self.assertEqual(body["failed"], 0)            # 没有真失败
+        self.assertTrue(body["ok"])                    # 不该弹红提示
+        self.assertIn("跳过 1 个", body["message"])
+        self.assertIn("a1", body["message"])
 
     # ---------------------------------------------------------------- 删除
 
@@ -211,6 +219,7 @@ class TestAccountsBatch(unittest.TestCase):
         self.assertEqual([r["label"] for r in self._rows()], ["a3"])
 
     def test_delete_refuses_running_account(self):
+        """有任务在跑的账号不能删 —— 这是**状态前提不满足**（blocked），不是出错。"""
         proc = mock.Mock(pid=1)
         proc.poll.return_value = None
         panel_app._JOBS["a1"] = {"proc": proc, "label": "a1", "kind": "study",
@@ -219,7 +228,96 @@ class TestAccountsBatch(unittest.TestCase):
         body = self._batch(["a1", "a2"], "delete", confirm=True)
         # a2 删掉、a1 留下
         self.assertEqual([r["label"] for r in self._rows()], ["a1", "a3"])
+        self.assertEqual(body["blocked"], 1)
+        self.assertEqual(body["failed"], 0)
+        self.assertEqual(body["done"], 1)
+        self.assertIn("需先停止", body["message"])
+
+    def test_disable_refuses_running_account(self):
+        """有任务在跑的账号不能停用 —— 同样归 blocked，不是失败。
+
+        与删除同理：用户能自己解决（先停止），所以不该报红显得像系统故障。
+        """
+        proc = mock.Mock(pid=1)
+        proc.poll.return_value = None
+        panel_app._JOBS["a1"] = {"proc": proc, "label": "a1", "kind": "study",
+                                 "since": "12:00:00", "log": Path("nope.log"),
+                                 "detail": ""}
+        body = self._batch(["a1", "a2"], "disable")
+        rows = {r["label"]: r for r in self._rows()}
+        self.assertTrue(rows["a1"].get("enabled", True))    # a1 仍在用
+        self.assertFalse(rows["a2"]["enabled"])             # a2 停用了
+        self.assertEqual(body["blocked"], 1)
+        self.assertEqual(body["done"], 1)
+        self.assertEqual(body["failed"], 0)
+        self.assertIn("需先停止", body["message"])
+
+    def test_enable_on_disabled_account(self):
+        """批量启用是已实现的功能（用户 2026-11-06 问「启用/停用是否也能批量」）。"""
+        body = self._batch(["a3"], "enable")                # a3 夹具本来停用
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["done"], 1)
+        self.assertTrue({r["label"]: r for r in self._rows()}["a3"]["enabled"])
+
+    # ---------------------------------------------------------------- 批量启动浏览器（P1）
+
+    def test_start_browser_spawns_for_dead_ports(self):
+        """批量「启动浏览器」（2026-11-06 P1）：多账号不用再逐个点。
+
+        走的必须是**与单个按钮同一段逻辑** `_browser_start_one`，
+        否则两条路早晚分家（P0 时 `refresh_sections` 自己手写端口检查就是这么漏的）。
+        """
+        with mock.patch.object(panel_app, "_browser_start_one",
+                               return_value={"ok": True, "message": "已启动"}) as one, \
+             mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: False, 9223: False}):
+            body = self._batch(["a1", "a2"], "start-browser")
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["done"], 2)
+        self.assertEqual(one.call_count, 2)
+        # 传的是账号代号，且带上了会话脚本（要注入登录态）
+        self.assertEqual({c.args[1] for c in one.call_args_list}, {"a1", "a2"})
+        for c in one.call_args_list:
+            self.assertIn("run_session", c.kwargs)
+
+    def test_start_browser_skips_already_running(self):
+        """端口已活的账号：**跳过**（不重复起），不是失败。"""
+        def _one(settings, label, **kw):
+            return {"ok": False, "skipped": True, "message": "端口 9222 已在运行"}
+
+        with mock.patch.object(panel_app, "_browser_start_one", side_effect=_one), \
+             mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: True, 9223: True}):
+            body = self._batch(["a1"], "start-browser")
+        self.assertTrue(body["ok"])          # 全都跳过也算成功
+        self.assertEqual(body["skipped"], 1)
+        self.assertEqual(body["failed"], 0)
+
+    def test_start_browser_reports_blocked_account(self):
+        """有任务在跑的账号不能重启浏览器（会把任务断连）→ blocked。"""
+        def _one(settings, label, **kw):
+            return {"ok": False, "blocked": True,
+                    "error": "该账号有任务在跑，先「停止」再启动浏览器"}
+
+        with mock.patch.object(panel_app, "_browser_start_one", side_effect=_one), \
+             mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: False}):
+            body = self._batch(["a1"], "start-browser")
+        self.assertEqual(body["blocked"], 1)
+        self.assertEqual(body["failed"], 0)
+
+    def test_start_browser_reports_real_failure(self):
+        """Chrome 找不到之类是真失败 → 红提示，且原因要透出。"""
+        def _one(settings, label, **kw):
+            return {"ok": False, "error": "找不到 Chrome"}
+
+        with mock.patch.object(panel_app, "_browser_start_one", side_effect=_one), \
+             mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: False}):
+            body = self._batch(["a1"], "start-browser")
+        self.assertFalse(body["ok"])
         self.assertEqual(body["failed"], 1)
+        self.assertIn("找不到 Chrome", body["error"])
 
 
 if __name__ == "__main__":

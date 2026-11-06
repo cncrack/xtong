@@ -51,6 +51,43 @@ class TestPanelSettingsStore(unittest.TestCase):
         s = gxks_panel_settings.load(Path(self.tmp.name) / "nope.db")
         self.assertIs(s["reload"], True)
 
+    # ------------------------------------------------------- load_strict（2026-11-06）
+
+    def test_strict_distinguishes_missing_from_unreadable(self):
+        """`load()` 读不到就回默认值，会让人分不清「没配」和「路径错」。
+
+        2026-11-06 我因此把目录当 db 路径传进去、拿到默认 `reload=True`，
+        误判成「开着却没生效」的 bug —— 所以补一个能区分两者的入口。
+        """
+        good = gxks_panel_settings.load_strict(self.db)
+        self.assertTrue(good["ok"])
+        self.assertTrue(good["db_exists"])
+        self.assertEqual(good["present"], {})          # 库是空的：确实没配
+
+        missing = Path(self.tmp.name) / "nope.db"
+        bad = gxks_panel_settings.load_strict(missing)
+        self.assertFalse(bad["ok"])
+        self.assertFalse(bad["db_exists"])
+        self.assertIn("不存在", bad["error"])
+        # ⚠ **只读诊断不许留副作用**：sqlite3.connect 会新建空文件，
+        # 所以 load_strict 必须先判存在性、不存在就不连（否则诊断脚本会造出一个空库）。
+        self.assertFalse(missing.exists(), "load_strict 不该凭空创建一个空库文件")
+
+    def test_strict_reports_raw_values(self):
+        """`present` 要给**原始字符串**，不能只给解析后的布尔——排查时要看原本写了什么。"""
+        gxks_panel_settings.save(self.db, {"reload": False, "poll_seconds": 7})
+        got = gxks_panel_settings.load_strict(self.db)
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["present"]["panel.reload"], "false")
+        self.assertEqual(got["present"]["panel.poll_seconds"], "7")
+        self.assertIs(got["settings"]["reload"], False)
+
+    def test_strict_on_a_directory_is_not_ok(self):
+        """把目录当 db 路径传（我踩过的那个坑）必须明确失败，而不是「看起来正常」。"""
+        got = gxks_panel_settings.load_strict(Path(self.tmp.name))
+        self.assertFalse(got["ok"])
+        self.assertTrue(got["error"])
+
 
 class TestPanelSettingsPage(unittest.TestCase):
     """页面上的设置入口（用户：「这个设置配置项了，在页面上哪里？」）。"""

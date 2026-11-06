@@ -1133,7 +1133,11 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
         # 但**不能被当成活的去停**（否则会对一个已死的 pid 报「已停止」，
         # 用户以为停了，实际什么都没发生 —— 2026-11-03 测试抓到）。
     if not live:
-        return {"ok": False, "error": "该账号没有在跑的任务"}
+        # 与「开始学习」遇到在跑账号对称：这是**预期内的跳过**，不是错误。
+        # 不区分的话，批量停 5 个账号里有 4 个本来空闲，汇总会报「4 个没做成」弹红条
+        # （2026-11-06 用户问「停止/启用/停用是否也能批量」时实测发现）。
+        return {"ok": False, "skipped": True,
+                "error": "该账号没有在跑的任务"}
     results = []
     for key, job in live:
         results.append(_kill(job["proc"]))
@@ -1170,6 +1174,50 @@ def app_factory() -> FastAPI:
     """
     from ..config import Settings
     return create_app(Settings())
+
+
+def _browser_start_one(settings: Settings, label: str, *,
+                       run_session: Any) -> dict[str, Any]:
+    """为一个账号拉起 Chrome 并弄好登录态。返回面板回包（`ok`/`skipped`/`error`）。
+
+    ## 为什么抽成模块级（2026-11-06 P1）
+
+    单个「启动并登录」与**批量启动**必须走同一段逻辑，否则两条路早晚分家
+    （P0 那次 `refresh_sections` 自己手写端口检查、主路反而漏了，就是同一个教训）。
+
+    ## 三类结果要分清（直接决定前端弹什么颜色）
+
+    - `ok=True`：真起来了（或本来就在跑）；
+    - `skipped=True`：**预期内跳过** —— 端口已经活着（已在运行）、或 managed 后端
+      （容器形态本来就不该在这里起浏览器）；
+    - 其余为真失败（Chrome 没找到 / 交互式任务不存在 / 有任务在跑）。
+
+    `run_session` = `create_app` 内的 `_session_script`，以参数传入 —— 本函数在模块级。
+    """
+    acc = _account(settings, label)
+    state = _browser_state(settings, acc.label)
+    if state["backend"] != "cdp":
+        return {"ok": False, "skipped": True,
+                "error": "当前是 managed 后端（容器形态）：面板内不起浏览器。"
+                         "本机请把 config/settings.local.toml 里 browser_backend 改回 cdp"}
+    if state["port_alive"]:
+        # 端口已经活着 = 浏览器已在运行。对单个按钮来说这是"成功"（用户想要的状态已达成），
+        # 但对批量来说它是**跳过**（没必要重复起）。这里统一标 skipped，
+        # 由调用方决定怎么呈现（单个接口会把 skipped 当成 ok 返回，见 browser_start）。
+        return {"ok": False, "skipped": True,
+                "message": f"端口 {acc.port} 已在运行"}
+    if any(j["label"] == acc.label for j in _jobs_snapshot()):
+        return {"ok": False, "blocked": True,
+                "error": "该账号有任务在跑，先「停止」再启动浏览器"}
+    started = _start_chrome_interactive(acc.label, acc.port)
+    if not started.get("ok"):
+        return {"ok": False, "error": started.get("error") or "Chrome 没起来"}
+    _remember_browser(settings, acc.label, int(started.get("pid") or 0),
+                      acc.port, gbrowser.cdp_profile(settings, acc.label, acc))
+    _record(settings, acc.label, "browser-start",
+            f"面板启动 Chrome（端口 {acc.port}，交互式任务）")
+    return {"ok": True,
+            "message": _chrome_start_message(settings, acc, acc.port, run_session)}
 
 
 def _chrome_start_message(settings: Any, acc: Any, port: int,
@@ -1371,26 +1419,14 @@ def create_app(settings: Settings) -> FastAPI:
         只做本机形态：容器（managed）下浏览器由程序自己起，面板里没有窗口可给人用。
         """
         acc = _account(settings, str(body.get("label") or ""))
-        state = _browser_state(settings, acc.label)
-        if state["backend"] != "cdp":
-            return {"ok": False,
-                    "error": "当前是 managed 后端（容器形态）：面板内不起浏览器。"
-                             "本机请把 config/settings.local.toml 里 browser_backend 改回 cdp"}
-        if state["port_alive"]:
+        got = _browser_start_one(settings, acc.label, run_session=_session_script)
+        # 「端口已活着」对单个按钮是**成功**（用户想要的状态已经在了）：
+        # 文案要带上登录态检查结果，与旧行为保持一致。
+        if got.get("skipped") and got.get("message", "").startswith(f"端口 {acc.port} 已在运行"):
             return {"ok": True,
-                    "message": f"端口 {acc.port} 已在运行。"
+                    "message": got["message"] + "。"
                                + _chrome_start_message(settings, acc, acc.port, _session_script)}
-        if any(j["label"] == acc.label for j in _jobs_snapshot()):
-            return {"ok": False, "error": "该账号有任务在跑，先「停止」再启动浏览器"}
-        started = _start_chrome_interactive(acc.label, acc.port)
-        if not started.get("ok"):
-            return {"ok": False, "error": started.get("error") or "Chrome 没起来"}
-        _remember_browser(settings, acc.label, int(started.get("pid") or 0),
-                          acc.port, gbrowser.cdp_profile(settings, acc.label, acc))
-        _record(settings, acc.label, "browser-start",
-                f"面板启动 Chrome（端口 {acc.port}，交互式任务）")
-        return {"ok": True,
-                "message": _chrome_start_message(settings, acc, acc.port, _session_script)}
+        return got
 
     @app.post("/api/browser/stop")
     def browser_stop(body: dict) -> dict:
@@ -1681,7 +1717,8 @@ def create_app(settings: Settings) -> FastAPI:
         if not isinstance(labels, list) or not labels:
             return {"ok": False, "error": "没有选中账号"}
         labels = [str(x).strip().lower() for x in labels if str(x).strip()]
-        if action not in ("start", "stop", "enable", "disable", "delete"):
+        if action not in ("start", "stop", "enable", "disable", "delete",
+                          "start-browser"):
             return {"ok": False, "error": f"不认识的批量动作：{action}"}
 
         known = {a.label for a in gaccounts.load_accounts()}
@@ -1701,8 +1738,10 @@ def create_app(settings: Settings) -> FastAPI:
         # 端口探活**只对「开始学习」有意义**，且要**一次并发做完**再逐个判定：
         # 串行探 N 个账号最坏 N × timeout（批量 7 个能拖 3.5 秒）；
         # 停止/启用/停用/删除根本不看浏览器，白探一轮纯浪费（2026-11-06）。
+        # `start-browser` 自己会探（它要起浏览器），但**先并发探一轮**能省掉
+        # 「已经在跑」的那些白起一次计划任务（每个冷启动几秒~几十秒）。
         alive_map: dict[int, bool] = {}
-        if action == "start":
+        if action in ("start", "start-browser"):
             ports = {a.label: a.port for a in gaccounts.load_accounts()}
             alive_map = gchrome.ports_alive(
                 [ports[l] for l in labels if l in ports])
@@ -1711,12 +1750,15 @@ def create_app(settings: Settings) -> FastAPI:
             if action == "start":
                 got = _study_one(settings, label, body.get("max_sections"),
                                  port_alive=alive_map.get(ports.get(label, 0)))
+            elif action == "start-browser":
+                got = _browser_start_one(settings, label, run_session=_session_script)
             elif action == "stop":
                 got = _stop_one(settings, label)
             elif action in ("enable", "disable"):
                 want = action == "enable"
                 if not want and any(j["label"] == label for j in _jobs_snapshot()):
-                    got = {"ok": False, "error": "有任务在跑：先「停止」再停用"}
+                    got = {"ok": False, "blocked": True,
+                           "error": "有任务在跑：先「停止」再停用"}
                 elif gaccounts.set_enabled(label, want):
                     _record(settings, label, "account-toggle",
                             f"{'启用' if want else '停用'}账号 {label}（批量）")
@@ -1725,7 +1767,8 @@ def create_app(settings: Settings) -> FastAPI:
                     got = {"ok": False, "error": "账号表里没有它"}
             else:                                       # delete
                 if any(j["label"] == label for j in _jobs_snapshot()):
-                    got = {"ok": False, "error": "有任务在跑：先「停止」再删除"}
+                    got = {"ok": False, "blocked": True,
+                           "error": "有任务在跑：先「停止」再删除"}
                 elif gaccounts.delete_account(label):
                     _record(settings, label, "account-del",
                             f"删除账号 {label}（批量；profile 与快照保留）")
@@ -1734,28 +1777,38 @@ def create_app(settings: Settings) -> FastAPI:
                     got = {"ok": False, "error": "账号表里没有它"}
             results.append({"label": label, "ok": bool(got.get("ok")),
                             "skipped": bool(got.get("skipped")),
+                            "blocked": bool(got.get("blocked")),
                             "need_browser": bool(got.get("need_browser")),
                             "message": str(got.get("message") or got.get("error") or "")})
 
         done = [r for r in results if r["ok"]]
+        # 三类「没做成」性质不同，必须分开报（2026-11-06）：
+        #   skipped = 本来就不需要做（已在跑 / 本来没在跑）→ 正常，绿提示
+        #   blocked = 状态前提不满足（有任务在跑，先停再做）→ 用户可自行解决，黄提示
+        #   failed  = 真出错（未知代号 / 写盘失败 / 浏览器没起）→ 红提示
         skipped = [r for r in results if not r["ok"] and r["skipped"]]
-        failed = [r for r in results if not r["ok"] and not r["skipped"]]
+        blocked = [r for r in results if not r["ok"] and not r["skipped"] and r["blocked"]]
+        failed = [r for r in results
+                  if not r["ok"] and not r["skipped"] and not r["blocked"]]
         names = "、".join(r["label"] for r in done) or "（无）"
-        # 汇总文案必须把三类分开说，否则用户分不清「跳过的」和「真出错的」。
-        # `ok` 只反映**有没有真失败**：全是「已在跑」的跳过时仍算成功，
-        # 否则前端会弹红 toast，像批量挂了（2026-11-06）。
         note = ""
         if skipped:
-            note += f"；跳过 {len(skipped)} 个（{ '、'.join(r['label'] for r in skipped) } 已在跑）"
+            # 跳过的原因各不相同（已在跑 / 没在跑），取各自原文更有用
+            note += f"；跳过 {len(skipped)} 个（{ '、'.join(r['label'] for r in skipped) }）"
+        if blocked:
+            note += f"；{len(blocked)} 个需先停止（{ '、'.join(r['label'] for r in blocked) }）"
         if failed:
             why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
             more = "" if len(failed) <= 5 else f" 等 {len(failed)} 个"
             return {"ok": False, "results": results, "done": len(done),
-                    "skipped": len(skipped), "failed": len(failed),
+                    "skipped": len(skipped), "blocked": len(blocked),
+                    "failed": len(failed),
                     "error": f"{len(failed)} 个没做成{more}——{why}",
                     "message": f"完成 {len(done)} 个（{names}）{note}"}
+        # `ok` 只反映**有没有真失败**：全是跳过/需先停止时仍算成功，
+        # 否则前端会弹红 toast，像批量挂了。
         return {"ok": True, "results": results, "done": len(done),
-                "skipped": len(skipped), "failed": 0,
+                "skipped": len(skipped), "blocked": len(blocked), "failed": 0,
                 "message": f"完成 {len(done)} 个（{names}）{note}"}
 
     # ---------------------------------------------------------------- AI 配置（为 B5 做准备）
@@ -1944,16 +1997,24 @@ def serve(settings: Settings) -> int:
     host = str(panel.get("host", "127.0.0.1"))
     port = int(panel.get("port", 8301))
     # 页面上的开关（数据库 meta）优先于 toml：用户能在界面上改，改完重启即生效。
-    # toml 的 panel.reload 作为默认值来源，数据库里没有才用它。
+    # toml 的 `panel.reload` 只作默认值来源。
+    #
+    # ⚠ **必须把"这个值从哪一层来的"打进日志**（2026-11-06 教训）：
+    # 当时 DB 里是 `false`、界面/文档都说默认 `true`，我因为「读配置的函数读不到就回默认值」
+    # 而误判成 bug（其实是设置被关过）。日志写清来源，下次 3 秒就能判断，不用再查三层。
     reload_on = bool(panel.get("reload", True))
+    reload_src = "settings.toml"
     try:
         db_reload = gxks_panel_settings.load(_db_path(settings)).get("reload")
         if db_reload is not None:
             reload_on = bool(db_reload)
+            reload_src = "数据库 meta.panel.reload（界面开关）"
     except Exception:                                       # noqa: BLE001
-        pass                                                # 读不到就用 toml 的值
-    print(f"[OK] 第二平台面板：http://{host}:{port}（Ctrl+C 停止）"
-          + ("；已开热重载：改代码自动生效，不用手动重启" if reload_on else "；热重载已关"))
+        reload_src = "settings.toml（读 DB 失败，已回退）"
+    print(f"[OK] 第二平台面板：http://{host}:{port}（Ctrl+C 停止）")
+    print(f"[OK] 热重载：{'开' if reload_on else '关'}（来源：{reload_src}）"
+          + ("→ 改代码自动生效，不用手动重启" if reload_on
+             else "→ 改了代码必须手动重启面板，否则跑的还是旧代码"))
     if reload_on:
         # reload 必须传**导入字符串**，不能传 app 实例；源码目录随 settings 走
         src_dir = str(Path(__file__).resolve().parents[2])

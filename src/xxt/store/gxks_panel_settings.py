@@ -69,7 +69,13 @@ def _write(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def load(db_path: Path) -> dict[str, Any]:
-    """读全部面板设置（缺的用默认值）。**读不到就返回默认值**，不报错。"""
+    """读全部面板设置（缺的用默认值）。**读不到就返回默认值**，不报错。
+
+    ⚠ 这个"读不到就回默认值"的语义是为了**面板能起来**（配置坏了不该让整个面板不可用），
+    但它让调用方**无法区分**"用户没配"和"库读不到/路径传错" —— 2026-11-06 我就因此
+    把目录当 db 路径传进去，拿到默认值 `reload=True`，误判成"开着却没生效"的 bug。
+    需要区分时请用 `load_strict()`（诊断/排查用）。
+    """
     out = dict(DEFAULTS)
     try:
         conn = sqlite3.connect(str(db_path), timeout=5)
@@ -92,6 +98,46 @@ def load(db_path: Path) -> dict[str, Any]:
     finally:
         conn.close()
     return out
+
+
+def load_strict(db_path: Path) -> dict[str, Any]:
+    """诊断专用：**分清"没配"和"读不到"**，不静默回默认值。
+
+    返回 `{"ok", "settings", "present", "error"}`：
+    - `ok=False` 表示库打不开（路径错 / 文件不在 / 不是 sqlite），`settings` 仍是可用的默认值；
+    - `present` 是**数据库里真实存在的键**（如 `{"panel.reload": "false"}`），
+      `load()` 回默认值时就是这些键缺失。
+
+    只给诊断脚本与日志用；面板主路径仍走 `load()`（不能让配置问题把面板挡在门外）。
+    """
+    import os
+
+    result: dict[str, Any] = {"ok": False, "settings": dict(DEFAULTS),
+                              "present": {}, "error": "",
+                              "db": str(db_path),
+                              "db_exists": os.path.exists(str(db_path))}
+    # ⚠ 文件不存在就**不要去连**：`sqlite3.connect` 会**新建**一个空库文件，
+    # 一个「只读诊断」脚本因此留下副作用（诊断脚本三原则：清干净全部副作用）。
+    if not result["db_exists"]:
+        result["error"] = f"文件不存在：{db_path}"
+        return result
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error as exc:
+        result["error"] = f"打不开库：{exc}"
+        return result
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE ?", (PREFIX + "%",)
+        ).fetchall()
+        result["present"] = {str(k): str(v) for k, v in rows}
+        result["settings"] = load(db_path)     # 复用同一套解析，避免两处口径
+        result["ok"] = True
+    except sqlite3.Error as exc:
+        result["error"] = f"meta 表读不了：{exc}"
+    finally:
+        conn.close()
+    return result
 
 
 def save(db_path: Path, items: dict[str, Any]) -> dict[str, Any]:
