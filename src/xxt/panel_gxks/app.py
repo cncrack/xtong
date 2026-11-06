@@ -510,6 +510,58 @@ def _ensure_queue_worker(settings: Settings) -> None:
     _QUEUE_THREAD.start()
 
 
+def _start_and_study_one(settings: Settings, label: str, *,
+                         run_session: Any, max_sections: object = None,
+                         wait_seconds: float = 45.0) -> dict[str, Any]:
+    """**一键**：起浏览器 → 等端口就绪 → 起学习任务（2026-11-06 用户要求）。
+
+    ## 为什么需要它
+
+    原来是两步：先点「启动并登录」，等 10~40 秒 Chrome 起来，再点「学习」。
+    多账号时这个"等"最烦 —— 用户得盯着端口有没有活。这一键把两步串起来。
+
+    ## 为什么能等（不像别的接口那样怕阻塞）
+
+    `_browser_start_one` 内部已经等端口（`_start_chrome_interactive` 里有
+    最多 40 秒的轮询）。这里只是**再多兜一层**：万一端口比它报的更晚就绪。
+    批量调用方不调这个函数（批量走 `start-browser` + `start` 分两步，
+    避免单个账号卡住整批）。
+
+    返回与 `_study_one` 相同的回包语义（`ok` / `skipped` / `blocked` / `queued`）。
+    """
+    acc = _account(settings, label)
+    # 已经在跑就直接跳过（用户可能连点了两下，或这账号本来就在刷）
+    if any(j["label"] == acc.label for j in _jobs_snapshot()):
+        return {"ok": False, "skipped": True,
+                "error": "该账号已有任务在跑（浏览器与学习都不用再起）"}
+
+    # ① 浏览器：已经在跑就不重复起（`_browser_start_one` 会返回 skipped）
+    port_alive = gchrome.port_alive(acc.port)
+    if not port_alive:
+        got = _browser_start_one(settings, acc.label, run_session=run_session)
+        if not got.get("ok"):
+            # 浏览器都起不来，就不要再谈学习了 —— 原样把原因透出去
+            return got
+        # ② 等端口真的能连（`_start_chrome_interactive` 已等过，这里只是兜底）
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while time.monotonic() < deadline:
+            if gchrome.port_alive(acc.port):
+                port_alive = True
+                break
+            time.sleep(1.0)
+        if not port_alive:
+            return {"ok": False,
+                    "error": f"Chrome 起来了但端口 {acc.port} 还没就绪"
+                             f"（等了 {wait_seconds:.0f} 秒）——稍等片刻再点「学习」即可"}
+
+    # ③ 学习任务：走与单账号完全相同的逻辑（并发闸/日总量闸/错峰都在里面）
+    started = _study_one(settings, acc.label, max_sections, port_alive=True)
+    if started.get("ok"):
+        _ensure_queue_worker(settings)
+        started["message"] = ("浏览器就绪 → " + str(started.get("message") or "已开始学习"))
+    return started
+
+
 def _registry_path(settings: Settings) -> Path:
     """任务登记文件：面板重启后靠它把「还在跑但自己不知道」的任务认领回来。
 
@@ -1770,6 +1822,20 @@ def create_app(settings: Settings) -> FastAPI:
             _ensure_queue_worker(settings)
         return got
 
+    @app.post("/api/study/start-with-browser")
+    def do_study_with_browser(body: dict) -> dict:
+        """一键「启动并学习」：浏览器没起就先起，等就绪后再开始学习。
+
+        用户 2026-11-06：「开始学习与启动并登录之间的关系是如何的？先登录才能学习吗？
+        那如何解决选择的多个账号登陆问题呢？」—— 关系是**必须先有浏览器**，
+        所以把两步合成一步，多账号就不用"起一个、等、再点学习"循环 N 遍。
+        """
+        label = str(body.get("label") or "")
+        got = _start_and_study_one(settings, label,
+                                   run_session=_session_script,
+                                   max_sections=body.get("max_sections"))
+        return got
+
     @app.post("/api/stop")
     def do_stop(body: dict) -> dict:
         return _stop_one(settings, str(body.get("label") or ""))
@@ -2089,7 +2155,7 @@ def create_app(settings: Settings) -> FastAPI:
             return {"ok": False, "error": "没有选中账号"}
         labels = [str(x).strip().lower() for x in labels if str(x).strip()]
         if action not in ("start", "stop", "enable", "disable", "delete",
-                          "start-browser"):
+                          "start-browser", "start-and-study"):
             return {"ok": False, "error": f"不认识的批量动作：{action}"}
 
         known = {a.label for a in gaccounts.load_accounts()}
@@ -2112,7 +2178,7 @@ def create_app(settings: Settings) -> FastAPI:
         # `start-browser` 自己会探（它要起浏览器），但**先并发探一轮**能省掉
         # 「已经在跑」的那些白起一次计划任务（每个冷启动几秒~几十秒）。
         alive_map: dict[int, bool] = {}
-        if action in ("start", "start-browser"):
+        if action in ("start", "start-browser", "start-and-study"):
             ports = {a.label: a.port for a in gaccounts.load_accounts()}
             alive_map = gchrome.ports_alive(
                 [ports[l] for l in labels if l in ports])
@@ -2126,7 +2192,7 @@ def create_app(settings: Settings) -> FastAPI:
         start_room: int | None = None
         batch_jitter = 0.0
         fleet_refused: dict[str, Any] | None = None
-        if action == "start":
+        if action in ("start", "start-and-study"):
             limit = _concurrency_limit(settings)
             start_room = max(0, limit - _live_study_count())
             started_n = 0
@@ -2139,7 +2205,7 @@ def create_app(settings: Settings) -> FastAPI:
             # 一旦今天合计学够了，这一批一个都不该起。
             fleet_refused = _check_fleet_daily(settings)
         for label in labels:
-            if action == "start":
+            if action in ("start", "start-and-study"):
                 if fleet_refused:
                     got = dict(fleet_refused)      # 全局日总量已满 → 整批同理由
                 elif start_room is not None and started_n >= start_room:
@@ -2151,6 +2217,16 @@ def create_app(settings: Settings) -> FastAPI:
                     got = {"ok": False, "queued": True,
                            "message": (f"已排队（并发上限 {limit} 个已满，"
                                        "有账号跑完会自动开始）")}
+                elif action == "start-and-study":
+                    # 一键：起浏览器 → 等就绪 → 开始学习。
+                    # ⚠ 这里**逐个等**（每账号最多 45 秒），所以 N 个账号会把这批
+                    # 拖到 N×40 秒。批量场景本就该串行起浏览器（同时开会抢资源），
+                    # 且前端已提示"每个 10~40 秒、别重复点"。
+                    got = _start_and_study_one(settings, label,
+                                               run_session=_session_script,
+                                               max_sections=body.get("max_sections"))
+                    if got.get("ok"):
+                        started_n += 1
                 else:
                     got = _study_one(settings, label, body.get("max_sections"),
                                      port_alive=alive_map.get(ports.get(label, 0)),

@@ -207,6 +207,101 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertIn("任务在跑", body["error"])
 
+    # ------------------------------------------------ 一键「启动并学习」（2026-11-06）
+
+    def test_start_with_browser_starts_chrome_then_study(self):
+        """一键：浏览器没开 → 先起浏览器 → 端口就绪 → 起学习任务。
+
+        用户原话：「开始学习与启动并登录之间的关系是如何的？先登录才能学习吗？
+        那如何解决选择的多个账号登陆问题呢？」—— 关系是**必须先有浏览器**，
+        所以把两步合成一步。
+        """
+        calls: list[str] = []
+
+        def _fake_browser(settings, label, **kw):
+            calls.append("browser")
+            return {"ok": True, "message": "Chrome 已启动"}
+
+        def _fake_study(settings, label, max_sections=None, **kw):
+            calls.append("study")
+            return {"ok": True, "message": "开始刷课"}
+
+        # 每调一次 `port_alive` 就"变活"：模拟"浏览器起来后端口才就绪"。
+        # 用真实 `time.sleep` 的话这条要等 45 秒（等待循环找不到活端口就判失败）。
+        alive_calls = {"n": 0}
+
+        def _port_alive(port, **kw):
+            alive_calls["n"] += 1
+            return alive_calls["n"] >= 2
+
+        with mock.patch.object(panel_app, "_browser_start_one", side_effect=_fake_browser), \
+             mock.patch.object(panel_app, "_study_one", side_effect=_fake_study), \
+             mock.patch.object(panel_app.gchrome, "port_alive", side_effect=_port_alive):
+            body = self.client.post("/api/study/start-with-browser",
+                                    json={"label": "jia", "max_sections": 2}).json()
+        self.assertTrue(body["ok"])
+        # **顺序必须是浏览器先、学习后**（反了就成了"起了必死的进程"）
+        self.assertEqual(calls, ["browser", "study"])
+        self.assertIn("浏览器就绪", body["message"])
+
+    def test_start_with_browser_skips_chrome_when_already_up(self):
+        """浏览器已经开着：不重复起，直接开始学习。"""
+        calls: list[str] = []
+
+        def _fake_study(settings, label, max_sections=None, **kw):
+            calls.append("study")
+            return {"ok": True, "message": "开始刷课"}
+
+        with mock.patch.object(panel_app, "_browser_start_one") as browser, \
+             mock.patch.object(panel_app, "_study_one", side_effect=_fake_study), \
+             mock.patch.object(panel_app.gchrome, "port_alive", return_value=True):
+            body = self.client.post("/api/study/start-with-browser",
+                                    json={"label": "jia"}).json()
+        self.assertTrue(body["ok"])
+        browser.assert_not_called()          # 已在跑就别再起一个
+        self.assertEqual(calls, ["study"])
+
+    def test_start_with_browser_aborts_if_chrome_fails(self):
+        """浏览器起不来就**不要**谈学习 —— 把原因原样透出，别起一个必死的任务。"""
+        with mock.patch.object(panel_app, "_browser_start_one",
+                               return_value={"ok": False, "error": "找不到 Chrome"}), \
+             mock.patch.object(panel_app, "_study_one") as study, \
+             mock.patch.object(panel_app.gchrome, "port_alive", return_value=False):
+            body = self.client.post("/api/study/start-with-browser",
+                                    json={"label": "jia"}).json()
+        self.assertFalse(body["ok"])
+        self.assertIn("找不到 Chrome", body["error"])
+        study.assert_not_called()
+
+    def test_start_with_browser_skips_when_job_running(self):
+        """该账号本来就在刷：浏览器与学习都不用再起。"""
+        proc = mock.Mock(pid=1)
+        proc.poll.return_value = None
+        panel_app._JOBS["jia"] = {"proc": proc, "label": "jia", "kind": "study",
+                                  "since": "12:00:00", "log": Path("nope.log"),
+                                  "detail": ""}
+        try:
+            with mock.patch.object(panel_app, "_browser_start_one") as browser, \
+                 mock.patch.object(panel_app.gchrome, "port_alive", return_value=True):
+                body = self.client.post("/api/study/start-with-browser",
+                                        json={"label": "jia"}).json()
+        finally:
+            panel_app._JOBS.pop("jia", None)
+        browser.assert_not_called()
+        self.assertTrue(body["skipped"])
+
+    def test_batch_start_and_study_present(self):
+        """批量也支持 start-and-study（勾多个账号一键搞定）。"""
+        with mock.patch.object(panel_app, "_start_and_study_one",
+                               return_value={"ok": True, "message": "ok"}) as one, \
+             mock.patch.object(panel_app.gchrome, "ports_alive",
+                               return_value={9222: False, 9223: False}):
+            body = self.client.post("/api/accounts/batch",
+                                    json={"labels": ["jia", "yi"],
+                                          "action": "start-and-study"}).json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(one.call_count, 2)
+
     # ---------------------------------------------------------------- 会话检查
 
     def _run_check(self, **result) -> dict:

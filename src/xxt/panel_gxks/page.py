@@ -319,6 +319,15 @@ table.acct-tbl td.c-today .c-r24{display:block;margin-top:1px;
 .bgrp-lab{flex:0 0 42px;color:var(--dim);font-size:12px;white-space:nowrap}
 .bgrp-btn{flex:1 1 0;min-width:0;padding:5px 6px;font-size:12.5px;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 卡片内批量条（2026-11-06）：多选 + 三个组合动作。
+   窄屏必须换行（AGENTS 界面约定②），按钮最小宽度保证手指可点（约定④ ≤760px）。 */
+.bgrp-batch{flex-wrap:wrap}
+.b-note{flex:1 1 100%;color:var(--dim);font-size:12px;margin:2px 0 0;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:760px){
+  .bgrp-batch .bgrp-lab{flex:0 0 auto}
+  .bgrp-batch .bgrp-btn,.bgrp-batch .mini{flex:1 1 46%;min-height:38px}
+}
 /* 右列「账号详情」：常驻卡片（用户 2026-11-02 要求）。
    原来它是 position:fixed 的悬停浮层，跟着鼠标跑、会挡住表格；
    现在固定在浏览器卡下方，随**选中账号**变化，不跟鼠标、不跟滚动。 */
@@ -701,6 +710,25 @@ button.mini{padding:3px 9px;font-size:13px}
         title="用本账号的账号密码填表登录一次；遇验证码立即停、转人工">重新登录</button>
       <!-- 登录状态放在会话这一行（用户 2026-11-02 要求，语义也属于"会话"） -->
       <span class="b-login" id="b-login"></span>
+    </div>
+    <!-- 批量操作（2026-11-06 用户：「如果是有多个账号，右侧栏的浏览器与会话可以
+         一键启动多个账号吗…一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」）：
+         这里不再需要"先跑到表格里勾选"—— 本卡片直接给出多选 + 三个组合动作。
+         ⚠ 「一键启动并学习」是最有用那个：起浏览器 → 等端口活 → 自动开始学习。 -->
+    <div class="bgrp bgrp-batch">
+      <span class="bgrp-lab">批量</span>
+      <button id="btn-ball" class="mini" type="button" onclick="batchSelectAll()"
+        title="选中当前筛选里可见、且**浏览器没开或没在跑**的账号">全选待启动</button>
+      <span class="b-note" id="b-batch-note">未选中</span>
+      <button id="btn-bbrowser" class="bgrp-btn" type="button"
+        onclick="batchBrowserAction('start-browser')"
+        title="为选中的账号逐个拉起 Chrome（每个约 10~40 秒，串行）">批量启动浏览器</button>
+      <button id="btn-bstudy" class="bgrp-btn primary" type="button"
+        onclick="batchBrowserAction('start-and-study')"
+        title="一键：起浏览器 → 等端口就绪 → 开始学习（每个约 10~40 秒）">一键启动并学习</button>
+      <button id="btn-bstopall" class="bgrp-btn danger" type="button"
+        onclick="batchBrowserAction('stop')"
+        title="停掉选中账号的学习任务（没在跑的会跳过，不算失败）">批量停止</button>
     </div>
     <div id="browser"></div>
 
@@ -1197,7 +1225,12 @@ function acctTr(c, accRow, cur) {
       '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）" ' +
       'oninput="rememberSecN(this)" onchange="rememberSecN(this)">' +
       '<button class="mini primary" onclick="startStudyN(this)" data-label="' + esc(c.label) +
-      '" title="按左边数字跑；中途可随时停止，学时保留">学习</button>';
+      '" title="按左边数字跑；中途可随时停止，学时保留">学习</button>' +
+      // 浏览器没开时给一个「一键」：起浏览器→等就绪→开始学习（2026-11-06 用户要求）。
+      // 浏览器已经开着就不显示 —— 那时「学习」本身就是一步到位，多一个按钮是噪音。
+      (c.port_alive ? "" :
+        '<button class="mini" onclick="startWithBrowser(this)" data-label="' + esc(c.label) +
+        '" title="这个账号的浏览器没开：点这里自动起浏览器、等就绪、再开始学习">⚡ 一键</button>');
   }
   html += '<button class="mini" onclick="refreshSectionsFor(\'' + esc(c.label) + "','" +
     esc(c.course_value || "") + '\')" title="重读这门课的节列表（约 1 分钟）">↻</button>';
@@ -1685,6 +1718,37 @@ function startStudyN(btn) {
   // 走 `startStudySafe`：浏览器没起时要把「端口 + 启动命令」摊开给人看，
   // 而不是弹一句一闪而过的「开始刷课」（2026-11-06）。
   startStudySafe(label, n);
+}
+
+// 一键：起浏览器 → 等端口就绪 → 开始学习（2026-11-06 用户要求）。
+// 与上面那个「学习」按钮共用同一套节数读取，只是多了一步"先把浏览器弄起来"。
+async function startWithBrowser(btn) {
+  const label = btn.dataset.label;
+  const box = document.querySelector('.sec-n[data-label="' + label + '"]');
+  const max = Math.max(1, parseInt((box && box.max) || "12", 10) || 12);
+  let n = parseInt((box && box.value) || "3", 10);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  if (n > max) n = max;
+  if (n > 12) n = 12;
+  if (BUSY) { toast("上一个操作还没完成，请稍等", true); return; }
+  BUSY = true;
+  hideNotice();
+  toast("正在启动浏览器并注入登录态（约 10~40 秒），就绪后会自动开始学习…");
+  let data = null;
+  try {
+    data = await apiPost("/api/study/start-with-browser",
+                          { label: label, max_sections: n });
+  } finally {
+    BUSY = false;
+  }
+  if (data && data.ok) {
+    toast(data.message || "已开始学习", false);
+  } else if (data && data.need_browser) {
+    showNotice("⚠ " + String(data.error || "").replace(/\n/g, "<br>"), true);
+  } else {
+    toast((data && (data.error || data.message)) || "没能启动", true);
+  }
+  load();
 }
 
 // 记住「本次跑几节」的用户输入（2026-11-04）。
@@ -2307,6 +2371,88 @@ async function stopBrowser() {
   await post("/api/browser/stop", { label: who });
 }
 
+// ------------------------------------------------- 卡片内批量（2026-11-06 用户要求）
+//
+// 用户原话：「如果是有多个账号，右侧栏的浏览器与会话可以一键启动多个账号吗…
+// 一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」
+//
+// 所以这里**不复用表格的 SEL**，单独一套 `BATCH_SEL`：
+// 表格那套是"账号管理"用途（启停/启用/删除），这套是"浏览器与学习"用途。
+// 混用会导致「在表格勾了 3 个准备删除，右侧栏突然也在批量里算 3 个」。
+const BATCH_SEL = new Set();
+
+function batchSelectAll() {
+  const shown = visibleCards(STATE || {});
+  // 「全选待启动」= 只挑**还没在跑**的（在跑的再启动只会被跳过，选了没意义）
+  const pickable = shown.filter((c) => !c.job);
+  if (BATCH_SEL.size && pickable.every((c) => BATCH_SEL.has(c.label))) {
+    BATCH_SEL.clear();                       // 再点一次 = 取消
+  } else {
+    BATCH_SEL.clear();
+    pickable.forEach((c) => BATCH_SEL.add(c.label));
+  }
+  renderBrowserBatch();
+}
+
+function renderBrowserBatch() {
+  // 清掉已经不存在的账号（被删了）
+  const cards = (STATE && STATE.cards) || [];
+  for (const lab of [...BATCH_SEL]) {
+    if (!cards.some((c) => c.label === lab)) BATCH_SEL.delete(lab);
+  }
+  const n = BATCH_SEL.size;
+  const note = el("b-batch-note");
+  if (note) {
+    const names = [...BATCH_SEL].slice(0, 4).join("、");
+    note.textContent = n
+      ? "已选 " + n + " 个" + (n > 4 ? "（" + names + " 等）" : "（" + names + "）")
+      : "未选中";
+  }
+  for (const id of ["btn-bbrowser", "btn-bstudy", "btn-bstopall"]) {
+    const b = el(id);
+    if (b) b.disabled = n === 0;
+  }
+}
+
+async function batchBrowserAction(action) {
+  const labels = [...BATCH_SEL];
+  if (!labels.length) return;
+  const CN = { "start-browser": "批量启动浏览器", "start-and-study": "一键启动并学习",
+               "stop": "批量停止学习任务" };
+  // 提示要等多久（浏览器冷启动 10~40 秒）；「停止」不涉及浏览器，不用吓人
+  const slow = action !== "stop";
+  if (!confirm("对选中的 " + labels.length + " 个账号执行「" + CN[action] + "」？\n\n" +
+      (slow ? "会**逐个**拉起 Chrome（每个约 10~40 秒，串行），这段时间请不要重复点击。\n"
+            : "只停学习任务，浏览器不动。\n") +
+      (action === "start-and-study"
+        ? "浏览器就绪后会自动开始学习，不用再点「学习」。\n" : "") +
+      "账号：" + labels.join("、"))) {
+    return;
+  }
+  if (BUSY) { toast("上一批还没完成，请稍等", true); return; }
+  BUSY = true;
+  hideNotice();
+  toast(slow ? "正在逐个启动浏览器（每个 10~40 秒，请勿重复点击）…" : "正在停止…");
+  let data = null;
+  try {
+    data = await apiPost("/api/accounts/batch",
+                          { labels: labels, action: action, confirm: true });
+  } finally {
+    BUSY = false;
+  }
+  if (!data) return;
+  const realFail = Number(data.failed) || 0;
+  const noBrowser = (data.results || []).filter((r) => !r.ok && r.need_browser);
+  if (noBrowser.length) {
+    showNotice("⚠ " + noBrowser.map((r) =>
+      String(r.message || r.label)).join("<br><br>").replace(/\n/g, "<br>"), true);
+  } else {
+    toast(data.message || data.error || "已提交", realFail > 0);
+  }
+  if (action === "stop") BATCH_SEL.clear();      // 停完就没必要保持选中
+  load();
+}
+
 async function checkSession() {
   toast("正在检查会话（会访问平台一次，稍等）…");
   await post("/api/session/check", { label: browserLabel() });
@@ -2863,6 +3009,7 @@ async function load() {
       renderAcctSide(state);
     }
     renderAi(state);
+    renderBrowserBatch();          // 卡片内批量：选中数/按钮可用性跟着轮询刷新
     renderSections(state);
     renderWork(state);
     renderRunLog(state);

@@ -1026,7 +1026,40 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertIn('class="bgrp"', PAGE)
         self.assertIn('class="bgrp-lab">浏览器', PAGE)
         self.assertIn('class="bgrp-lab">会话', PAGE)
-        self.assertEqual(PAGE.count('class="bgrp-btn'), 5, "五个按钮都要用组内样式")
+        # 2026-11-06 加了第三组「批量」（3 个按钮）→ 5 + 3 = 8
+        self.assertIn('class="bgrp-lab">批量', PAGE)
+        self.assertEqual(PAGE.count('class="bgrp-btn'), 8, "所有按钮都要用组内样式")
+
+    def test_batch_group_has_three_actions(self):
+        """卡片内批量条（2026-11-06 用户：「一个一个去点启动并登录，那也挺麻烦」）。
+
+        三个动作：批量启动浏览器 / **一键启动并学习** / 批量停止。
+        最关键的是「一键启动并学习」：起浏览器→等端口→自动学习，省掉分两步。
+        """
+        self.assertIn('id="btn-bbrowser"', PAGE)
+        self.assertIn('id="btn-bstudy"', PAGE)
+        self.assertIn('id="btn-bstopall"', PAGE)
+        self.assertIn("batchBrowserAction('start-browser')", PAGE)
+        self.assertIn("batchBrowserAction('start-and-study')", PAGE)
+        # 默认没选中时按钮要是禁用的（避免点了没反应）
+        self.assertIn("btn-bstudy", PAGE)
+        self.assertIn("b.disabled = n === 0", PAGE)
+
+    def test_batch_select_does_not_reuse_table_sel(self):
+        """卡片批量用自己的 `BATCH_SEL`，**不能复用表格的 `SEL`**。
+
+        混用会让「表格勾了 3 个准备删除」时右侧栏突然也在批量里算 3 个。
+        """
+        self.assertIn("const BATCH_SEL = new Set()", PAGE)
+        body = PAGE.split("function batchBrowserAction(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("BATCH_SEL", body)
+        self.assertNotIn("[...SEL]", body)
+
+    def test_one_click_button_only_when_browser_down(self):
+        """行内「⚡ 一键」只在浏览器没开时出现 —— 开着时「学习」本身已是一步到位。"""
+        tr = PAGE.split("function acctTr(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("startWithBrowser", tr)
+        self.assertIn("c.port_alive ? \"\" :", tr)
 
     def test_group_css_makes_them_equal_width(self):
         self.assertIn(".bgrp{display:flex;align-items:center;gap:6px", PAGE)
