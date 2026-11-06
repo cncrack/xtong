@@ -137,6 +137,8 @@
 |---|---|---|---|
 | G-1 | `data/gxks_questions.db` → `meta.panel.reload` | **热重载实际是关的**（DB 里 `false`），但界面开关默认值也是 `true`、`serve()` 又允许 DB 覆盖 → 用户以为「改代码自动生效」。2026-11-06 实测：代码改了三轮、面板跑了 58 分钟一次没重启 | ✅ **已修（2026-11-06）**：① DB 改回 `true`（`gxks_panel_settings.save`，幂等）；② `serve()` 启动时**打印配置来源**（`热重载：开（来源：数据库 meta.panel.reload（界面开关））`），下次不用再查三层；③ 重启后实测 `/api/panel/settings` → `{'reload': True}` 且页面含新代码。**仍未做**：是否**去掉这个开关**（热重载永远开，只留 `--no-reload` 排查用）—— 这是行为改变，等用户拍板 |
 | G-2 | 同上诊断方法 | `gxks_panel_settings.load()` 读不到就**静默返回默认值** → 我 11-06 把目录当 db 传进去，得到 `reload=True` 的错误结论 | ✅ **已修（2026-11-06）**：新增 `load_strict()`，返回 `ok / settings / present / error / db_exists`；`present` 给原始键值；**只读**（文件不存在就不连，避免诊断脚本建出空库；存在则用 `mode=ro` URI）。3 条测试守护 |
+| G-3 | `scripts/run_gxks.py`（**零处**引用 `runmark`） | **同账号可被双开**。面板防双开只靠内存表 `_JOBS`，`run_gxks.py` 自身**没有账号级会话锁**。同时开两个入口（面板 A + 面板 B / 面板 + 手敲脚本 / 重启后旧进程未死又点一次）就会双开，**同账号两路心跳是最强机器指纹**、也是封号红线；`PLAN-GXKS.md:222` 把它列为三条硬约束**第 1 条**，一直没落地（欠了一个多月） | ⏳ **待修（🔴 最高优先）**。方案：`run_gxks.py` 启动写 `runmark` 标记、收尾清；`busy_sessions` 判到别的活进程就秒退；面板 `_study_one` spawn 前先查。⚠ 踩过的坑见 `runmark.py` 注释：venv `python.exe` 是重定向器，`Popen` 的 pid ≠ 真 pid，判据要用 `pid ∈ {me, parent}`。详见 devlog `2026-11-07-02` §A1 |
+| G-4 | `scripts/run_gxks_multi.py` docstring vs 面板 `max_concurrency` | **并发口径三处打架**：`run_gxks_multi.py` 硬写「串行（并发 1）」并引 D12 为依据；面板 11-06 新加的并发闸默认 **2**；`PLAN-GXKS.md:509` 的配置草案又写 **10**。**1 / 2 / 10 没有一个权威来源**，两条入口给出相反行为 | ⏳ **待拍板（🔴 决策空缺）**：先定 D12 是「核实期临时约束」还是「长期风控约束」。长期 → `multi` 改成可配并发 + 面板默认跟随；临时 → PLAN 记「核实期结束，产品并发 = N」并把三处统一到 N。详见 devlog `2026-11-07-02` §A2 |
 
 ### P0（必须修，影响可用性/验证可信度）
 
