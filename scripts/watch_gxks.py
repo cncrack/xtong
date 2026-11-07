@@ -107,7 +107,32 @@ def make_printer(log_path: Path):
             elif kind == "tick":
                 # 心跳（2026-11-04）：`progress` 要回读列表才知道平台的学时，
                 # 间隔 5 分钟；这里显示页面自己的墙钟计时器 → 一眼看出「在走」。
-                extra = f" 学习中（页面计时 {ev.get('clock')} 秒）"
+                #
+                # ⚠ **2026-11-08 起带完整播放状态**（用户要求「视频播放问题先看日志」）：
+                # 原来只有 `页面计时 N 秒`，但那是**页面墙钟**，视频卡住它也照涨，
+                # 证明不了画面在播。现在把 `t/d`（视频进度）、`paused`、`ended`、
+                # `hidden`、`updates`（上报次数）都摊开 —— 一行就能判断：
+                #   t 递增 + 播放中 + 上报 N 次 = 真在播且入账；
+                #   t 不动/已暂停/已播完   = 没在播。
+                # 老事件（没有这些字段）仍能兼容显示。
+                parts = []
+                t, d = ev.get("t"), ev.get("d")
+                if t is not None:
+                    parts.append(f"视频 {t}/{d}s" if d is not None else f"视频 {t}s")
+                p = ev.get("paused")
+                if p is True:
+                    parts.append("已暂停")
+                elif p is False:
+                    parts.append("播放中")
+                if ev.get("ended") is True:
+                    parts.append("已播完")
+                if ev.get("hidden") is True:
+                    parts.append("页面在后台")
+                u = ev.get("updates")
+                if u is not None:
+                    parts.append(f"上报 {u} 次")
+                parts.append(f"页面计时 {ev.get('clock')} 秒")
+                extra = " " + " · ".join(parts)
             print(f"[{stamp}] {kind}{extra}", flush=True)
         last["state"] = kind
 

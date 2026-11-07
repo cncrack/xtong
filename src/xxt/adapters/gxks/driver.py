@@ -1015,7 +1015,17 @@ class GxksDriver:
                         last_tick_at = now          # 没在走：不刷新心跳基准
                     elif now - last_tick_at >= 30:
                         last_tick_at = now
+                        # ⚠ **tick 要带完整播放状态**（2026-11-08 用户要求「视频播放问题先看日志」）：
+                        # 原来只带 clock/t/updates，于是「视频到底动没动」只能靠猜 ——
+                        # `clock` 是页面墙钟，哪怕 `<video>` 卡住它也照涨，不能证明画面在播。
+                        # 现在把采样里的 `paused` / `d` / `ended` / `hidden` 一起打进日志：
+                        #   t 递增 + paused=False + updates 递增 ⇒ 真在播且在上报；
+                        #   t 不动 + paused=True/ended    ⇒ 没在播（或播完）。
+                        # **只加事件字段，不改判定逻辑**（classify/plan_action 一行不动），
+                        # 所以不会改变任何播放行为；纯粹让日志能自证。
                         emit("tick", clock=clock, t=sample.get("t"),
+                             d=sample.get("d"), paused=sample.get("paused"),
+                             ended=sample.get("ended"), hidden=sample.get("hidden"),
                              updates=sample.get("updates"))
                     last_clock = clock
 
