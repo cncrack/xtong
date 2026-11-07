@@ -88,14 +88,20 @@ def _make_llm(settings: Settings, chapter: str) -> Callable[[dict], dict]:
     return ask
 
 
-def _ensure_login(page, settings: Settings) -> bool:
-    """掉登录就试一次自动重登（凭据在 `data/account.local.json`，gitignore）。
+def _ensure_login(page, settings: Settings, label: str = "") -> bool:
+    """掉登录就试一次自动重登（凭据默认在 `data/account.local.json`，gitignore）。
+
+    ⚠ **凭据按账号取**（2026-11-07 修 P0）：原来这里 `load_credentials()` 无参，
+    读的是单账号时代的全局文件 —— 多账号同时跑时「B 掉登录 → 用 A 的密码登 B」
+    会把 A 顶号。现在优先用账号表里该账号的 `name`/`pw`，没填才回落全局旧文件。
 
     只试一次：连试等于撞库特征。要验证码就停，等人工。
     """
     if not gdriver.at_login_page(page.url):
         return True
-    cred = glogin.load_credentials()
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), label) if label else None
+    cred = glogin.load_credentials_for(acc, settings) if acc is not None else \
+        glogin.load_credentials(glogin.credentials_path(settings))
     if not cred:
         print("[FAIL] 已落到登录页，且未配置本地凭据 → 请人工登录后重跑", file=sys.stderr)
         return False
@@ -158,7 +164,7 @@ def main() -> int:
                 print(f"       {exc.hint}", file=sys.stderr)
             return EXIT_NO_PAGE
         page = session.page
-        if not _ensure_login(page, settings):
+        if not _ensure_login(page, settings, label):
             return EXIT_LOGIN
 
         print(f"[1/4] 开卷 练习ID={args.exercise_id} …")

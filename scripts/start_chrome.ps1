@@ -25,6 +25,10 @@
 $ErrorActionPreference = "Stop"
 # 仓库根 = 本脚本的上一级。不写死盘符：同一仓库有多个 worktree（E:\xxt / E:\xxt-gxks）。
 $root = Split-Path -Parent $PSScriptRoot
+# ⚠ 参数文件名是**固定的**，一次只能有一个待处理的启动请求。
+# 并发安全靠面板侧的进程内互斥锁（`_start_chrome_interactive` 里的 `_CHROME_START_LOCK`），
+# 不靠"文件名带 label" —— 计划任务的动作是启动时注册死的（`-File <本脚本>`），
+# 传不进每次运行的环境变量/参数，按 label 分文件只会让脚本找不到 spec。
 $specPath = Join-Path $root "data\tmp\chrome_start.json"
 $resultPath = Join-Path $root "data\tmp\chrome_start.result.json"
 

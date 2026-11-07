@@ -73,9 +73,15 @@ def _detect(page, *, force: bool = False) -> tuple[bool, str, bool]:
     return (not gdriver.at_login_page(url)), url, True
 
 
-def _relogin(page, settings) -> dict:
-    """真浏览器填表登录一次。**遇验证码立即返回、不重试。**"""
-    cred = glogin.load_credentials(glogin.credentials_path(settings))
+def _relogin(page, settings, label: str = "") -> dict:
+    """真浏览器填表登录一次。**遇验证码立即返回、不重试。**
+
+    ⚠ **凭据按账号取**（2026-11-07 修 P0）：原来这里 `load_credentials(credentials_path())`
+    读的是全局单账号文件，多账号时会拿 A 的密码登 B（顶号）。
+    """
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), label) if label else None
+    cred = (glogin.load_credentials_for(acc, settings) if acc is not None
+            else glogin.load_credentials(glogin.credentials_path(settings)))
     if cred is None:
         return {"result": "no_credentials"}
     if not gdriver.at_login_page(page.url or ""):
@@ -132,7 +138,7 @@ def main() -> int:
                 logged_in, url, nav = _detect(page, force=True)
                 navigated = navigated or nav
         elif not logged_in and action == "relogin":
-            relogin_out = _relogin(page, settings)
+            relogin_out = _relogin(page, settings, label)
             if relogin_out.get("result") in ("ok", "already"):
                 logged_in, url, nav = _detect(page)      # login() 已等到非登录页
                 navigated = navigated or nav
@@ -174,7 +180,8 @@ def main() -> int:
         print("[WARN] 被推到验证码闸门：请在这台浏览器窗口里人工输验证码并登录",
               file=sys.stderr)
     elif relogin_out is not None and relogin_out.get("result") == "no_credentials":
-        print("[WARN] data/account.local.json 里没有可用的账号密码，无法自动重登",
+        print(f"[WARN] 账号 {label} 没有可用的账号密码（账号表没填，"
+              "也没有全局 data/account.local.json），无法自动重登",
               file=sys.stderr)
     else:
         print(f"[{'OK' if logged_in else 'WARN'}] "

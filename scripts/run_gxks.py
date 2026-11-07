@@ -9,6 +9,18 @@
 与 `watch_gxks.py` 的分工：那边守**一节**、适合盯现场；这边负责**串起来跑**，适合离开电脑。
 每节仍走同一个 `GxksDriver.watch()`（同样的达标判定 C4/C11、重建恢复 C7、离开播放页 C10）。
 
+## 账号会话锁（A1，2026-11-07）
+
+启动即抢 `data/run/gxks_<label>.json`；**别的活进程**已持有就 `[FAIL]` 秒退（返回码 5），
+绝不双开（`PLAN-GXKS.md` §7.3 硬约束第 1 条：同账号两路心跳是最强机器指纹）。
+面板起的任务由面板替它写标记，这里认「pid == 自己或父进程」而不重写。
+
+## 凭据按账号取（2026-11-07 修 P0）
+
+原来这里 `load_credentials()` **无参**，读全局 `data/account.local.json` ——
+多账号同时跑时「B 掉登录 → 用 A 的密码登 B」，会把 A 顶号。现在按账号取
+（`load_credentials_for`），账号表没填才回落全局旧文件。
+
 安全边界（无人值守时必须守住，宁可停也不硬闯）：
 
 - **掉登录**（`session_lost`）→ 立即停，返回码 4，等人工重登；不做自动重登（T2 未做）。
@@ -40,6 +52,7 @@ from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import ledger as gledger  # noqa: E402
 from xxt.adapters.gxks import listparse as glist  # noqa: E402
+from xxt.adapters.gxks import locks as glocks  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import netcheck  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
@@ -106,6 +119,30 @@ def main() -> int:
     # 账号代号先定：managed 后端的 profile 目录由它决定（一账号一 profile）
     acc_label = args.account_label or args.label or "default"
 
+    # ---- 账号会话锁（A1，2026-11-07）----
+    # 放在网络自检**之前**：双开时不该先去访问一次平台（最小访问原则）。
+    # 「自己人」判据在 locks 模块里（面板替我写的标记 pid == 父进程，那不算双开）。
+    _settings = Settings(root=find_project_root())
+    held_by = glocks.holder(_settings.data_dir, acc_label)
+    if held_by is not None:
+        print(f"[FAIL] 账号 {acc_label} 已有会话在跑（{glocks.describe(held_by)}）→ 不重复开")
+        print("       同账号两路心跳是最强的机器指纹，也是 PLAN-GXKS §7.3 的第一条硬约束。")
+        print("       要重开请先在面板点「停止」，或确认那个进程已经退出。")
+        return 5
+    _locked, _holder = glocks.acquire(_settings.data_dir, acc_label,
+                                      course=str(args.course or ""))
+    if not _locked:                                        # 理论上刚查过，防竞态
+        print(f"[FAIL] 账号 {acc_label} 的会话锁被别人抢到"
+              f"（{glocks.describe(_holder or {})}）→ 不重复开")
+        return 5
+    # 收尾一律清锁：本函数有十几处 `return`（掉登录/读不到列表/额度用尽/异常…），
+    # 逐个补 `release` 必漏。`atexit` 在解释器正常退出时执行，正好对得上
+    # 「本进程不再跑了就该释放」这个语义。进程被杀也不会留下死锁 ——
+    # `locks.live()` 会因 pid 不存活而忽略陈旧标记。
+    import atexit
+
+    atexit.register(glocks.release, _settings.data_dir, acc_label)
+
     # ---- 开跑前网络自检（在打开浏览器之前）----
     # 站点每 60 秒上报一次学习进度；链路慢会让学时真丢而页面看起来在播。
     # 这里测的是**直连耗时**——因为 chrome.py 给 Chrome 加了 `--no-proxy-server`，
@@ -115,6 +152,7 @@ def main() -> int:
         print(netcheck.format_report(net))
         if not net["ok"]:
             print("\n[SKIP] 网络自检未通过 → 不打开浏览器、不访问平台")
+            glocks.release(_settings.data_dir, acc_label)
             return 4
     try:
         session = gbrowser.open_session(Settings(root=find_project_root()),
@@ -123,6 +161,7 @@ def main() -> int:
         print(f"[FAIL] {exc}")
         if exc.hint:
             print(f"       {exc.hint}")
+        glocks.release(_settings.data_dir, acc_label)
         return 2
     page = session.page
     drv = gdriver.GxksDriver(page)
@@ -130,7 +169,6 @@ def main() -> int:
     # ---- 自动注入登录态快照（用户 2026-11-02：「记录登录信息，后期自己登陆」）----
     # 本站 cookie 全是会话级，Chrome 一关就清空；靠 data/storage_state_gxks_<标签>.json
     # 把票注回去。零密码、零平台请求。
-    _settings = Settings(root=find_project_root())
     _state_file = gbrowser.state_path(_settings, acc_label)
     _snap = gbrowser.state_summary(_state_file)
     _restored = 0
@@ -165,7 +203,7 @@ def main() -> int:
     # ---- 当日额度（本地账本）----
     # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
     # 口径（A1）：额度按**账号合计**，多门课共用一个池子；`0` = 该项不限。
-    acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
+    # `acc` 已在上面的「自动重登」处取过（按账号取凭据要用它），这里直接复用。
     secs_limit = acc.daily_sections if acc else gaccounts.DEFAULT_SECTIONS_PER_DAY
     mins_limit = acc.daily_minutes if acc else gaccounts.DEFAULT_MINUTES_PER_DAY
     if not args.ignore_quota:
@@ -188,9 +226,15 @@ def main() -> int:
             print(f"额度限制：本次最多播 {q['left_sections']} 节（原定 {args.max_sections}）")
             args.max_sections = int(q["left_sections"])
 
-    # 自动重登：只读本地凭据文件（gitignore），占位符/缺失 → None = 不启用（掉线即停）
-    cred = None if args.no_relogin else glogin.load_credentials()
+    # 自动重登：凭据**按账号**取（账号表 name/pw 优先，缺了才回落全局旧文件）。
+    # 占位符/缺失 → None = 不启用（掉线即停）。
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
+    cred = (None if args.no_relogin
+            else glogin.load_credentials_for(acc, _settings))
     print(f"自动重登：{'已启用（凭据来自本地文件，不回显）' if cred else '未启用（掉线即停，等人工）'}")
+    if cred is None and acc is not None and not acc.configured:
+        print("       ⚠ 该账号在账号表里没填账号密码，也没有全局 account.local.json —— "
+              "多账号时建议在面板给每个账号各填一份，别让两个号共用同一份凭据")
 
     def do_relogin(why: str) -> bool:
         """**只试一次**。验证码闸门与会失败一律停，不循环试（连试 = 撞库特征）。"""

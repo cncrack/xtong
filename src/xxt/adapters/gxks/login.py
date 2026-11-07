@@ -66,6 +66,91 @@ def is_configured(path: str | Path = DEFAULT_CRED_PATH) -> bool:
     return load_credentials(path) is not None
 
 
+def _clean(value: Any) -> str:
+    """去空白；占位符一律当空（与 `load_credentials` 同一判据）。
+
+    ⚠ 只认 `str`：调用方可能传进来一个非 Account 对象（测试替身、鸭子类型），
+    对它 `getattr(acc, "name")` 会拿到任意对象 —— `str()` 出来非空，就会被误判
+    「已配置凭据」，进而拿垃圾去撞登录。
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text or any(h in text for h in _PLACEHOLDER_HINTS):
+        return ""
+    return text
+
+
+def load_credentials_for(acc: Any, settings: Any = None) -> dict[str, str] | None:
+    """**按账号**取凭据。返回 `{"name","pw"}` 或 None（= 未配置，调用方按"掉线即停"处理）。
+
+    ## 为什么必须有（2026-11-07 查出的 P0，多账号下会顶号）
+
+    原来 `run_gxks.py` / `gxks_sections.py` / `gxks_work.py` / `gxks_session_check.py`
+    全都是 `load_credentials()` —— **无参**，读的是单账号时代的全局
+    `data/account.local.json`。
+
+    多账号同时跑时后果很严重：**账号 B 掉登录 → 脚本在 B 的浏览器里填 A 的账号密码**
+    → A 被顶号（A 那边正在播的会话断）、B 还是没登上，而且 A 的登录态可能被写进
+    B 的快照文件。这正是「多账号」最该防的事，却因为这段代码从来没在多账号下
+    掉过登录，一直没被发现。
+
+    而账号表里本来就有 per-account 的 `name`/`pw`（`Account.configured`），
+    只是脚本侧从来没读过。
+
+    ## 回落规则（这条是安全边界，别放宽）
+
+    - 账号自己填了 `name`+`pw` → 用它；
+    - 没填 → **只在「账号表里只有一个账号」时**才回落全局旧文件；
+    - 多账号（≥2 条）时**一律不回落到全局文件**，返回 None。
+
+    为什么多加这个限制：第一版我写成「没填就回落」，结果 B 没配凭据时仍然会拿
+    全局里的 A 的凭据去登 —— 等于把刚修的 P0 又补回来了（测试当场抓到）。
+    全局文件是**单账号时代**的遗留，多账号下它归属于哪个号是**不可知**的，
+    唯一安全的做法是不用。
+    """
+    name = _clean(getattr(acc, "name", ""))
+    pw = _clean(getattr(acc, "pw", ""))
+    if name and pw:
+        return {"name": name, "pw": pw}
+    if _single_account(settings):
+        try:
+            path = credentials_path(settings)
+        except Exception:                                  # noqa: BLE001
+            path = DEFAULT_CRED_PATH
+        return load_credentials(path)
+    return None
+
+
+def _single_account(settings: Any) -> bool:
+    """账号表里是不是**只有**一个账号（只有这种场景才允许回落全局凭据文件）。
+
+    ⚠ 必须按 `settings.data_dir` 读，不能用 `accounts.load_accounts()` 的默认路径 ——
+    后者跟的是 `find_project_root()`（环境变量/仓库根），与 `settings` 可能不是同一个
+    目录（测试、`XXT_ROOT` 指到别处时就是这种情况）。用错目录的后果是**读成真实
+    项目里的账号表**，把「多账号」误判成「单账号」→ 回落全局凭据 → 又变成顶号。
+
+    读不到账号表（`settings` 为 None、文件缺、异常）时返回 **False**：
+    宁可"未配置"（掉线即停等人工），也不能在一个不认识的账号上试一份来源不明的凭据。
+    """
+    if settings is None:
+        return False
+    try:
+        from . import accounts as gaccounts
+
+        data = Path(settings.data_dir)
+        rows = gaccounts.load_accounts(data / "accounts.local.json",
+                                       data / "account.local.json")
+        return len(rows) == 1
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+def is_configured_for(acc: Any, settings: Any = None) -> bool:
+    """该账号能否自动重登（按账号判，不看全局文件）。"""
+    return load_credentials_for(acc, settings) is not None
+
+
 def is_need_verify(url: str, verify_row_visible: bool = False) -> bool:
     """被推到验证码闸门 → 必须转人工。
 

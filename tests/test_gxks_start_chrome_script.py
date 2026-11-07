@@ -101,9 +101,23 @@ class TestChromeSpecIncludesUrl(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "src"))
         from xxt.panel_gxks import app as A
         import inspect
-        src = inspect.getsource(A._start_chrome_interactive)
+        # 2026-11-07：真正写 spec 的是 `_start_chrome_interactive_locked`
+        # （外层 `_start_chrome_interactive` 只拿串行锁，防两个账号同时起浏览器互相覆盖 spec）。
+        src = inspect.getsource(A._start_chrome_interactive_locked)
         self.assertIn('"url"', src)
         self.assertIn("MAIN_PAGE", src)
+
+    def test_browser_start_is_serialized(self):
+        """**P1 回归**：`data/tmp/chrome_start.json` 全局唯一，两个账号同时起会互相覆盖。
+
+        所以外层必须拿 `_CHROME_START_LOCK`。谁把锁去掉，这条立刻红。
+        """
+        sys.path.insert(0, str(ROOT / "src"))
+        from xxt.panel_gxks import app as A
+        import inspect
+        src = inspect.getsource(A._start_chrome_interactive)
+        self.assertIn("_CHROME_START_LOCK", src)
+        self.assertIn("locked", src, "外层应转调 locked 版本，而不是自己写 spec")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from ..adapters.gxks import accounts as gaccounts
 from ..adapters.gxks import browser as gbrowser
 from ..adapters.gxks import chrome as gchrome
 from ..adapters.gxks import ledger as gledger
+from ..adapters.gxks import locks as glocks
 from ..adapters.gxks import login as glogin
 from ..adapters.gxks import sections_cache
 from ..config import Settings
@@ -64,6 +65,15 @@ def _job_key(label: str, kind: str) -> str:
 _BROWSERS: dict[str, dict[str, Any]] = {}
 _BROWSER_LOCK = threading.Lock()
 _CHROME_TASK = "xxt-gxks-chrome"   # 交互式计划任务（见 scripts/start_chrome.ps1）
+
+#: 串行化「启动浏览器」：计划任务与 `data/tmp/chrome_start.json` 都是**全局唯一**的，
+#: 两个账号同时点「启动并登录」会互相覆盖 spec（后写的赢）→ 起错 profile / 端口对不上，
+#: 而且两边的 result 文件也会互相踩（2026-11-07 查出的 P1）。
+#: 用**进程内互斥**而不是按 label 分文件：计划任务的动作是注册时写死的
+#: `-File start_chrome.ps1`，运行期传不进参数/环境变量，分文件只会让脚本找不到 spec。
+#: 代价：两个账号的启动会排队（每个 10~40 秒），这本来就是可接受的 —— 同时开两个
+#: Chrome 反而抢资源。
+_CHROME_START_LOCK = threading.Lock()
 
 # ------------------------------------------------------------------ 日志推送
 #
@@ -205,7 +215,22 @@ def _start_chrome_interactive(label: str, port: int) -> dict[str, Any]:
     Chrome 因此**不属于面板的子进程**，面板重启/退出都不会带走它。
 
     返回 `{"ok": bool, "pid"?: int, "error"?: str}`。
+
+    ## 并发安全（2026-11-07 修的 P1）
+
+    `data/tmp/chrome_start.json` 与 `chrome_start.result.json` 是**全局唯一**的两个文件，
+    计划任务的动作也在注册时写死。两个账号同时点「启动并登录」时，后写的 spec 会覆盖
+    前一个 → 起错 profile / 端口对不上，result 也会互相踩。
+    所以整个「写 spec → 触发 → 等端口」必须**串行**（`_CHROME_START_LOCK`）。
+    代价是第二个账号要排队等前一个起完（10~40 秒），这是可接受的：同时开两个 Chrome
+    反而抢资源。
     """
+    with _CHROME_START_LOCK:
+        return _start_chrome_interactive_locked(label, port)
+
+
+def _start_chrome_interactive_locked(label: str, port: int) -> dict[str, Any]:
+    """`_start_chrome_interactive` 的实际实现（调用方必须已持有 `_CHROME_START_LOCK`）。"""
     tmp = ROOT / "data" / "tmp"
     spec = tmp / "chrome_start.json"
     result = tmp / "chrome_start.result.json"
@@ -784,11 +809,24 @@ def _start(settings: Settings, label: str, kind: str,
 
     冻结成 exe 后 `scripts/` 不在包内，这条路直接说不支持——比默默报 500
     或“点了没反应”强。
+
+    ## 替子进程写账号会话锁（A1，2026-11-07）
+
+    超星侧 2026-10-27 踩过：面板「先 spawn 后写标记」没问题，但子进程自查时必须
+    认出「这条标记是自己人写的」，否则一秒就自杀。这里同理——
+    面板用**子进程的 pid** 写标记，`scripts/run_gxks.py` 启动自查时
+    `pid ∈ {自己, 父进程}`（venv 重定向器）→ 认作自己人，不重写、不退出。
+
+    写失败不拦任务（锁是红线但不是主流程），只吞。
     """
     if getattr(sys, "frozen", False):
         return {"ok": False,
                 "error": "打包版面板暂不支持起脚本（scripts/ 不在 exe 内），请用源码方式启动面板"}
     proc = _spawn_script(settings, label, kind, script, *args)
+    try:
+        glocks.acquire(settings.data_dir, label, pid=proc.pid)
+    except Exception:                                      # noqa: BLE001
+        pass
     return {"ok": True, "pid": proc.pid, "message": message}
 
 
@@ -1469,6 +1507,14 @@ def _study_one(settings: Settings, label: str,
         # 混在一起会让汇总显示「2 个没做成」，用户以为出问题了（2026-11-06）。
         return {"ok": False, "skipped": True,
                 "error": "该账号已有任务在跑"}
+    # ---- 账号会话锁（A1，2026-11-07）：跨面板 / 跨命令行防双开 ----
+    # `_JOBS` 只是**本进程的内存表**，挡不住「另一个面板」或「手敲 run_gxks.py」。
+    # 这里查落盘锁；脚本自己启动时也会再查一次（脚本那边的判据含"自己人"）。
+    held = glocks.holder(settings.data_dir, acc.label)
+    if held is not None:
+        return {"ok": False, "skipped": True, "locked": True,
+                "error": f"账号 {acc.label} 已有会话在跑（{glocks.describe(held)}），"
+                         "可能来自另一个面板或命令行。先在那边停掉再试"}
     refused = _require_browser_port(settings, acc, port_alive)
     if refused:
         return refused
@@ -1515,6 +1561,14 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
         # 没在跑，但**可能是在排队**：撤掉排队也算"停止成功"（用户要的效果达成了）。
         if queued:
             return {"ok": True, "message": "已取消排队（它本来还没开始跑）"}
+        # 面板内存表里没有，但**落盘锁**可能被别的入口（另一个面板 / 命令行）持有 ——
+        # 面板不该去杀不认识的进程（会误杀），但必须说清楚，否则用户以为「点了停止就好了」。
+        held = glocks.holder(settings.data_dir, label)
+        if held is not None:
+            return {"ok": False, "skipped": True, "locked": True,
+                    "error": f"该账号有会话在跑（{glocks.describe(held)}），"
+                             "但不是本面板发起的 → 面板不会去杀它。"
+                             "请到那个窗口 / 进程里停（或在任务管理器结束它）"}
         # 与「开始学习」遇到在跑账号对称：这是**预期内的跳过**，不是错误。
         # 不区分的话，批量停 5 个账号里有 4 个本来空闲，汇总会报「4 个没做成」弹红条
         # （2026-11-06 用户问「停止/启用/停用是否也能批量」时实测发现）。
@@ -1527,6 +1581,13 @@ def _stop_one(settings: Settings, label: str) -> dict[str, Any]:
             _JOBS.pop(key, None)
         # 停止是**显式终结**：登记表里也要删，否则下次启动会拿这个 pid 去认领
         _drop_job_registry(settings.data_dir, job["label"], job["kind"])
+        # 账号会话锁同理（A1，2026-11-07）：只删「这条任务自己写的」那一条。
+        # 不校验 pid 的话，杀掉旧任务可能把**新会话**的锁抹掉 → 又能双开。
+        try:
+            proc_pid = int(getattr(job["proc"], "pid", 0) or 0)
+            glocks.release(settings.data_dir, job["label"], pid=proc_pid or None)
+        except Exception:                                  # noqa: BLE001
+            pass
     result = "、".join(results)
     db = open_question_bank(settings.data_dir / "gxks_questions.db")
     try:
@@ -1616,7 +1677,9 @@ def _chrome_start_message(settings: Any, acc: Any, port: int,
       ③ 遇验证码立刻停、转人工（绝不试错：试错=撞库特征）。
     """
     msg = f"Chrome 已启动（端口 {port}）"
-    has_cred = glogin.is_configured(glogin.credentials_path(settings))
+    # ⚠ 凭据必须**按账号**判（2026-11-07 修 P0）：原来读全局 account.local.json，
+    # 多账号下 A 配了凭据、B 没配，B 也会被判成"能自动登录" → 拿 A 的密码登 B（顶号）。
+    has_cred = glogin.is_configured_for(acc, settings)
     state = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
 
     if state.get("saved"):
@@ -1970,8 +2033,12 @@ def create_app(settings: Settings) -> FastAPI:
     def session_relogin(body: dict) -> dict:
         """重新登录：用账号密码走真浏览器填表**一次**；遇验证码立即停机转人工。"""
         acc = _account(settings, str(body.get("label") or ""))
-        if not glogin.is_configured(glogin.credentials_path(settings)):
-            return {"ok": False, "error": "data/account.local.json 里没有可用的账号密码"}
+        # ⚠ 按账号判（2026-11-07 修 P0）：全局文件在多账号下会让所有账号都"有凭据"
+        if not glogin.is_configured_for(acc, settings):
+            return {"ok": False,
+                    "error": f"账号 {acc.label} 没有可用的账号密码："
+                             "请到「✎ 编辑」里给它填上自己的账号密码"
+                             "（不要依赖全局 data/account.local.json，多账号会串号）"}
         out = _session_script(acc, "--relogin", timeout=150)
         if not out["ok"]:
             return out

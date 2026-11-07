@@ -187,7 +187,10 @@ def main() -> int:
                                         start_url=selectors.MAIN_PAGE)
         page = session.page
         if gdriver.at_login_page(page.url):
-            cred = glogin.load_credentials()
+            # 凭据**按账号**取（2026-11-07 修 P0）：原来 `load_credentials()` 无参读全局
+            # 文件，多账号时会拿 A 的密码登 B（顶号）。
+            acc = gaccounts.find_by_label(gaccounts.load_accounts(), label)
+            cred = glogin.load_credentials_for(acc, settings)
             if not cred:
                 print("[FAIL] 已掉登录且无本地凭据 → 请人工登录后重跑", file=sys.stderr)
                 return 3

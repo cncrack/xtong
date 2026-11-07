@@ -392,10 +392,36 @@ class TestGxksPanelBrowser(unittest.TestCase):
     # ---------------------------------------------------------------- 重新登录
 
     def test_relogin_needs_credentials(self):
-        """没配账号密码时门都不开（不白跑一次登录）。"""
+        """没配账号密码时门都不开（不白跑一次登录）。
+
+        ⚠ 2026-11-07 起凭据是**按账号**判的（修 P0：原来读全局 `account.local.json`，
+        多账号下会拿 A 的密码登 B）。所以"没配"= **账号表里那条也没填**。
+        """
         (self.root / "data" / "account.local.json").unlink(missing_ok=True)
+        (self.root / "data" / "accounts.local.json").write_text(json.dumps(
+            {"accounts": [{"label": "jia", "display": "甲同学", "port": 9222},
+                          {"label": "yi", "port": 9223}]}, ensure_ascii=False),
+            encoding="utf-8")
         body = self.client.post("/api/session/relogin", json={"label": "jia"}).json()
         self.assertFalse(body["ok"])
+        self.assertIn("账号密码", body["error"])
+
+    def test_relogin_uses_per_account_credentials(self):
+        """**P0 回归**：A 配了凭据、B 没配 → B 必须被拒，不能拿 A 的密码去登。
+
+        2026-11-07 前 `is_configured(credentials_path())` 读全局文件，
+        多账号下两个号都会显示"有凭据"，B 会拿 A 的账号密码登录（顶号）。
+        """
+        # 全局文件里有 A 的凭据（旧单账号时代的遗留）
+        (self.root / "data" / "account.local.json").write_text(
+            json.dumps({"name": "acc-A", "pw": "pw-A-123"}), encoding="utf-8")
+        # 但账号表里 B 没填任何凭据
+        (self.root / "data" / "accounts.local.json").write_text(json.dumps(
+            {"accounts": [{"label": "jia", "port": 9222, "name": "acc-A", "pw": "pw-A-123"},
+                          {"label": "yi", "port": 9223}]}, ensure_ascii=False),
+            encoding="utf-8")
+        body = self.client.post("/api/session/relogin", json={"label": "yi"}).json()
+        self.assertFalse(body["ok"], "B 没配凭据却放行了 = 会拿 A 的密码去登 B")
         self.assertIn("账号密码", body["error"])
 
     def test_relogin_success(self):
