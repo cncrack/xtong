@@ -249,6 +249,30 @@
   被 `text-overflow:ellipsis` 渲染成「…」，在 7px 空间里**看起来是一个小圆点**。
   靠 **Playwright 真渲染 + 4 倍放大截图 + `getComputedStyle`** 才定位并验证修好。
   **规矩**：静态扫描对"视觉问题"无效，直接渲染量几何。
+  ⚠ **11-08 新增（第 22 条）：面板/守护这类长驻进程，一律由用户在自己的 PowerShell 窗口起** ——
+  本会话用 AI 工具的 `run_in_background` 起过面板，任务 `job_kill` 后**宿主 runner 脱离作业对象
+  成了孤儿**（DeepSeek Harness.exe + multiprocessing spawn worker），`job_list` 显示全 killed、
+  8301 却仍在响应，且 TCP 表把监听挂在**已退出的 pid**（15972）名下，
+  `netstat -ano` / `Get-NetTCPConnection` 都查不到真实持有者。
+  用户"关了自己的窗口"根本杀不到它们 → 连续三轮「改了代码却一直看到旧页面」。
+  **教训**：① 长驻进程绝不通过 AI 后台任务起；② `reload=True` 的 reloader 只要活着就会
+  自己 spawn 新 worker（"关了又复活"）；③ 停这种孤儿必须按**进程树**逐个确认 pid 再停，
+  不能只信 `job_kill` 或 TCP 表的 OwningProcess。
+  **启动命令（唯一，写进约定）**：
+  `cd E:\xxt-gxks` 然后 `.venv\Scripts\xxt.exe gxks-panel`
+  看到 `[OK] 第二平台面板：http://127.0.0.1:8301` +
+  `[OK] 页面指纹：PAGE len=... markers=CRLS` 即为新代码（见提交 `5e04267`）。
+  停止：在那个窗口按 `Ctrl+C`；必要时 `Get-NetTCPConnection -LocalPort 8301` 定位 pid。
+  ⚠ **11-08 新增（第 23 条）：视频播放问题，先读日志自证，再查问题** ——
+  用户原话「以后有关视频播放问题请你查看日志后再去查问题」。
+  11-07 那次争议里我把"下结论"推给用户，且证据只有 `clock`（页面墙钟 `m_time`，
+  **视频卡住它也照涨**，证明不了画面在播）。
+  **规矩**：① 第一步读 `data/logs/gxks-study-*.log` + `data/debug/watch_gxks_*.jsonl`，
+  不先猜、不先问；② 结论必须由 `t(currentTime) 递增 + paused/ended + updates 上报次数
+  + progress 平台学时` 这条链自证；③ 已给 `tick` 补 `d/paused/ended/hidden` 并摊开打印
+  （提交 `b49515c`/`0ef0cfe`），日志一行形如
+  `视频 95/1166s · 播放中 · 上报 1 次 · 页面计时 95 秒`；④ 只加事件字段，不碰
+  `classify`/`plan_action`，播放行为零变化。
   ⚠ **其它坑**：① `start_chrome.ps1` 的 Chrome 参数必须与 `chrome._CHROME_ARGS` 一致（漏 `--no-proxy-server` → 视频分片解密失败）；② 该 ps1 必须带 BOM；③ `E:\xxt` 那个 worktree 的面板也抢 8301；④ `git checkout --` 会冲掉本轮改动；⑤ 动第一个文件前先搜 devlog；⑥ **别把 `DETACHED_PROCESS` 改回去**（会给控制台程序分配新控制台 → 弹黑窗口）；⑦ 沙箱内 **Playwright 起不来**（`EPERM: mkdtemp playwright-artifacts`）→ **解决办法：把 `TEMP`/`TMP` 指到 `data/tmp` 就能起**（11-07 实测），或起临时面板 + 临时 `XXT_ROOT` 渲染；⑧ **改 `start_chrome.ps1` 会丢 BOM**（edit 工具按 UTF-8 无 BOM 写回）→ 改完立刻验证 `[System.IO.File]::ReadAllBytes($p)[0..2]` 是 `EF BB BF`，`test_has_utf8_bom` 也会拦。
 - **下一步第一个动作**：**由用户操作** —— ⚠ **必须先重启面板**（`driver.py` 改了，
   而正在跑的 `test` 任务用的是**它启动时的旧代码**），再 `Ctrl+F5`，然后按 devlog

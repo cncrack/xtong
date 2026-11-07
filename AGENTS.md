@@ -33,7 +33,14 @@
   ④ 断点统一：`≤760px` 按手机处理（单列、可横滑、按钮放大到手指可点），`1000px` 以上才启用左右分栏。新增 CSS 一律附上对应断点。
 - 所有与目标网站平台强相关的逻辑（URL、选择器、接口）只写在 `src/xxt/adapters/` 内，核心层不得引用平台细节
 - 默认策略遵守 `docs/PLAN.md` §8：低频拟人化、半自动优先、不硬闯风控
-- **长驻进程启动方式**（2026-10-27 查明）：用 AI 工具内终端起面板/守护，必须请求**沙箱外权限**执行，或让用户在自己的 PowerShell 窗口跑 `.venv\Scripts\xxt.exe panel`。沙箱内 `Start-Process` 拉起的进程会随命令结束被回收，表现为“端口无监听 + stdout/stderr 全空 + 无 traceback”，极易误判为程序崩溃
+- **长驻进程启动方式**（2026-10-27 查明，2026-11-08 补充）：**一律由用户在自己的 PowerShell 窗口起，AI 不得用后台任务/`run_in_background`/`Start-Process` 起面板或守护**。
+  - 沙箱内 `Start-Process` 拉起的进程会随命令结束被回收，表现为"端口无监听 + stdout/stderr 全空 + 无 traceback"，极易误判为程序崩溃。
+  - **2026-11-08 实测更隐蔽的坑**：AI 用后台任务起面板后，`job_kill` 会显示任务已 killed，但 **DeepSeek Harness runner + multiprocessing spawn worker 会脱离作业对象成为孤儿**，`8301` 仍响应、TCP 表把监听挂在**已退出的 pid** 名下，`netstat -ano` 也查不到真实持有者。用户关掉自己的窗口杀不到它们 → 连续三轮「改了代码却一直看到旧页面」。`reload=True` 的 reloader 只要活着还会自己 spawn 新 worker（"关了又复活"）。
+  - **停这种孤儿**：按进程树逐个确认 pid 再 `Stop-Process -Force`，不能只信 `job_kill` 或 `Get-NetTCPConnection` 的 OwningProcess。
+  - **唯一启动命令**（用户在自己的 PowerShell 窗口执行）：
+    - 第二平台（本项目默认）：`cd E:\xxt-gxks` → `.venv\Scripts\xxt.exe gxks-panel` → 开 `http://127.0.0.1:8301`
+    - 超星面板：`cd E:\xxt` → `.venv\Scripts\xxt.exe panel` → 开 `http://127.0.0.1:8300`
+  - 启动日志出现 `[OK] 页面指纹：PAGE len=... markers=CRLS` 才说明跑的是新代码；停止在那个窗口按 `Ctrl+C`。
 - **最小访问原则**（2026-10-24 用户强调"不能账号被封"）：实况访问能省则省——优先复用页面自身请求（如截获 courselistdata）、侦察合并成一次、不重复跑 recon；批量抓取必须带随机间隔，且只取当次任务所需数据；测试夹具用合成数据，不用真实页面转储
 - **诊断脚本三原则**（2026-10-26 用户"我没有点"纠错后定）：会改真实状态（DB 字段 / 起停进程 / 定时值）的临时脚本必须——① **留唯一痕迹**：向 `run_logs` 写一条 `diag-*` 或落 `diag_<时间戳>.json`，否则事后无法区分"脚本所为 / 用户操作"，会把错误结论写进文档；② **幂等可重入**：并发或重试跑两次会互相覆盖原值、还原错序就把测试值写回生产配置；③ **清干净全部副作用**：不只是显式改的字段（守护写回的 `app_config['auto.plan']` 就曾被漏掉）。另：诊断脚本一律放 `data/debug/` 且**不得命名 `test_*.py`**（会被 pytest 收集、弄挂 push_check）
 
