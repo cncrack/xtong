@@ -1053,15 +1053,24 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertIn("btn-bstudy", PAGE)
         self.assertIn("b.disabled = n === 0", PAGE)
 
-    def test_batch_select_does_not_reuse_table_sel(self):
-        """卡片批量用自己的 `BATCH_SEL`，**不能复用表格的 `SEL`**。
+    def test_batch_select_shares_table_sel(self):
+        """卡片批量**必须跟表格勾选走**（2026-11-07 用户实拍踩坑后改的）。
 
-        混用会让「表格勾了 3 个准备删除」时右侧栏突然也在批量里算 3 个。
+        原来的设计是独立 `BATCH_SEL`（只有点「全选」才填充）。用户自然会在表格里勾
+        2 个账号，然后去点右上角「启动并学习」，结果按钮是灰的 —— 用户原话：
+        「我选几个账号，点击这个不就可以了吗」。
+
+        现在只有**一份**选择集：`SEL`。卡片批量按钮和「全选」都读写它。
         """
-        self.assertIn("const BATCH_SEL = new Set()", PAGE)
         body = PAGE.split("function batchBrowserAction(", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("BATCH_SEL", body)
-        self.assertNotIn("[...SEL]", body)
+        self.assertIn("[...SEL]", body)
+        # 反证：不能再出现独立集合（那正是踩坑的根源）
+        self.assertNotIn("new Set()", PAGE.split("const BATCH_SEL", 1)[-1].split(";", 1)[0]
+                         if "const BATCH_SEL" in PAGE else "")
+        # 「全选」也必须填 SEL（否则卡片按钮还是灰的）
+        allbody = PAGE.split("function batchSelectAll(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("SEL.add", allbody)
+        self.assertIn("SEL.clear", allbody)
 
     def test_one_click_button_only_when_browser_down(self):
         """行内「⚡ 一键」只在浏览器没开时出现 —— 开着时「学习」本身已是一步到位。"""
@@ -1115,10 +1124,81 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         self.assertIn(': "";', body)          # 没选中时置空
         self.assertNotIn('"未选中"', body)    # 不再写那句无用文案
 
+    def test_batch_select_all_fills_table_sel(self):
+        """卡片「全选」= 填表格的 SEL（与表头全选框同一份数据）。
+
+        2026-11-07 用户：「BATCH_SEL 针对的是账号全选，我觉得这个不合理，
+        应该针对的也是多选即可」→ 合并成一份。
+        """
+        body = PAGE.split("function batchSelectAll(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("SEL.add", body)
+        self.assertIn("SEL.clear", body)
+        self.assertNotIn("BATCH_SEL", body)
+
     def test_lifecycle_buttons_keep_semantics(self):
         """启动是主操作、停止是危险操作，语义不能因为重排丢掉。"""
         self.assertIn('id="btn-bstart" class="bgrp-btn primary"', PAGE)
         self.assertIn('id="btn-bstop" class="bgrp-btn danger"', PAGE)
+
+    def test_table_batch_bar_has_start_and_study(self):
+        """**P2（2026-11-07）**：表格批量栏要能一键「启动并学习」。
+
+        用户问：「表格批量栏加『启动并学习』，那它和上面那行『启动浏览器』是否重复？」
+        → 不重复，是**两个阶段**：
+          「启动浏览器」= 只拉 Chrome + 注入登录态，不进学习；
+          「启动并学习」= 拉 Chrome + 等端口 + 直接开刷。
+        后端 `start-and-study` 早就存在（`/api/accounts/batch` 支持），
+        缺的只是这个按钮 —— 用户勾了 2 个账号却只能分两步点，就是因为它不存在。
+        """
+        bar = PAGE.split("function renderBatchBar(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("start-and-study", bar, "表格批量栏缺少「启动并学习」按钮")
+        self.assertIn("启动并学习", bar)
+        # 只在真有浏览器没开时出现（都开着时它就是「开始学习」，没必要双份）
+        self.assertIn("deadSel", bar)
+
+    def test_start_and_study_prompts_section_count(self):
+        """批量「启动并学习」要弹「本次几节」，默认值来自面板设置。
+
+        原来卡片批量那条路径静默用后端默认 3，用户不知道会跑几节。
+        """
+        body = PAGE.split("async function batchAction(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('action === "start-and-study"', body)
+        self.assertIn("本次每个账号跑几节", body)
+        self.assertIn("sections_per_run", body)
+
+    def test_browser_start_button_text_reflects_state(self):
+        """**P3（2026-11-07）**：「为什么点不动」必须写在按钮上。
+
+        用户实拍：「启动并登录这个按钮还是高亮可点击的」——
+        原来只变灰、原因藏在 title 里；现在文案随状态变（已运行 / 缺 Chrome / 启动并登录）。
+        """
+        body = PAGE.split("el(\"browser\").innerHTML = html;", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('startBtn.textContent = "已运行"', body)
+        self.assertIn('startBtn.textContent = "缺 Chrome"', body)
+        self.assertIn('startBtn.textContent = "启动并登录"', body)
+        # 端口活着时必须是 disabled（不能真的重复起）
+        self.assertIn("startBtn.disabled = !!b.port_alive", body)
+
+    def test_login_badge_not_shown_when_browser_down(self):
+        """**P4（2026-11-07）**：浏览器关了还亮「已登录」= 撒谎。
+
+        `session_<label>.json` 是**上一次检查**的结果（可能昨天写的）。浏览器关掉后
+        它还写着 `logged_in: true`，界面就一直绿着「已登录」，让人以为已经登好了
+        —— 而那个 Chrome 根本没进程（本站 cookie 全是会话级，早就跟着没了）。
+        判据改成 `port_alive && session.logged_in`。
+        """
+        body = PAGE.split("const loginBox = el(\"b-login\");", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("未运行", body)
+        self.assertIn("b.port_alive", body)
+        # 不能无条件按 session.logged_in 渲染绿色已登录
+        self.assertIn("if (!b.port_alive)", body)
+
+    def test_default_sections_come_from_settings(self):
+        """「本次跑几节」的默认值统一来自 `sections_per_run`，不再页面里写死 3。"""
+        self.assertIn("function perRunDefault()", PAGE)
+        self.assertIn("STATE.sections_per_run", PAGE)
+        # 表格行内初值也走它
+        self.assertIn("perRunDefault()", PAGE.split("if (SEC_N.has(c.label))", 1)[1])
 
     def test_all_five_buttons_still_exist(self):
         for bid in ("btn-bstart", "btn-bstop", "btn-scheck",

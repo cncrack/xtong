@@ -1411,6 +1411,32 @@ def _start_jitter(settings: Settings) -> float:
     return max(0.0, min(120.0, n))
 
 
+def _sections_per_run(settings: Settings) -> int:
+    """读「本次跑几节」的默认值（1~12，默认 3）。
+
+    ## 为什么要有这一项（2026-11-07 用户问「默认 3 和面板设置项是否同步」）
+
+    原来「3」在三个地方各写死一份：
+    ① 表格行内输入框 `SEC_N` 的初值（`page.py` `Math.min(3, cap)`）；
+    ② 批量「启动并学习」不弹框，后端 `_start_and_study_one` 里 `int(max_sections or 3)`；
+    ③ 批量 `start` 的队列兜底 `int(body.get("max_sections") or 3)`。
+
+    结果就是**改一处另外两处不变**，用户在面板设置里找不到这一项、也不知道哪里能改。
+    现在统一读数据库里的 `sections_per_run`，前端 `/api/state` 带下来。
+
+    ⚠ 与「账号日额度」（`daily_sections`）不同：
+      `daily_sections` = 这个账号**一天**最多几节（账号表属性，各账号可不同）；
+      `sections_per_run` = 点一次「学习」**这一次**最多跑几节（全局默认，行内可覆盖）。
+    两者取小（11-04 定的口径），脚本侧 `run_gxks.py` 再兜一层。
+    """
+    try:
+        n = int(gxks_panel_settings.load(_db_path(settings))
+                .get("sections_per_run", 3) or 3)
+    except Exception:                                      # noqa: BLE001
+        return 3
+    return max(1, min(12, n))
+
+
 def _check_concurrency(settings: Settings) -> dict[str, Any] | None:
     """并发闸：已满就返回拒绝回包，否则 None。
 
@@ -1527,7 +1553,9 @@ def _study_one(settings: Settings, label: str,
         fleet = _check_fleet_daily(settings)
         if fleet:
             return fleet
-    n = int(max_sections or 3)
+    # 「本次跑几节」：调用方给了就用，没给就读面板设置里的 `sections_per_run`
+    # （原来写死 3，与面板设置、与表格行内默认值三处不同步 —— 2026-11-07 修）。
+    n = int(max_sections or _sections_per_run(settings))
     args = ["--label", acc.label, "--account-label", acc.label,
             "--port", str(acc.port),
             "--max-sections", str(max(1, min(n, 12)))]
@@ -1796,6 +1824,9 @@ def create_app(settings: Settings) -> FastAPI:
             "limit_concurrency": _concurrency_limit(settings),
             "live_study": _live_study_count(),
             "start_jitter": _start_jitter(settings),
+            # 「本次跑几节」的默认值（2026-11-07）：表格行内输入框与批量「启动并学习」
+            # 共用这一个值，改面板设置两处跟着变（用户问过「默认 3 和设置项是否同步」）。
+            "sections_per_run": _sections_per_run(settings),
             # 全局日总量闸（P2b）：批量栏要显示「今日合计/上限」，超了给红标签。
             "fleet_minutes_today": _fleet_minutes_today(settings),
             "fleet_limit_minutes": _fleet_daily_limit(settings),
@@ -1874,7 +1905,7 @@ def create_app(settings: Settings) -> FastAPI:
         got = _study_one(settings, label, body.get("max_sections"),
                          body.get("sections"))
         if got.get("concurrency_full"):
-            n = int(body.get("max_sections") or 3)
+            n = int(body.get("max_sections") or _sections_per_run(settings))
             _queue_add(settings, _account(settings, label).label,
                        max(1, min(int(n), 12)))
             _ensure_queue_worker(settings)
@@ -2279,7 +2310,8 @@ def create_app(settings: Settings) -> FastAPI:
                     # 并发满 → **入队**（P2b），等下有空位自动起。
                     # `PLAN-GXKS.md` §11.5 要的就是这个语义："否则按并发上限排队"。
                     _queue_add(settings, label,
-                               max(1, min(int(body.get("max_sections") or 3), 12)),
+                               max(1, min(int(body.get("max_sections")
+                                            or _sections_per_run(settings)), 12)),
                                jitter=batch_jitter)
                     got = {"ok": False, "queued": True,
                            "message": (f"已排队（并发上限 {limit} 个已满，"
@@ -2523,13 +2555,29 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/panel/settings")
     def panel_settings_save(body: dict) -> dict:
-        """保存面板设置。只有 `reload` 需要重启面板才生效（它决定启动方式）。"""
-        items = {k: body.get(k) for k in ("reload", "poll_seconds")
-                 if k in body}
+        """保存面板设置。只有 `reload` 需要重启面板才生效（它决定启动方式）。
+
+        ## ⚠ 白名单必须与 `gxks_panel_settings.save()` 支持键**一一对应**
+        （2026-11-07 修的真 bug）：这里原来只放行 `reload` / `poll_seconds`，
+        而 P2a/P2b 新加的 `max_concurrency` / `start_jitter` / `fleet_daily_minutes`
+        **没加进白名单** → 前端提交了、`save()` 也支持，但走到这里就被过滤掉。
+
+        现象正是「面板上把同时学习上限改成 5 → 提示已保存 → 实际还是 2」，
+        而且**不报错**（因为过滤后的 items 仍然"保存成功"）。用户没法自助发现，
+        只会觉得"改了没效果" —— 这与 11-06 那个 `except: pass` 是同一类骗人 bug。
+
+        诊断实证：`POST {'max_concurrency': 5}` → 回 `ok:true`，回包 settings 里
+        `max_concurrency` 仍是 **2**。
+        """
+        allowed = ("reload", "poll_seconds", "max_concurrency",
+                   "start_jitter", "fleet_daily_minutes", "sections_per_run")
+        items = {k: body.get(k) for k in allowed if k in body}
         saved = gxks_panel_settings.save(_db_path(settings), items)
         _record(settings, "", "panel-settings",
                 "保存面板设置：" + "、".join(f"{k}={v}" for k, v in saved.items()))
+        # 把**真正落盘的值**回给前端：前端据此刷新控件，避免"界面显示 5、后端还是 2"
         return {"ok": True, "settings": saved,
+                "saved_keys": sorted(items),
                 "message": "已保存（热重载开关需重启面板才生效）"}
 
     return app

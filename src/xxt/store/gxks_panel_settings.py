@@ -77,6 +77,19 @@ DEFAULTS: dict[str, Any] = {
     # 默认 **0 = 不限**。方案里写的是 0（"0=不限"，且标注"建议不开，但要有"），
     # 因为它是最粗的一刀，开得太小会让前几个账号把配额吃光、后面的号一天都跑不了。
     "fleet_daily_minutes": 0,
+    # ------------------------------------------------ 「本次跑几节」的默认值（2026-11-07）
+    #
+    # 面板上有两处「本次跑几节」：① 表格行内输入框（每账号可改，默认 3）
+    # ② 批量「启动并学习」不弹框、直接用它。
+    #
+    # 用户问「这个默认 3 和面板设置项是否同步」→ **原来不**：两处都写死，改一处另一处不变。
+    # 现在统一成这一项（`sections_per_run`），前端 `/api/state` 会带下来，跟着设置走。
+    #
+    # ⚠ 与「账号日额度」（`daily_sections`）是两回事：
+    #   `daily_sections` = 这个账号**一天**最多几节（账号表属性，按账号不同）；
+    #   `sections_per_run` = 点一次「学习」**这一次**最多跑几节（全局默认，可在行内改）。
+    # 两者取小（账号 11-04 定下的口径），脚本侧 `run_gxks.py` 再兜一层。
+    "sections_per_run": 3,
 }
 
 
@@ -134,6 +147,14 @@ def load(db_path: Path) -> dict[str, Any]:
                 # 上限 1440 分钟 = 24 小时，超过就没有意义了。
                 try:
                     out[name] = max(0, min(1440, int(raw)))
+                except ValueError:
+                    pass
+            elif name == "sections_per_run":
+                # 1~12：点一次最多跑几节。**不许 0**（0 节等于点了不跑，是误操作）；
+                # 上限 12 与前端表格行内输入框的 `cap` 一致（再大没有实际意义，
+                # 单节 40+ 分钟，12 节已经是大半天）。
+                try:
+                    out[name] = max(1, min(12, int(raw)))
                 except ValueError:
                     pass
     except sqlite3.Error:
@@ -228,6 +249,12 @@ def save(db_path: Path, items: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 f = int(DEFAULTS["fleet_daily_minutes"])
             _write(conn, PREFIX + "fleet_daily_minutes", str(f))
+        if "sections_per_run" in items:
+            try:
+                s_n = max(1, min(12, int(items["sections_per_run"])))
+            except (TypeError, ValueError):
+                s_n = int(DEFAULTS["sections_per_run"])
+            _write(conn, PREFIX + "sections_per_run", str(s_n))
         conn.commit()
     except sqlite3.Error:
         pass

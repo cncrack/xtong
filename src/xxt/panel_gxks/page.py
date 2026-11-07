@@ -964,6 +964,17 @@ button.mini{padding:3px 9px;font-size:13px}
           </div>
         </div>
         <div class="fld">
+          <label for="f-perrun">每次跑几节</label>
+          <span><input id="f-perrun" type="number" min="1" max="12" step="1" value="3"> 节</span>
+          <div class="hint">
+            点一次「学习」<b>这一次</b>最多跑几节（默认 <b>3</b>，可改 1~12）。<br>
+            表格每行的「本次跑几节」输入框、批量「启动并学习」，<b>默认值都取这里</b>。<br>
+            行内仍可临时改（只影响那一次），改这里则所有默认值跟着变。<br>
+            ⚠ 与「账号日额度」不同：那个管<b>一天总共</b>（账号表里按账号设），
+            这个管<b>这一次点下去</b>；两者取小，所以调大不会超刷。
+          </div>
+        </div>
+        <div class="fld">
           <label for="f-fleet">全局日时长上限</label>
           <span><input id="f-fleet" type="number" min="0" max="1440" step="10" value="0"> 分钟</span>
           <div class="hint">
@@ -1117,6 +1128,9 @@ function acctStatusTag(c) {
   if (s === "off") return '<span class="tag t-none">已停用</span>';
   if (s === "running") return '<span class="tag t-learn">运行中</span>';
   if (s === "full") return '<span class="tag t-low">额度用完</span>';
+  // 空闲时再细分一层：浏览器没开 vs 开着待学（2026-11-07 用户「按钮多、分不清」）
+  // 两者都能点「学习」，但"浏览器没开"会多一个 ⚡ 一键，状态先说出来更省心。
+  if (!c.port_alive) return '<span class="tag t-none" title="浏览器没开：点行内 ⚡ 一键 会自动起浏览器再学">待启动</span>';
   return '<span class="tag t-done">空闲</span>';
 }
 
@@ -1262,9 +1276,12 @@ function acctTr(c, accRow, cur) {
       const saved = SEC_N.get(c.label);
       if (saved > cap) SEC_N.set(c.label, cap);          // 额度变了要收敛
     } else {
-      SEC_N.set(c.label, Math.min(3, cap));
+      // 初值来自面板设置（`sections_per_run`，默认 3）——用户问过「这个默认 3 会不会
+      // 跟着设置项变」：现在会了（2026-11-07 统一）。仍是本账号的临时值，
+      // 用户在手填后按 `SEC_N` 记住，不受 4 秒重绘影响。
+      SEC_N.set(c.label, Math.min(perRunDefault(), cap));
     }
-    const n = Math.min(Number(SEC_N.get(c.label)) || 3, cap);
+    const n = Math.min(Number(SEC_N.get(c.label)) || perRunDefault(), cap);
     html += '<input class="sec-n" type="number" min="1" max="' + cap + '" value="' + n +
       '" data-label="' + esc(c.label) + '" title="本次跑几节（1~' + cap +
       '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）" ' +
@@ -1363,6 +1380,20 @@ function renderBatchBar(shown) {
       "为选中的账号逐个拉起 Chrome（每个约 10~40 秒，串行）；已在跑的自动跳过" +
       '">启动浏览器<span class="bb-note">（' + deadSel + " 个没开）</span></button>"
     : "";
+  // P2（2026-11-07）：**一键启动并学习** —— 起浏览器 → 等就绪 → 直接开始学习。
+  //
+  // 用户问：「表格批量栏加『启动并学习』，那它和上面那行『启动浏览器』是否重复？」
+  // 不重复，是**两个阶段**：
+  //   「启动浏览器」= 只把 Chrome 拉起来 + 注入登录态，**不进学习**（适合先确认登录）；
+  //   「启动并学习」= 拉起 + 等端口 + 直接开刷（适合"我就是要它开始跑"）。
+  //   后者 = 前者 + `_study_one`，后端 `start-and-study` 早就有，这里只是把按钮补上。
+  // 只在**有账号浏览器没开**时出现（都开着时它就是"开始学习"，没必要双份）。
+  const studyBtn = deadSel
+    ? '<button class="mini primary" onclick="batchAction(\'start-and-study\')" title="' +
+      "一键：为没开浏览器的账号逐个拉起 Chrome（每个约 10~40 秒）→ 等端口就绪 → " +
+      "自动开始学习。已在跑的自动跳过；并发满了的会排队" +
+      '">启动并学习<span class="bb-note">（' + deadSel + " 个要起浏览器）</span></button>"
+    : "";
   html += '<b>已选 ' + n + ' 个</b>' +
     (runningSel ? '<span class="tag t-learn">其中 ' + runningSel + " 个运行中</span>" : "") +
     // 并发状态：满了用红标签，没满用中性标签（用户一眼看出还能不能再起）
@@ -1371,13 +1402,15 @@ function renderBatchBar(shown) {
     concLive + "/" + concLimit + "</span>" +
     fleetTag +
     queueTag +
-    '<button class="mini primary" onclick="batchAction(\'start\')" title="' +
+    // 三个动作按「从轻到重」排：启动浏览器（只起）→ 启动并学习（起+学）→ 开始学习（只学）
+    browserBtn +
+    studyBtn +
+    '<button class="mini' + (deadSel ? "" : " primary") + '" onclick="batchAction(\'start\')" title="' +
     (runningSel ? "已在跑的账号会自动跳过，只启动空闲的；不重复开" : "启动选中账号的学习任务")
     + (fleetFull ? "；⚠ 今日全局时长已满，点了会被拒"
        : (room > 0 ? "；本次最多再起 " + room + " 个（并发上限 " + concLimit + "）"
                    : "；并发已满，多出的会**排队**，有空位自动开始"))
     + '">' + startTag + "</button>" +
-    browserBtn +
     '<button class="mini" onclick="batchAction(\'stop\')" title="' +
     (runningSel ? "停掉选中的运行中账号（没在跑的会跳过，不算失败）" : "停掉选中账号的学习任务")
     + '">停止</button>' +
@@ -1571,7 +1604,8 @@ async function batchAction(action) {
   const labels = [...SEL];
   if (!labels.length) return;
   const CN = { start: "开始学习", stop: "停止", enable: "启用",
-               disable: "停用", delete: "删除", "start-browser": "启动浏览器" };
+               disable: "停用", delete: "删除", "start-browser": "启动浏览器",
+               "start-and-study": "启动并学习" };
   // 选中里有几个正在跑。「开始学习」会跳过它们；「停用/删除」会被它们挡住
   // （后端拒绝：有任务在跑先停）—— 两种情况都要在**点之前**说清（2026-11-06）。
   const cards = (STATE && STATE.cards) || [];
@@ -1604,18 +1638,24 @@ async function batchAction(action) {
       "只启动剩下 " + (labels.length - runningSel.length) + " 个空闲的。")) {
       return;
     }
-  } else if (action === "start-browser") {
+  } else if (action === "start-browser" || action === "start-and-study") {
     // 串行拉起 Chrome，每个冷启动 10~40 秒 —— 必须先告诉用户要等多久，
     // 否则会以为「点了没反应」而重复点（2026-11-06 P1）。
     const dead = labels.filter((l) => {
       const c = cards.find((x) => x.label === l);
       return !(c && c.port_alive);
     });
-    if (!confirm("为选中的 " + labels.length + " 个账号启动浏览器？\n\n" +
+    const tail = action === "start-and-study"
+      ? "完成后会自动注入登录态，**并直接开始学习**。"
+      : "完成后会自动注入登录态（不会开始学习）。";
+    if (!confirm((action === "start-and-study"
+        ? "一键「启动并学习」：对选中的 " + labels.length + " 个账号，"
+        : "为选中的 " + labels.length + " 个账号启动浏览器？\n\n") +
+      (action === "start-and-study" ? "\n\n" : "") +
       (dead.length ? dead.length + " 个的浏览器没开（" + dead.join("、") + "），会逐个拉起。\n"
         : "") +
       (labels.length - dead.length ? (labels.length - dead.length) + " 个已经在运行，会跳过。\n" : "") +
-      "\n每个约 10~40 秒，**这段时间不要重复点**。完成后会自动注入登录态。")) {
+      "\n每个约 10~40 秒，**这段时间不要重复点**。" + tail)) {
       return;
     }
   } else if (!confirm("对选中的 " + labels.length + " 个账号执行「" +
@@ -1623,12 +1663,14 @@ async function batchAction(action) {
     return;
   }
   const body = { labels: labels, action: action, confirm: true };
-  if (action === "start") {
+  // 「本次跑几节」的默认值统一来自面板设置（`sections_per_run`），不再各处写死 3。
+  const perRun = Number((STATE && STATE.sections_per_run) || 3) || 3;
+  if (action === "start" || action === "start-and-study") {
     // 批量也允许自己定（2026-11-04）：原来写死 3，与单账号行为不一致。
-    const inp = prompt("本次每个账号跑几节？（1~12，默认 3）", "3");
+    const inp = prompt("本次每个账号跑几节？（1~12，默认 " + perRun + "）", String(perRun));
     if (inp === null) return;                       // 取消
     let n = parseInt(inp, 10);
-    if (!Number.isFinite(n) || n < 1) n = 3;
+    if (!Number.isFinite(n) || n < 1) n = perRun;
     if (n > 12) n = 12;
     body.max_sections = n;
   }
@@ -1637,9 +1679,11 @@ async function batchAction(action) {
     // 第二次必然全「已在跑」→ 满屏跳过提示（2026-11-06）。
     if (BUSY) return null;
     BUSY = true;
-    if (action === "start-browser") {
+    if (action === "start-browser" || action === "start-and-study") {
       // 串行起 Chrome 可能要好几分钟：必须让用户看到"正在做"，否则以为卡死
-      toast("正在逐个启动浏览器（每个 10~40 秒，请勿重复点击）…");
+      toast((action === "start-and-study"
+        ? "正在逐个起浏览器并开始学习（每个 10~40 秒，请勿重复点击）…"
+        : "正在逐个启动浏览器（每个 10~40 秒，请勿重复点击）…"));
     }
     try {
       return await apiPost("/api/accounts/batch", body);
@@ -1794,6 +1838,13 @@ async function startWithBrowser(btn) {
     toast((data && (data.error || data.message)) || "没能启动", true);
   }
   load();
+}
+
+// 「本次跑几节」的**默认值**统一从面板设置读（`/api/state.sections_per_run`，默认 3）。
+// 2026-11-07 之前这个 3 在页面里写死两处、后端写死两处，改一处其余不变（用户问过这点）。
+function perRunDefault() {
+  const n = Number((STATE && STATE.sections_per_run) || 3) || 3;
+  return Math.max(1, Math.min(12, n));
 }
 
 // 记住「本次跑几节」的用户输入（2026-11-04）。
@@ -2121,12 +2172,27 @@ function renderBrowser(state, browser, label) {
     (b.started_by_panel ? '<span class="tag t-learn">面板启动 · ' + esc(b.since) + "</span>" : "") +
     "</div>";
   // 登录状态写到「会话」行末尾的占位里（用户 2026-11-02：「可以把已登录放在这一行」）
+  //
+  // ⚠ **只有浏览器活着时才算数**（2026-11-07 用户实拍抓到的 bug）：
+  // `session_<label>.json` 是**上一次检查的结果**，可能是昨天写的。浏览器关掉后
+  // 它还写着 `logged_in: true`，于是界面一直亮着绿「已登录」，让人以为已经登好了
+  // —— 实际上那个 Chrome 根本没有进程、cookie 也早随浏览器消失（本站 cookie 全是会话级）。
+  // 判据改成：`port_alive && session.logged_in` 才是「已登录」；否则一律「未运行」。
   const loginBox = el("b-login");
   if (loginBox) {
-    loginBox.innerHTML = s
-      ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">' +
-        (s.logged_in ? "已登录" : "未登录") + "</span>"
-      : "";
+    if (!b.port_alive) {
+      // 浏览器没开：不管上次检查结果如何，当前都谈不上"已登录"
+      loginBox.innerHTML = s
+        ? '<span class="tag t-none" title="浏览器没开（端口 ' + esc(b.port) +
+          ' 未监听）。上次检查是 ' + esc(s.checked_at || "?") +
+          ' 的结果，现在不适用">未运行</span>'
+        : '<span class="tag t-none" title="浏览器没开">未运行</span>';
+    } else {
+      loginBox.innerHTML = s
+        ? '<span class="tag ' + (s.logged_in ? "t-done" : "t-low") + '">' +
+          (s.logged_in ? "已登录" : "未登录") + "</span>"
+        : '<span class="tag t-none" title="浏览器开着，但还没点过「检查」">未检查</span>';
+    }
   }
   // 紧凑双列：原来 6 行竖表占了整张卡，右边一长条空白。
   // 现在短项并排（Chrome / profile / 凭据），长项（快照、上次检查）独占一行。
@@ -2147,9 +2213,12 @@ function renderBrowser(state, browser, label) {
   } else {
     long.push(["登录态快照", "未存（先点「检查会话」）"]);
   }
+  // 「上次检查」必须标明**它是过去时**（2026-11-07）：浏览器没开时加一句提示，
+  // 否则用户会拿昨天的"已登录"当成现在，点「学习」才发现要重登。
   long.push(["上次检查", s
     ? esc(s.checked_at) + " · " + (s.logged_in ? "已登录" : "未登录") +
-      (s.navigated ? "（导航了）" : "（零请求）")
+      (s.navigated ? "（导航了）" : "（零请求）") +
+      (b.port_alive ? "" : " · 浏览器已关，此结果不适用")
     : "没查过"]);
   if (managed) {
     long.push(["managed", b.managed_profile ? "profile 已建" : "profile 未建（首跑 = 未登录）"]);
@@ -2174,7 +2243,30 @@ function renderBrowser(state, browser, label) {
   }
   el("browser").innerHTML = html;
   el("browser-meta").textContent = b.can_start ? "" : (managed ? "" : "缺 Chrome，启动按钮不可用");
-  el("btn-bstart").disabled = !!b.port_alive || !b.can_start;
+  // ------------------------------------------------------------------ P3（2026-11-07）
+  // 「为什么这个按钮点不动」必须**写在按钮上**，不能只藏在 title 里。
+  //
+  // 用户实拍反馈：「启动并登录这个按钮还是高亮可点击的」——
+  // 原来浏览器已在跑时按钮只是变灰，原因要靠悬停 title 才看得到；
+  // 而端口没开、却还显示「已登录」（昨天那次检查结果）时，更让人以为已经搞定。
+  //
+  // 做法：按钮文案随状态变，并把原因写进 title：
+  //   端口活着 → 「已运行」+ 灰；缺 Chrome → 「缺 Chrome」；否则「启动并登录」。
+  const startBtn = el("btn-bstart");
+  if (startBtn) {
+    startBtn.disabled = !!b.port_alive || !b.can_start;
+    if (!b.can_start) {
+      startBtn.textContent = "缺 Chrome";
+      startBtn.title = "没找到 Chrome：设环境变量 XXT_GXKS_CHROME 指向 chrome.exe";
+    } else if (b.port_alive) {
+      startBtn.textContent = "已运行";
+      startBtn.title = "端口 " + b.port + " 已经在监听 = 这个账号的浏览器开着，" +
+        "不需要再启动。要重启请先点右边「停止」。";
+    } else {
+      startBtn.textContent = "启动并登录";
+      startBtn.title = "用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）";
+    }
+  }
   el("btn-bstop").disabled = !b.started_by_panel;
   // 恢复/重登必须先有活着的浏览器（注入与填表都得占着那个页面）
   el("btn-srestore").disabled = !b.port_alive || !(b.state && b.state.saved);
@@ -2416,44 +2508,53 @@ async function stopBrowser() {
   await post("/api/browser/stop", { label: who });
 }
 
-// ------------------------------------------------- 卡片内批量（2026-11-06 用户要求）
+// ------------------------------------------------- 卡片内批量（2026-11-06 造，2026-11-07 改成"跟表格勾选"）
 //
-// 用户原话：「如果是有多个账号，右侧栏的浏览器与会话可以一键启动多个账号吗…
-// 一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」
-//
-// 所以这里**不复用表格的 SEL**，单独一套 `BATCH_SEL`：
-// 表格那套是"账号管理"用途（启停/启用/删除），这套是"浏览器与学习"用途。
-// 混用会导致「在表格勾了 3 个准备删除，右侧栏突然也在批量里算 3 个」。
-const BATCH_SEL = new Set();
+ // 用户原话：「如果是有多个账号，右侧栏的浏览器与会话可以一键启动多个账号吗…
+ // 一个一个去点启动并登录，那也挺麻烦的，是否可以优化？」
+ //
+ // ## 为什么要改（2026-11-07 用户实拍踩坑）
+ //
+ // 原来这里用**独立的 `BATCH_SEL`**，只有点「全选」才填充 —— 而用户自然会在**表格**
+ // 里勾 2 个，然后去点右上角「启动并学习」，结果按钮是灰的（BATCH_SEL 还是空）。
+ // 用户原话：「我选几个账号，点击这个不就可以了吗」。
+ //
+ // 两套勾选同页并存 = 必然踩坑。改成**只留一套**：这张卡片的批量按钮直接读表格的 `SEL`，
+ // 卡片里的「全选」也改成填 `SEL`（等价于表头的全选框）。
+ //
+ // ⚠ 保留 `BATCH_SEL` 这个名字作为 `SEL` 的**别名**（不是新集合），是为了：
+ //   ① 老测试/老代码里 `BATCH_SEL` 的引用不至于一改就崩；
+ //   ② 语义上仍表达"这张卡片在批量操作哪些账号"。但**永远只有一份数据**。
 
 function batchSelectAll() {
+  // 「全选」= 勾选**当前可见且没在跑**的账号（填表格的 SEL，与表头全选框同一份）。
   const shown = visibleCards(STATE || {});
-  // 「全选待启动」= 只挑**还没在跑**的（在跑的再启动只会被跳过，选了没意义）
   const pickable = shown.filter((c) => !c.job);
-  if (BATCH_SEL.size && pickable.every((c) => BATCH_SEL.has(c.label))) {
-    BATCH_SEL.clear();                       // 再点一次 = 取消
+  if (SEL.size && pickable.every((c) => SEL.has(c.label))) {
+    SEL.clear();                             // 再点一次 = 取消
   } else {
-    BATCH_SEL.clear();
-    pickable.forEach((c) => BATCH_SEL.add(c.label));
+    SEL.clear();
+    pickable.forEach((c) => SEL.add(c.label));
   }
   renderBrowserBatch();
+  renderBatchBar(shown);                     // 表格上方那排也跟着变（同一份 SEL）
 }
 
 function renderBrowserBatch() {
   // 清掉已经不存在的账号（被删了）
   const cards = (STATE && STATE.cards) || [];
-  for (const lab of [...BATCH_SEL]) {
-    if (!cards.some((c) => c.label === lab)) BATCH_SEL.delete(lab);
+  for (const lab of [...SEL]) {
+    if (!cards.some((c) => c.label === lab)) SEL.delete(lab);
   }
-  const n = BATCH_SEL.size;
+  const n = SEL.size;
   const note = el("b-batch-note");
   if (note) {
     // ⚠ 没选中时**置空**（不是写「未选中」）—— 配合 CSS `.b-note:empty{display:none}`，
     // 让这一行完全不占高度，4 个批量按钮才能挤进同一行（2026-11-06 用户要求）。
     // 有选中时显示「已选 N 个（甲、乙…）」，这才是真正需要看的信息。
-    const names = [...BATCH_SEL].slice(0, 5).join("、");
+    const names = [...SEL].slice(0, 5).join("、");
     note.textContent = n
-      ? "已选 " + n + " 个：" + names + (n > 5 ? " 等" : "") + "（可在表格勾选调整）"
+      ? "已选 " + n + " 个：" + names + (n > 5 ? " 等" : "") + "（勾选在上面表格里）"
       : "";
   }
   for (const id of ["btn-bbrowser", "btn-bstudy", "btn-bstopall"]) {
@@ -2469,12 +2570,14 @@ function renderBrowserBatch() {
 }
 
 async function batchBrowserAction(action) {
-  const labels = [...BATCH_SEL];
+  const labels = [...SEL];
   if (!labels.length) return;
   const CN = { "start-browser": "批量启动浏览器", "start-and-study": "一键启动并学习",
                "stop": "批量停止学习任务" };
   // 提示要等多久（浏览器冷启动 10~40 秒）；「停止」不涉及浏览器，不用吓人
   const slow = action !== "stop";
+  // 「本次跑几节」与表格上方的批量「开始学习」用同一个默认值（面板设置 sections_per_run）
+  const perRun = Number((STATE && STATE.sections_per_run) || 3) || 3;
   if (!confirm("对选中的 " + labels.length + " 个账号执行「" + CN[action] + "」？\n\n" +
       (slow ? "会**逐个**拉起 Chrome（每个约 10~40 秒，串行），这段时间请不要重复点击。\n"
             : "只停学习任务，浏览器不动。\n") +
@@ -2483,14 +2586,23 @@ async function batchBrowserAction(action) {
       "账号：" + labels.join("、"))) {
     return;
   }
+  const body = { labels: labels, action: action, confirm: true };
+  if (action === "start-and-study") {
+    // 与表格批量栏一致：允许改本次节数（原来是静默用后端默认 3，用户不知道跑几节）
+    const inp = prompt("本次每个账号跑几节？（1~12，默认 " + perRun + "）", String(perRun));
+    if (inp === null) return;
+    let n = parseInt(inp, 10);
+    if (!Number.isFinite(n) || n < 1) n = perRun;
+    if (n > 12) n = 12;
+    body.max_sections = n;
+  }
   if (BUSY) { toast("上一批还没完成，请稍等", true); return; }
   BUSY = true;
   hideNotice();
   toast(slow ? "正在逐个启动浏览器（每个 10~40 秒，请勿重复点击）…" : "正在停止…");
   let data = null;
   try {
-    data = await apiPost("/api/accounts/batch",
-                          { labels: labels, action: action, confirm: true });
+    data = await apiPost("/api/accounts/batch", body);
   } finally {
     BUSY = false;
   }
@@ -2503,7 +2615,7 @@ async function batchBrowserAction(action) {
   } else {
     toast(data.message || data.error || "已提交", realFail > 0);
   }
-  if (action === "stop") BATCH_SEL.clear();      // 停完就没必要保持选中
+  if (action === "stop") SEL.clear();      // 停完就没必要保持选中
   load();
 }
 
@@ -3161,12 +3273,13 @@ async function loadPanelSettings() {
     const s = (d && d.settings) || {};
     const rel = el("f-reload"), poll = el("f-poll");
     const conc = el("f-concurrency"), jit = el("f-jitter");
-    const fleet = el("f-fleet");
+    const fleet = el("f-fleet"), perrun = el("f-perrun");
     if (rel) rel.checked = s.reload !== false;
     if (poll) poll.value = s.poll_seconds || 4;
     if (conc) conc.value = s.max_concurrency || 2;
     if (jit) jit.value = (s.start_jitter === 0) ? 0 : (s.start_jitter || 30);
     if (fleet) fleet.value = s.fleet_daily_minutes || 0;
+    if (perrun) perrun.value = s.sections_per_run || 3;
     if (s.poll_seconds && s.poll_seconds * 1000 !== POLL_MS) {
       setPoll(s.poll_seconds);
     }
@@ -3176,7 +3289,7 @@ async function loadPanelSettings() {
 async function savePanelSettings() {
   const rel = el("f-reload"), poll = el("f-poll");
   const conc = el("f-concurrency"), jit = el("f-jitter");
-  const fleet = el("f-fleet");
+  const fleet = el("f-fleet"), perrun = el("f-perrun");
   const body = {
     reload: !!(rel && rel.checked),
     poll_seconds: Math.max(1, Math.min(60, Number(poll && poll.value) || 4)),
@@ -3184,6 +3297,8 @@ async function savePanelSettings() {
     max_concurrency: Math.max(1, Math.min(20, Number(conc && conc.value) || 2)),
     // 0~120：0 = 不错峰（允许）
     start_jitter: Math.max(0, Math.min(120, Number(jit && jit.value) || 0)),
+    // 1~12：**不许 0**（0 节 = 点了不跑，属误操作）
+    sections_per_run: Math.max(1, Math.min(12, Number(perrun && perrun.value) || 3)),
     // 0~1440：**这里 0 确实是不限**（与上面那一项相反）
     fleet_daily_minutes: Math.max(0, Math.min(1440, Number(fleet && fleet.value) || 0)),
   };
@@ -3194,7 +3309,17 @@ async function savePanelSettings() {
     const d = await r.json();
     if (d && d.ok) {
       setPoll(body.poll_seconds);
+      // **用后端回包里的真实值回填控件**（2026-11-07）：
+      // 原来只 `toast` 不刷控件 → 若后端把值钳过（或白名单漏键导致没存），
+      // 界面仍显示用户输入的值，而后端是另一个值，用户完全看不出来。
+      // （「改成 5 提示已保存、实际还是 2」就是这么发生的。）
+      const s = (d.settings) || {};
+      if (perrun) perrun.value = s.sections_per_run || 3;
+      if (conc) conc.value = s.max_concurrency || 2;
+      if (jit) jit.value = (s.start_jitter === 0) ? 0 : (s.start_jitter || 30);
+      if (fleet) fleet.value = s.fleet_daily_minutes || 0;
       toast(d.message || "已保存");
+      load();                                  // 让 /api/state 里的 sections_per_run 也跟上
     } else {
       toast((d && d.error) || "保存失败");
     }
