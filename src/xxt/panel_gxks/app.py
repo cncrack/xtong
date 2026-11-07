@@ -2601,6 +2601,60 @@ def ensure_local_temp(settings: Settings) -> pathlib.Path:
     return d
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    """本机 `host:port` 是否已被**别的进程**监听（纯探测，不绑定、不发包）。
+
+    ## 为什么需要（2026-11-08 查出的总根源）
+
+    实测同一台机器上出现过 **两个 uvicorn worker 同时监听 8301**：
+
+    ```
+    26532 (22:32 启动，旧代码) ─┐
+    24604 (00:41 启动，新代码) ─┴─ 都 bind 127.0.0.1:8301
+    ```
+
+    Windows 下 `SO_REUSEADDR` 允许多个 socket 绑同一地址，请求落到哪个 worker
+    不确定 → 用户看到的一直是**旧页面**，而我改的代码全在新进程里。
+    表现为「小点还在 / 日志还 4 秒刷新 / 账号徽标没出现」——
+    改了三轮都被当成"修复没生效"，其实根本没部署到他连的那个进程。
+
+    所以在 `uvicorn.run` 之前先探一次：端口已被占用就**明确拒绝第二个实例**，
+    而不是静默绑上去。第一个实例重启时端口是空的，不受影响。
+
+    ⚠ 只探 `127.0.0.1`（面板默认只本机），用 `connect_ex` 而不是 `bind`：
+    `bind` 会真的占用端口，`connect_ex` 只读、不留痕迹。
+    """
+    import socket
+
+    addr = "127.0.0.1" if host in ("0.0.0.0", "", "localhost") else host
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        # 连 socket 都建不出来（资源紧张/受限会话）→ 当作"端口空闲"放行，
+        # 不能因为探测失败就把正常的第一个实例挡在门外（宁可漏报不可误拒）。
+        return False
+    s.settimeout(0.3)
+    try:
+        return s.connect_ex((addr, int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _page_fingerprint() -> str:
+    """当前载入内存的 `PAGE` 指纹（长度 + 几个关键串），用于一眼分辨新旧代码。
+
+    2026-11-08 教训：磁盘上是新代码、进程内存里是旧代码，光看文件时间没用。
+    启动时把这串打进日志，排查"用户看到的到底是哪个版本"只需 3 秒。
+    """
+    from .page import PAGE
+
+    keys = ("c-pick", "runlog-who", "LOG_ANCHOR", "start-and-study")
+    hits = "".join(k[0].upper() if k in PAGE else "-" for k in keys)
+    return f"PAGE len={len(PAGE)} markers={hits}"
+
+
 def serve(settings: Settings) -> int:
     """启动独立面板（uvicorn 阻塞直到 Ctrl+C）。
 
@@ -2643,6 +2697,17 @@ def serve(settings: Settings) -> int:
     print(f"[OK] 热重载：{'开' if reload_on else '关'}（来源：{reload_src}）"
           + ("→ 改代码自动生效，不用手动重启" if reload_on
              else "→ 改了代码必须手动重启面板，否则跑的还是旧代码"))
+    # **页面指纹**：磁盘上是新代码 ≠ 进程里是新代码。打出来，新旧一眼可辨。
+    print(f"[OK] 页面指纹：{_page_fingerprint()}")
+    # **拒绝第二个实例**：端口已被别的进程监听 → 明确报错退出，不静默绑上去。
+    # （Windows 允许多 socket 绑同一地址，请求会随机分流到旧 worker。）
+    if _port_in_use(host, port):
+        print(f"[FAIL] 端口 {host}:{port} 已被别的进程占用 —— 已经有一个面板在跑了。"
+              "\n       不要再起第二个：两个 worker 同时监听会让请求随机落到旧进程，"
+              "\n       表现为「改了代码却一直看到旧页面」。"
+              "\n       请先停掉旧面板（定位监听 pid：Get-NetTCPConnection -LocalPort "
+              f"{port}），再启动本实例。")
+        return 1
     if reload_on:
         # reload 必须传**导入字符串**，不能传 app 实例；源码目录随 settings 走
         src_dir = str(Path(__file__).resolve().parents[2])
