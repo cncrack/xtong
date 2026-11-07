@@ -63,11 +63,57 @@ class TestRunLogAutoScroll(unittest.TestCase):
     def test_resets_to_top_when_at_top(self):
         """贴在顶部 = 在看最新，重绘后回到顶部（天然跟最新，不跳）。"""
         self.assertIn("wasAtTop", self.body)
-        self.assertIn("box.scrollTop = wasAtTop ? 0 : keepTop", self.body)
+        self.assertIn("box.scrollTop = 0", self.body)
 
     def test_keeps_position_when_scrolled_down(self):
         """用户往下滚看历史时不能抢滚动。"""
         self.assertIn("keepTop", self.body)
+
+    # ---------------------------------------------------------------- 2026-11-07 新增
+    #
+    # 用户**第二次**反馈同一件事：「我要往处查日志的时候，又会被刷新」。
+    #
+    # 只记 `scrollTop` 不够：新行插在**顶部**，内容整体下移一行，而 `scrollTop` 是
+    # 像素偏移 → 你正看第 100 行，新来一行就变成在看第 99 行，每 30 秒（tick）滑一次。
+    # 改法是「**锚点行号** + 翻历史时**暂停跟随**」。
+
+    def test_anchors_by_line_index_not_pixels(self):
+        """滚下去看历史时，必须按**行号**回滚（不是按像素）。"""
+        self.assertIn("LOG_ANCHOR", self.body)
+        self.assertIn("RUNLOG_ANCHOR_LINE", self.body)
+        # 反证：不能只 restore keepTop 就完事（那正是被打断的写法）
+        self.assertIn("anchor * lh", self.body,
+                      "应按锚点行号 × 行高回滚，否则新行插入顶部会漂移")
+
+    def test_pauses_following_when_scrolled_down(self):
+        """离开顶部 → 暂停跟随；`wasAtTop` 必须同时看 `RUNLOG_FOLLOW`。"""
+        self.assertIn("RUNLOG_FOLLOW", self.body)
+        self.assertIn("keepTop < 24 && RUNLOG_FOLLOW", self.body)
+
+    def test_has_back_to_latest_button(self):
+        """暂停跟随后要有一个「回到最新」按钮，否则用户不知道怎么恢复。"""
+        self.assertIn("scrolledToTop()", self.body)
+        self.assertIn("回到最新", self.body)
+
+    def test_scroll_listener_registered(self):
+        """滚动事件要真的绑定（否则 `RUNLOG_FOLLOW` 永远不翻转）。"""
+        self.assertIn('el("runlog").addEventListener("scroll"', PAGE)
+        self.assertIn("RUNLOG_FOLLOW = false", PAGE)
+
+    def test_log_header_shows_who(self):
+        """**账号归属要显眼**（用户：「日志里面也看不出是谁的日志」）。
+
+        原来只在 meta 里写 `· default（study 起于 22:41）` 一行小字，
+        多账号同时跑时分不清。现在给一个**带底色的账号徽标** + 任务类型标签。
+        """
+        # 两个渲染路径都必须用它（renderLogBox / renderRunLog）
+        self.assertIn("logMetaHtml(", self.body)
+        helper = PAGE.split("function logMetaHtml(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("runlog-who", helper)
+        self.assertIn("runlog-kind", helper)
+        # 显示名优先、代号作小字（甲同学 vs default）
+        self.assertIn("runlog-lab", helper)
+        self.assertIn(".runlog-who{", PAGE)
 
     def test_has_hint_text(self):
         """要有「最新在上」的说明，用户才知道怎么翻历史。"""

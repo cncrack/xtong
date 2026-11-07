@@ -461,7 +461,33 @@ class GxksDriver:
         return self._parse_settled(min_rows=min_rows, tries=tries)
 
     def read_row(self, section_id: str | int) -> dict[str, Any] | None:
-        """回读某一节的列表行——**这是唯一的达标判据来源**。"""
+        """回读某一节的列表行——**这是唯一的达标判据来源**。
+
+        ## ⚠ 必须逐页找（2026-11-07 修的真 bug，代价是白丢一整节）
+
+        原来只读**当前页**：
+
+        ```python
+        for row in self.refresh_here()["rows"]:   # ← 只有当前页
+        ```
+
+        而一节可能在**任何一页**（实测 1317 在**第 5 页**，课程共 6 页）。
+        当前页一旦不在那一页，这里就永远返回 `None` → 上层报
+        `ended_short 列表 None/None` → 判「学时不涨」→ **整节作废**。
+        实测那天：视频真播了 24 分钟，平台**已记 19/19 已完成**，却被本地判失败。
+
+        现在改成 `find_section([id])`（逐页找、找到后停在那一页）。
+        `find_section` 会先 `goto_page(1)` 再逐页扫 —— 比"刷新当前页"多花几次回发，
+        但**正确率是 100%**；而回发本身很便宜（`_click_pager` 用 `__doPostBack`，
+        不再有 60 秒点击超时）。
+
+        ⚠ **代价**：每次回读会把列表翻到目标节所在页。这不影响播放
+        （列表页与播放页是两个独立 frame，见 `refresh_here` 的说明）。
+        """
+        row = self.find_section([str(section_id)])
+        if row is not None:
+            return row
+        # 兜底：逐页没找到（可能是缓存页数变化 / 翻页失败）→ 至少试一次当前页
         for row in self.refresh_here()["rows"]:
             if str(row.get("platform_chapter_id")) == str(section_id):
                 return row
@@ -548,20 +574,59 @@ class GxksDriver:
         except Exception:                                  # noqa: BLE001
             return {}
 
-    def next_page(self) -> bool:
-        """点「下一页」。分页是 ASP.NET 回发（`__doPostBack`），**不能用 URL 参数翻页**。"""
+    def _click_pager(self, button_id: str) -> bool:
+        """点分页按钮（`下一页` / `上一页`），**用 `__doPostBack` 而不是 `elem.click()`**。
+
+        ## 为什么必须这样（2026-11-07 抓到的 P0，代价是白等 24 分钟）
+
+        分页按钮是 `<a href="javascript:__doPostBack('PageSplit1$BtnPrevious','')">`。
+        用 Playwright 的 `elem.click()` 会：
+
+        ```
+        ElementHandle.click: Timeout 60000ms exceeded
+        ```
+
+        —— 因为点击触发**整页回发**，Playwright 等"这次 action 完成"时页面已经走了，
+        于是**卡满 60 秒超时**并返回 False。实测换成在页内直接 `eval` 那个
+        `javascript:` 表达式，**立刻翻页成功**（6→5 页）。
+
+        后果有多严重（实测事故）：`read_row()` 只读**当前页**，而 1317 在第 5 页。
+        每次回读都卡 60 秒 + 停在错页 → `read_row` 永远返回 `None` →
+        `ended_short 列表 None/None` → 判「学时不涨」→ **整节作废**。
+        而平台那边其实**已记上 19/19 分钟、状态已完成**（只读核实过）。
+
+        ## 为什么还要兼容 click
+
+        按钮可能不只是 `__doPostBack`（站点改版后的兜底）：`href` 里没有
+        `__doPostBack` 时才退回 `click()`。两条路都失败才返回 False。
+        """
         frame = self.list_frame()
         if frame is None:
             return False
         try:
-            btn = frame.query_selector(selectors.PAGER_NEXT)
-            if btn is None:
+            got = frame.evaluate(
+                """(id) => {
+                  const a = document.getElementById(id);
+                  if (!a) return 'no-btn';
+                  const h = a.getAttribute('href') || '';
+                  if (h.indexOf('__doPostBack') >= 0) {
+                    // eslint-disable-next-line no-eval
+                    eval(h.replace('javascript:', ''));
+                    return 'postback';
+                  }
+                  a.click();
+                  return 'click';
+                }""", button_id)
+            if got == "no-btn":
                 return False
-            btn.click(timeout=self.page_timeout_ms)
         except Exception:                                  # noqa: BLE001
             return False
         self.page.wait_for_timeout(self.settle_seconds * 1000)
         return True
+
+    def next_page(self) -> bool:
+        """翻到「下一页」。分页是 ASP.NET 回发（`__doPostBack`），**不能用 URL 参数翻页**。"""
+        return self._click_pager(selectors.PAGER_NEXT.lstrip("#"))
 
     def prev_page(self) -> bool:
         """点「上一页」。
@@ -581,11 +646,9 @@ class GxksDriver:
                 return False
             if not btn.is_enabled():
                 return False
-            btn.click(timeout=self.page_timeout_ms)
         except Exception:                                  # noqa: BLE001
             return False
-        self.page.wait_for_timeout(self.settle_seconds * 1000)
-        return True
+        return self._click_pager(selectors.PAGER_PREV.lstrip("#"))
 
     def goto_page(self, target: int, *, max_steps: int = 12) -> bool:
         """翻到第 `target` 页（1 基）。已在目标页直接返回 True；失败返回 False。

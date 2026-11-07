@@ -275,6 +275,16 @@ mark.hit{background:#fff3bf;color:inherit;padding:0 1px;border-radius:2px;
    名字靠左、右边留一大片空白。改成 fixed + 百分比，余量按比例分给各列。 */
 table.acct-tbl{table-layout:fixed}
 table.acct-tbl th,table.acct-tbl td{overflow:hidden;text-overflow:ellipsis}
+/* ⚠ **复选框列不能有 ellipsis**（2026-11-07 用户两次圈出的"小点"就是它）：
+   第一列声明 28px，但 `td padding:6px 8px` 吃掉 16px → 内容区只剩 ~19.5px，
+   而 Chrome 默认复选框 ~13px + `text-align:center` 的余量 →
+   溢出的部分被 `text-overflow:ellipsis` 渲染成「…」，在 7px 宽的空间里就
+   看起来是**一个孤立的小圆点**（放大 4 倍截图确认过）。
+   这里单独放开：不裁剪、不加省略号，并把列宽补到能真装下复选框。 */
+table.acct-tbl th.c-pick,table.acct-tbl td.c-pick{
+  overflow:visible;text-overflow:clip;white-space:nowrap;padding:6px 4px}
+table.acct-tbl th.c-pick{width:34px}
+table.acct-tbl td.c-pick input{margin:0;vertical-align:middle}
 /* 表头居中（用户 2026-11-02 要求） */
 table.acct-tbl thead th{text-align:center}
 table.acct-tbl thead th.num{text-align:center}
@@ -555,6 +565,15 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 .runlog-done{margin:0 0 6px;padding:5px 9px;border-radius:6px;
   background:#e9f6f0;border-left:3px solid #4a9d78;color:#2f6b52;
   font-size:12.5px;line-height:1.45}
+/* 日志标题里的**账号徽标**（2026-11-07 用户：「看不出是谁的日志」）：
+   多账号同时跑时一眼分清。底色区分、代号用小字跟在后面。 */
+.runlog-who{display:inline-flex;align-items:center;gap:5px;
+  padding:1px 8px;border-radius:10px;background:#eef4ff;color:#1a5fd0;
+  font-weight:700;font-size:12.5px;margin-right:6px}
+.runlog-lab{font-weight:400;font-size:11px;color:#5b7cb0;
+  background:#fff;padding:0 5px;border-radius:8px}
+.runlog-kind{display:inline-block;padding:1px 6px;border-radius:8px;
+  background:#f1f3f6;color:#666;font-size:11.5px;margin-right:6px}
 /* 操作记录的前三列（时间/动作/结果）不折行，把余量全留给详情 */
 #ops td:nth-child(-n+3){white-space:nowrap}
 /* 两条进度条（节数 / 学时）：纯 div，不引图表库 */
@@ -1198,7 +1217,7 @@ function acctTr(c, accRow, cur) {
     '" data-label="' + esc(c.label) + '">';
   // ⚠ 运行中的账号**仍可勾选**（2026-11-06 用户问「已有账号在学，为何还能选」）：
   // 批量「停止」恰恰需要选中在跑的账号。所以不禁用，只在 title 里说清后果。
-  html += '<td><input type="checkbox" class="acct-pick"' +
+  html += '<td class="c-pick"><input type="checkbox" class="acct-pick"' +
     (SEL.has(c.label) ? " checked" : "") +
     (c.job ? ' title="该账号正在跑：批量「开始学习」会自动跳过它；批量「停止」用它"' : "") +
     ' data-label="' + esc(c.label) + '"></td>';
@@ -1463,7 +1482,7 @@ function renderAccounts(state) {
   //   ☐28 / #30 / 端口 66 / 状态 76 / 今日 118 / 课程 66 / 登录 92 = 476
   let html = '<div class="table-wrap" style="max-height:none">' +
     '<table class="acct-tbl"><thead><tr>' +
-    '<th style="width:28px"><input type="checkbox" id="acct-all"' +
+    '<th class="c-pick"><input type="checkbox" id="acct-all"' +
     (allChecked ? " checked" : "") + ' title="全选当前可见"></th>' +
     '<th style="width:46px">序号</th>' +
     '<th style="width:18%">账号</th>' +
@@ -2929,6 +2948,19 @@ function renderOps(state) {
 const LOG_LINES = new Map();     // "label|kind" -> 行数组（倒序：索引 0 = 最新）
 const LOG_JOBS = new Map();      // "label|kind" -> {label, kind, since, ended_at, alive}
 
+// 日志滚动状态（2026-11-07，用户第二次反馈「往下查日志又被刷新」）
+//
+// `RUNLOG_FOLLOW`：是否跟随最新（贴在顶部 = 跟随）。
+// `LOG_ANCHOR`：`"label|kind" -> 视口顶部那行在数组里的索引`（滚下去看历史时记它）。
+// `RUNLOG_ANCHOR_LINE`：当前正在看的行号（滚动事件里更新）。
+//
+// 为什么用**行号**而不是 `scrollTop` 像素：新日志插在**顶部**，
+// 会让内容整体下移一行；像素偏移不变 = 你眼前的内容变成"更早一行"，
+// 每次 tick 都要滑一下。按行号回滚才稳。
+let RUNLOG_FOLLOW = true;
+const LOG_ANCHOR = new Map();
+let RUNLOG_ANCHOR_LINE = 0;
+
 // 日志的键：`label|kind`（2026-11-05 复核修）
 // ⚠ 原来只按 `label` → 同一账号的 study 与 sections 两个任务的日志会**混在一起**
 // （后端 SSE 已经按 `label|kind` 分流推送，前端不跟上的话两边对不上）。
@@ -2962,6 +2994,26 @@ function appendLogLines(label, kind, text) {
   if (cur && logKey(cur.label, cur.kind) === key) renderLogBox();
 }
 
+// 日志标题栏：**账号徽标 + 任务类型 + 状态**（2026-11-07 用户：「看不出是谁的日志」）
+//
+// 原来只有一行小字 `· default（study 起于 22:41）`，多账号同时跑时分不清。
+// 现在给带底色的账号徽标（显示名优先，代号作小字），再配任务类型与运行状态。
+// `renderLogBox` 与 `renderRunLog` 两个渲染路径共用这一份，避免两处写法再分家。
+function logMetaHtml(job, running) {
+  if (!job) return "";
+  const who = String(job.label || "");
+  const disp = ((STATE && STATE.cards) || []).find((c) => c.label === who) || {};
+  const name = disp.display || who;
+  return '<span class="runlog-who">' + esc(name) +
+    (name !== who ? '<span class="runlog-lab">' + esc(who) + "</span>" : "") +
+    "</span>" +
+    '<span class="runlog-kind">' + esc(job.kind || "study") + "</span>" +
+    (running
+      ? '<span class="muted">起于 ' + esc(job.since || "?") + "，实时推送</span>"
+      : '<span class="muted">已结束（' + esc(job.since || "?") + " → " +
+        esc(job.ended_at || "?") + "）· 这是最后一次的输出</span>");
+}
+
 function renderLogBox() {
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
@@ -2975,22 +3027,21 @@ function renderLogBox() {
     return;
   }
   const running = job ? job.alive !== false : false;
-  if (meta) {
-    meta.textContent = job
-      ? "· " + (job.label || label) + "（" + (job.kind || "") +
-        (running
-          ? " 起于 " + (job.since || "?") + "，实时推送"
-          : " 已结束（" + (job.since || "?") + " → " + (job.ended_at || "?") +
-            "）· 这是最后一次的输出")
-      : "";
-  }
-  // 保留滚动位置：用户在往下翻看历史时，别把他拽回顶部
+  if (meta) meta.innerHTML = job ? logMetaHtml(job, running) : "";
+  // 保留滚动位置：用户在往下翻看历史时，别把他拽回顶部（锚点行号，不是像素）
   const keepTop = box.scrollTop;
-  const wasAtTop = keepTop < 24;
+  const wasAtTop = keepTop < 24 && RUNLOG_FOLLOW;
+  const lhAttr = box.querySelector("pre");
+  const lh = (lhAttr && parseFloat(getComputedStyle(lhAttr).lineHeight)) || 18.75;
+  const anchor = wasAtTop ? undefined : Math.round(keepTop / lh);
   box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
-    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
+    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚' +
+    (RUNLOG_FOLLOW ? "" :
+      '<button class="mini" type="button" style="margin-left:8px" ' +
+      'onclick="scrolledToTop()">↑ 回到最新（已暂停跟随）</button>') +
+    "</div>" +
     "<pre>" + (arr.length ? esc(arr.join("\n")) : "（日志还没写出内容）") + "</pre>";
-  box.scrollTop = wasAtTop ? 0 : keepTop;
+  box.scrollTop = wasAtTop ? 0 : (anchor !== undefined ? anchor * lh : keepTop);
 }
 
 function renderRunLog(state) {
@@ -3008,19 +3059,23 @@ function renderRunLog(state) {
   const running = cur.alive !== false;
   // 记下任务信息，供 SSE 增量渲染用（键 `label|kind`，同账号两任务不混）
   const curKey = logKey(cur.label, cur.kind);
+  // ⚠ **换任务了就清缓存**（2026-11-07 用户实拍「日志里面有错」）：
+  // 同一账号同一 kind 重起任务时 key 不变，但日志是**新文件**。
+  // 不比对就会把上一轮的输出（含崩溃 traceback）一直留在里面。
+  // `job-ended` 事件已负责清一次；这里用 `since` + `log_name` 再兜一层 ——
+  // 用户在这期间刷新页面 / SSE 丢事件时，也不会看到两轮混在一起的日志。
+  const prevJob = LOG_JOBS.get(curKey);
+  if (prevJob && (prevJob.since !== cur.since
+                  || prevJob.log_name !== cur.log_name)) {
+    LOG_LINES.delete(curKey);
+  }
   LOG_JOBS.set(curKey, cur);
   // **兜底重建**：本地没有这个任务的日志行（SSE 还没推过、或页面刚打开）→
   // 用 state 里的 tail 初始化一次。之后由 SSE 增量追加。
   if (!LOG_LINES.has(curKey) && (cur.tail || []).length) {
     LOG_LINES.set(curKey, (cur.tail || []).slice().reverse());
   }
-  if (meta) {
-    meta.textContent = "· " + (cur.label || "") + "（" + (cur.kind || "") +
-      (running
-        ? " 起于 " + (cur.since || "?") + "，实时推送"
-        : " 已结束（" + (cur.since || "?") + " → " + (cur.ended_at || "?") +
-          "）· 这是最后一次的输出");
-  }
+  if (meta) meta.innerHTML = logMetaHtml(cur, running);
   // ---- 日志**倒序显示：最新那行永远在最上面**（2026-11-04 用户明确要求）----
   //
   // 用户原话：「日志没有把最新的那一每次显示在上面，如果我要看以往日志，我可以鼠标往上滚」。
@@ -3031,13 +3086,23 @@ function renderRunLog(state) {
   // ③ 就算记忆滚动位置，用户想「一眼看到最新」也得先把滚动条拖到底。
   //
   // 现在：**把 tail 倒过来渲染**（最新在最上）+ 重绘后 `scrollTop = 0`。
-  // 好处：
-  //   - 不用滚，最新行永远在视野第一行；
-  //   - 4 秒重绘后回到顶部 = 回到最新，**不会跳**；
-  //   - 用户要翻历史就自己**往下滚**（倒序里「更早」在下方）。
-  //   - 用户已经往下滚看历史时，还原他的位置，不抢滚动。
+  //
+  // ## ⚠ 翻历史时**不许被新日志挤走**（2026-11-07 用户第二次反馈同一件事）
+  //
+  // 只记 `scrollTop` 是不够的：新行是插在**顶部**的，会让内容整体下移一行，
+  // 而 `scrollTop` 是像素偏移 —— 于是你正看着第 100 行，新来一行就变成在看第 99 行，
+  // 每 30 秒（tick 心跳）滑一次，根本没法读历史。
+  //
+  // 所以记的是**锚点行号**（`ANCHOR`：视口顶部那行在数组里的索引），
+  // 重绘后按行号回滚。行高固定（`line-height:1.5`），按索引滚比按像素稳。
+  // 同时：一旦用户往下滚离开顶部，就**暂停自动跟随**，并给一个"回到最新"的按钮 ——
+  // 这期间新日志照收，只是不再抢滚动位置（L2）。
   const keepTop = box.scrollTop;
-  const wasAtTop = keepTop < 24;
+  const wasAtTop = keepTop < 24 && RUNLOG_FOLLOW;
+  if (!wasAtTop && LOG_ANCHOR.get(curKey) === undefined) {
+    // 用户离开顶部的那一刻，记下锚点
+    LOG_ANCHOR.set(curKey, RUNLOG_ANCHOR_LINE);
+  }
 
   const tail = (cur.tail || []);
   // 倒序：最后一行（最新）放最前面
@@ -3046,8 +3111,13 @@ function renderRunLog(state) {
   // 而不是只有 tail 的最后 12 行 —— 否则轮询会把 SSE 已收到的更长历史覆盖掉。
   const merged = LOG_LINES.get(curKey);
   const lines = (merged && merged.length >= shown.length) ? merged : shown;
+  const anchor = LOG_ANCHOR.get(curKey);
   box.innerHTML = (running ? "" : '<div class="runlog-done">✓ 任务已结束，下面是它的完整输出（跑新任务时会被替换）</div>') +
-    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚</div>' +
+    '<div class="runlog-hint">↓ 最新在上；要看更早的日志请往下滚' +
+    (anchor === undefined ? "" :
+      '<button class="mini" type="button" style="margin-left:8px" ' +
+      'onclick="scrolledToTop()">↑ 回到最新（已暂停跟随）</button>') +
+    "</div>" +
     "<pre>" + (lines.length ? esc(lines.join("\n")) : "（日志还没写出内容）") + "</pre>";
   // 其他还在跑的任务
   const others = jobs.filter((j) => j !== cur && j.alive);
@@ -3057,9 +3127,28 @@ function renderRunLog(state) {
       "（点对应账号行可看它的日志）</div>";
   }
 
-  // 贴在顶部 = 正在看最新 → 重绘后保持顶部（天然跟最新，不会跳）
-  // 已往下滚 = 在看历史 → 还原他的位置，别抢
-  box.scrollTop = wasAtTop ? 0 : keepTop;
+  // 贴顶 = 跟随最新 → 重绘后回到顶部（天然跟最新）
+  // 滚下去了 → 按**锚点行号**回滚，而不是按像素（新行插在顶部，像素会漂）
+  if (wasAtTop) {
+    box.scrollTop = 0;
+    LOG_ANCHOR.delete(curKey);
+  } else if (anchor !== undefined) {
+    // 每行行高 = 字号 × line-height；用实测行高更稳
+    const lh = parseFloat(getComputedStyle(box.querySelector("pre")).lineHeight) || 18.75;
+    box.scrollTop = anchor * lh;
+    RUNLOG_ANCHOR_LINE = Math.round(box.scrollTop / lh);
+  } else {
+    box.scrollTop = keepTop;
+  }
+}
+
+// 「回到最新」：清掉锚点、恢复跟随，并立刻滚回顶部
+function scrolledToTop() {
+  RUNLOG_FOLLOW = true;
+  LOG_ANCHOR.clear();
+  const box = el("runlog");
+  if (box) box.scrollTop = 0;
+  renderLogBox();
 }
 
 // 账号切换器：缓存账号列表，供弹层过滤用
@@ -3351,8 +3440,25 @@ function connectEvents() {
     // 同账号的 study 与 sections 日志混到一条里（2026-11-05 复核修）
     appendLogLines(d.label, d.kind || "study", d.text || "");
   });
-  EVT.addEventListener("job-ended", () => {
-    // 任务结束：拉一次整体状态（把「已结束」状态、结束时间同步过来）
+  EVT.addEventListener("job-ended", (ev) => {
+    // 任务结束：**先把这条任务的日志缓存清掉**，再拉整体状态。
+    //
+    // ⚠ 为什么必须清（2026-11-07 用户实拍）：
+    // `LOG_LINES` 是按 `label|kind` 缓存、**只增不清**。同一个账号重起任务时
+    // key 不变（`label|study`），于是**上一次的日志（包括崩溃的 traceback）
+    // 会留在数组里**，和新任务的输出拼在一起。
+    // 用户看到的现象：明明这次两个任务都在正常播（日志里 `progress` 在涨），
+    // 界面上却还挂着上一轮的 `UnboundLocalError` —— 像是"又崩了"。
+    // 后端早就为换文件推 `job-ended`（见 `_watch_logs_loop`），前端只是没接住。
+    let d = {};
+    try { d = JSON.parse(ev.data || "{}"); } catch (e) { /* 旧版本无 payload，全清 */ }
+    if (d && d.label) {
+      LOG_LINES.delete(logKey(d.label, d.kind || "study"));
+      LOG_JOBS.delete(logKey(d.label, d.kind || "study"));
+    } else {
+      LOG_LINES.clear();
+      LOG_JOBS.clear();
+    }
     load();
   });
   EVT.onerror = () => {
@@ -3366,6 +3472,28 @@ function connectEvents() {
 setPoll(4000);
 loadPanelSettings();
 connectEvents();
+// 日志滚动监听（2026-11-07）：决定"是否还在跟随最新"
+//
+// 用户往下滚离开顶部（>40px）→ **停止跟随**，记下当前行号；
+// 滚回顶部 → 恢复跟随。`scrollHeight` 不够一屏时（日志很短）不触发，
+// 那时本来就全在视野里，无需跟随。
+el("runlog").addEventListener("scroll", () => {
+  const box = el("runlog");
+  if (!box) return;
+  const atTop = box.scrollTop < 40;
+  if (atTop) {
+    if (!RUNLOG_FOLLOW) {                 // 用户自己滚回顶部 → 恢复跟随
+      RUNLOG_FOLLOW = true;
+      LOG_ANCHOR.clear();
+    }
+    RUNLOG_ANCHOR_LINE = 0;
+    return;
+  }
+  RUNLOG_FOLLOW = false;                  // 离开顶部 = 在看历史
+  const pre = box.querySelector("pre");
+  const lh = (pre && parseFloat(getComputedStyle(pre).lineHeight)) || 18.75;
+  RUNLOG_ANCHOR_LINE = Math.round(box.scrollTop / lh);
+});
 load();
 </script>
 </body>

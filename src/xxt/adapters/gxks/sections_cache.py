@@ -82,7 +82,8 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
                practice_locked: bool | None = None,
                exam_id: int | str | None = None,
                name: str = "", required_minutes: int | float | None = None,
-               idx: int | None = None, category: str = "") -> bool:
+               idx: int | None = None, category: str = "",
+               playing: bool | None = None) -> bool:
     """把某一节的最新状态**本地回写**进缓存，返回是否写成功。
 
     为什么要它（用户 2026-11-02）：节列表缓存只有 `gxks_sections.py`（人工点
@@ -99,6 +100,17 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
     - 原子写（先 .tmp 再 replace），面板 4 秒一轮询不会读到半截 JSON；
     - `read_at` 追加「本地回写」标记：它同时是面板 `SEC_SIG` 的一部分，
       变了面板才会重建表格（动态更新的开关）。
+
+    ## `playing`（2026-11-07 用户：「正在学习的这节没有显示为正在学习」）
+
+    平台只在**每 60 秒**上报一次学时、列表回读又要 5 分钟，所以刚开始学那一节时，
+    回读到的行仍然是 `state = not_started / done_minutes = 0` → 面板显示「未学习」，
+    可它明明正在播。
+
+    上层（`scripts/run_gxks.py`）现在会在 `tick` 心跳里传 `playing=True`，
+    这里据此把该节写成 `state = "learning"` —— **纯本地展示标记**，
+    不伪造平台数据（`done_minutes` 仍以平台回读为准，`done_on_platform` 仍看真实 state）。
+    任务结束/切下一节时传 `playing=False`，把标记撤掉。
     """
     import json
     import os
@@ -177,6 +189,26 @@ def update_row(debug_dir: Path, label: str, course: str | int | None,
         if exam_id is not None and str(r.get("exam_id")) != str(exam_id):
             r["exam_id"] = exam_id
             changed = True
+        # 正在播这一节（纯展示标记，见 docstring 的 `playing` 一段）：
+        # 平台回读的 state 还是 not_started 时，靠它让面板显示「学习中」。
+        if playing is not None:
+            if playing and r.get("state") != "done":
+                if r.get("state") != "learning":
+                    r["state"] = "learning"
+                    changed = True
+                # ⚠ `state_text` 要**无条件覆盖**（不能只在空的时候写）：
+                # 缓存里本来就有平台给的「未学习」，空值判断会让它留着，
+                # 面板上就会出现「state=learning 但文字写未学习」的自相矛盾。
+                if r.get("state_text") != "学习中":
+                    r["state_text"] = "学习中"
+                    changed = True
+            elif not playing and r.get("state") == "learning":
+                # 撤掉标记：回到平台给的 `done_minutes` 决定的状态
+                r["state"] = "done" if (int(r.get("done_minutes") or 0) >=
+                                        int(r.get("required_minutes") or 0) > 0) \
+                    else "not_started"
+                r["state_text"] = "已完成" if r["state"] == "done" else "未学习"
+                changed = True
         # **一致性兜底**（2026-11-05 用户实拍「已学完却仍显示未解锁」查出的脏数据）：
         # 缓存里出现过 `practice_locked=False exam_id=14691 practice_ready=False`
         # 这种**自相矛盾**的行 —— 平台已解锁、练习 ID 都有，唯独 ready 是旧值。

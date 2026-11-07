@@ -1193,12 +1193,83 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         # 不能无条件按 session.logged_in 渲染绿色已登录
         self.assertIn("if (!b.port_alive)", body)
 
-    def test_default_sections_come_from_settings(self):
+    def test_checkbox_column_has_no_ellipsis_artifact(self):
+        """**2026-11-07 用户两次圈出的「小点」= `text-overflow: ellipsis` 伪影**。
+
+        根因链：
+
+        - 第一列声明 28px，但 `td padding:6px 8px` 吃掉 16px → 内容区只剩 ~19.5px；
+        - 全局规则 `table.acct-tbl th,table.acct-tbl td{overflow:hidden;text-overflow:ellipsis}`
+          对所有单元格生效；
+        - Chrome 复选框 ~13px + `text-align:center` 的余量 → 溢出 → 被渲染成「…」，
+          在那么窄的空间里看起来是**一个孤立的小圆点**。
+
+        修法：给复选框列单独 `overflow:visible; text-overflow:clip` 并补足列宽。
+
+        实测（4 倍放大截图 + getComputedStyle）：
+        `textOverflow: "clip"`、`overflow: "visible"`、`cbFits: true`、列宽 39.9px。
+        """
+        self.assertIn("table.acct-tbl th.c-pick,table.acct-tbl td.c-pick{", PAGE)
+        seg = PAGE.split("td.c-pick{", 1)[1].split("}", 1)[0]
+        self.assertIn("text-overflow:clip", seg,
+                      "复选框列必须 clip，否则溢出部分会渲染成省略号（看起来是小圆点）")
+        self.assertIn("overflow:visible", seg)
+        # HTML 两端都要带这个 class（只改 CSS 不改 HTML = 不生效）
+        self.assertIn('<th class="c-pick">', PAGE)
+        self.assertIn('<td class="c-pick">', PAGE)
+        # 反证：不能再写死 28px（装不下 13px 复选框 + 左右内边距）
+        self.assertNotIn('<th style="width:28px">', PAGE)
+
+    def test_log_scroll_not_interrupted_by_new_lines(self):
+        """翻历史时**不许被新日志挤走**（用户第二次反馈同一件事）。
+
+        只记 `scrollTop` 不够：新行插在**顶部**，内容整体下移一行，而像素偏移不变
+        → 你正看第 100 行，新来一行就变成在看第 99 行，每 30 秒（tick）滑一次。
+        改法是「锚点**行号** + 离开顶部时**暂停跟随**」。
+        """
+        self.assertIn("LOG_ANCHOR", PAGE)
+        self.assertIn("RUNLOG_FOLLOW", PAGE)
+        self.assertIn("anchor * lh", PAGE, "应按行号 × 行高回滚")
+        self.assertIn('el("runlog").addEventListener("scroll"', PAGE)
+        self.assertIn("回到最新", PAGE)
+
+    def test_log_header_shows_account_badge(self):
+        """日志标题要给**账号徽标**（用户：「日志里面也看不出是谁的日志」）。"""
+        self.assertIn("function logMetaHtml(", PAGE)
+        self.assertIn(".runlog-who{", PAGE)
+        helper = PAGE.split("function logMetaHtml(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("runlog-lab", helper)
         """「本次跑几节」的默认值统一来自 `sections_per_run`，不再页面里写死 3。"""
         self.assertIn("function perRunDefault()", PAGE)
         self.assertIn("STATE.sections_per_run", PAGE)
         # 表格行内初值也走它
         self.assertIn("perRunDefault()", PAGE.split("if (SEC_N.has(c.label))", 1)[1])
+
+    def test_job_ended_clears_log_cache(self):
+        """**2026-11-07 用户实拍**：日志里挂着上一轮崩溃的 traceback，而这轮在正常播。
+
+        根因：`LOG_LINES` 按 `label|kind` 缓存、**只增不清**。同一账号重起任务时
+        key 不变（`label|study`），上一轮的输出（含 `UnboundLocalError` 那几行）
+        就留在数组里，和新任务的 `progress` 拼在一起 → 看起来又崩了。
+
+        修法两层：
+        ① `job-ended` 事件里**删掉该 key 的缓存**（后端 `_watch_logs_loop` 早就在推，
+           前端原来只 `load()` 没清）；
+        ② `renderRunLog` 兜底：发现 `since` 或 `log_name` 变了也清
+           （用户刷新页面 / SSE 丢事件时同样不会混）。
+        """
+        sse = PAGE.split('EVT.addEventListener("job-ended"', 1)[1].split("\n  });", 1)[0]
+        self.assertIn("LOG_LINES.delete", sse, "job-ended 必须清日志缓存")
+        self.assertIn("LOG_JOBS.delete", sse)
+        # 兜底：since / log_name 变了也清
+        body = PAGE.split("function renderRunLog(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("prevJob.since !== cur.since", body)
+        self.assertIn("prevJob.log_name !== cur.log_name", body)
+        self.assertIn("LOG_LINES.delete(curKey)", body)
+
+    def test_log_cache_keyed_by_label_and_kind(self):
+        """日志缓存键必须是 `label|kind` —— 只按 label 会让同账号两任务混流。"""
+        self.assertIn('String(label || "") + "|" + String(kind || "")', PAGE)
 
     def test_all_five_buttons_still_exist(self):
         for bid in ("btn-bstart", "btn-bstop", "btn-scheck",

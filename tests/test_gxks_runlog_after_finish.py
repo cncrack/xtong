@@ -142,7 +142,10 @@ class TestRunLogRendersFinished(unittest.TestCase):
         # 必须优先挑 alive 的，没活的再回退
         body = PAGE.split("function renderRunLog(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("j.alive", body)
-        self.assertIn("ended_at", body)
+        # 「已结束 → 结束时刻」这段在 2026-11-07 抽到了 `logMetaHtml`（两个渲染路径共用），
+        # 所以断言看那里
+        helper = PAGE.split("function logMetaHtml(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("ended_at", helper)
 
     def test_other_running_jobs_still_listed(self):
         from xxt.panel_gxks.page import PAGE

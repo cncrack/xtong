@@ -347,9 +347,17 @@ def main() -> int:
         # 每次 progress 都**本地回写**节缓存（用户 2026-11-02：节进度要随学习动态更新）。
         # 零平台请求：只改 data/debug/sections_*.json；面板 4 秒轮询自然读到新值。
         # 失败不打断播放（回写只是展示用，真数据在平台与账本里）。
+        #
+        # ⚠ **`tick` 也要回写**（2026-11-07 用户：「正在学习的这节没有显示为正在学习」）：
+        # `progress` 要回读平台列表、间隔 5 分钟（距达标 <10 分钟才降到 60 秒），
+        # 而平台每 60 秒才上报一次学时 —— 所以刚开播那几分钟，回读到的行仍是
+        # `not_started / 0 分钟`，面板就一直显示「未学习」，看起来像没开始。
+        # `tick` 是**零平台开销**的页面内墙钟心跳（每 30 秒一次），用它把这一节
+        # 标成 `learning`，面板立刻能看到「学习中」。纯展示标记，不伪造平台数据。
         def _on_event(ev: dict) -> None:
             on_event(ev)
-            if ev.get("kind") != "progress":
+            kind = ev.get("kind")
+            if kind not in ("progress", "tick"):
                 return
             r = ev.get("row") or {}
             try:
@@ -360,6 +368,9 @@ def main() -> int:
                                   done_minutes=r.get("done_minutes"),
                                   state=r.get("state"),
                                   state_text=r.get("state_text"),
+                                  # `tick` 时没有 row（它只带页面计时）→ 传 None 让
+                                  # `update_row` 不动平台字段，只翻 `playing` 标记
+                                  playing=(kind == "tick"),
                                   # ⚠ `practice_ready` **必须自己算**（2026-11-05 复核发现）：
                                   # `read_row()` 返回的行里**没有** `practice_ready` 字段
                                   # （它只有 `practice_locked` / `exam_id`，`practice_ready`
