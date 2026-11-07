@@ -200,10 +200,17 @@ def main() -> int:
     # 重读会把播放页冲掉（视频重建、`m_time` 归零）。所以攒起来，结束后一次性做。
     need_practice_check: list[tuple[str, str]] = []
 
+    # ---- 取账号对象（额度判定与凭据判定都要用它）----
+    # ⚠ **必须在使用前赋值**（2026-11-07 我改出来的真 bug）：
+    # 修「凭据按账号取」时，我把这行写在额度判定**之后**，而额度判定第 207 行就用了
+    # `acc.daily_sections` → `UnboundLocalError: cannot access local variable 'acc'`。
+    # 现象是：面板点「学习」提示已开始、4 秒后进程就死了，日志里一行 traceback，
+    # 界面上「学习」按钮又变回可点（看起来"没开始"）。
+    acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
+
     # ---- 当日额度（本地账本）----
     # 站点只给“累计学时”，查不到“今天”，所以日上限只能靠本地记账（ledger 模块）。
     # 口径（A1）：额度按**账号合计**，多门课共用一个池子；`0` = 该项不限。
-    # `acc` 已在上面的「自动重登」处取过（按账号取凭据要用它），这里直接复用。
     secs_limit = acc.daily_sections if acc else gaccounts.DEFAULT_SECTIONS_PER_DAY
     mins_limit = acc.daily_minutes if acc else gaccounts.DEFAULT_MINUTES_PER_DAY
     if not args.ignore_quota:
@@ -227,8 +234,7 @@ def main() -> int:
             args.max_sections = int(q["left_sections"])
 
     # 自动重登：凭据**按账号**取（账号表 name/pw 优先，缺了才回落全局旧文件）。
-    # 占位符/缺失 → None = 不启用（掉线即停）。
-    acc = gaccounts.find_by_label(gaccounts.load_accounts(), acc_label)
+    # 占位符/缺失 → None = 不启用（掉线即停）。`acc` 已在上面取过，这里直接复用。
     cred = (None if args.no_relogin
             else glogin.load_credentials_for(acc, _settings))
     print(f"自动重登：{'已启用（凭据来自本地文件，不回显）' if cred else '未启用（掉线即停，等人工）'}")
