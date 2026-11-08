@@ -1,12 +1,28 @@
-"""多账号串行调度（无人值守）：读账号表 → 逐账号查额度 → 逐账号调 `run_gxks.py`。
+"""多账号调度（无人值守）：读账号表 → 逐账号查额度 → 并发调 `run_gxks.py`。
 
-为什么是**串行**（并发 1）：PLAN-GXKS D12 —— 同一出口 IP 上多账号同时刷，是最容易被
-风控关联的特征；`--max-rounds` 轮转（10 分钟一轮）已能把多账号摊开，不需要并发。
+## 并发口径（2026-11-08 用户拍板 G-4 = A）
+
+三处数字曾经打架：本脚本原 docstring 写死「串行（并发 1）」并引 D12、
+面板 11-06 加的并发闸默认 2、PLAN §11.6 配置草案写 10。
+
+**D12 是核实期约束**：同一出口 IP 多账号同时刷，是最容易被风控关联的特征，
+所以核实期先串行跑稳。PLAN §7.3.1 明确规定「并发>1 必须先用零风险实验验掉
+Q7/C6（多窗口是否都满足 hidden=false）」。该实验 **11-07 已实测通过**
+（3 个独立窗口、故意完全重叠、90 秒 hidden 全程 False，见 PLAN L306）
+→ **核实期结束**，现在统一成「一个可配的并发数」。
+
+权威来源 = 面板设置 `max_concurrency`（`[runtime] max_concurrency`，可配改，默认 2）：
+- 本脚本缺省读它，与面板完全同口径；
+- 命令行 `--max-concurrency` 可临时覆盖；
+- 传 1 仍可退回串行（B 方案的行为），但**默认不再是 1**。
+
+⚠ 并发会让多个 Chrome 同时起。Q7/C6 已验通过；若实机出现卡顿/风控迹象，
+优先把 `max_concurrency` 调小（不要自动降，避免静默改用户配置）。
 
 分工：
 
 - `run_gxks.py`：负责**一个**账号（挑节 → 播 → 记账 → 歇 → 下一节）；
-- 本脚本：负责**账号与课程的外层循环**、额度预检、失败隔离、汇总。
+- 本脚本：负责**账号与课程的外层循环**、额度预检、失败隔离、并发控制、汇总。
 
 失败隔离：任何一个账号返回非 0（掉登录 / 读不到列表 / 学时不涨），只记下游、**不影响**
 后面的账号——这样一个人掉线不会拖住所有人。
@@ -14,7 +30,8 @@
 用法：
 
     .venv\\Scripts\\python.exe scripts/run_gxks_multi.py --dry-run    # 只看计划
-    .venv\\Scripts\\python.exe scripts/run_gxks_multi.py              # 正式跑
+    .venv\\Scripts\\python.exe scripts/run_gxks_multi.py              # 正式跑（并发默认读面板设置）
+    .venv\\Scripts\\python.exe scripts/run_gxks_multi.py --max-concurrency 1   # 退回串行
     .venv\\Scripts\\python.exe scripts/run_gxks_multi.py --only jia   # 只跑一个
 """
 
@@ -24,6 +41,7 @@ import argparse
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +60,27 @@ CHROME_HINT = ('chrome.exe --remote-debugging-port={port} '
 # 而它**没绕过系统代理** —— 代理开着时每个账号白等 2 秒超时（5 个账号 10 秒）。
 # 一处定义、多处复用，才不会再出现"改了一边忘了另一边"。
 port_alive = gchrome.port_alive
+
+
+def resolve_concurrency(explicit: int | None) -> int:
+    """G-4 A：并发数与面板**同一个权威来源**，默认 2。
+
+    优先级：命令行 `--max-concurrency` > 面板设置 `max_concurrency` > 默认 2。
+    钳到 1~20（与 `_concurrency_limit()` 同口径）。读不到 DB 不报错，
+    回 2 —— 闸宁严勿松。
+    """
+    if explicit is not None:
+        return max(1, min(20, int(explicit)))
+    try:
+        from xxt.config import Settings, find_project_root
+        from xxt.store import gxks_panel_settings as gps
+
+        settings = Settings(root=find_project_root())
+        n = int(gps.load(settings.data_dir / "gxks_questions.db")
+                .get("max_concurrency", 2))
+        return max(1, min(20, n))
+    except Exception:                                      # noqa: BLE001
+        return 2
 
 
 def run_one(acc: gaccounts.Account, *, course: int | None, max_sections: int,
@@ -74,8 +113,12 @@ def main() -> int:
     ap.add_argument("--max-sections", type=int, default=0,
                     help="每账号本次最多几节（0=按日额度自动算）")
     ap.add_argument("--max-total-hours", type=float, default=6.0, help="每账号单次总时长上限")
+    ap.add_argument("--max-concurrency", type=int, default=None,
+                    help="同时跑几个账号（1~20）；缺省读面板设置 max_concurrency（默认 2）。"
+                         "传 1 = 退回串行")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不跑")
     args = ap.parse_args()
+    concurrency = resolve_concurrency(args.max_concurrency)
 
     accounts = gaccounts.load_accounts(args.accounts)
     if not accounts:
@@ -129,26 +172,53 @@ def main() -> int:
         print("\n没有可跑的账号 → 收工")
         return 0
     if args.dry_run:
-        print("\n[dry-run] 不执行。去掉 --dry-run 才真跑。")
+        print(f"\n[dry-run] 不执行。去掉 --dry-run 才真跑。并发数：{concurrency}")
         return 0
 
+    # G-4 A（2026-11-08）：不同**账号**之间并发，同一账号的多门课仍串行。
+    # 为什么不能把 plan 里每一项都丢进线程池：一账号 = 一 Chrome = 一 profile，
+    # 同账号两门课并发会争同一个浏览器；且「多门课共用一个额度池（A1）」要求
+    # 后一门课开跑前按前一门已用掉的重算，并发会算重导致超额。
+    # 所以按 label 分组，每组内部维持原来的串行 + 逐课重算额度语义。
+    groups: dict[str, list[tuple[gaccounts.Account, int | None, int]]] = {}
+    for entry in plan:
+        groups.setdefault(entry[0].label, []).append(entry)
+
+    def run_group(label: str, entries: list) -> list[dict]:
+        got: list[dict] = []
+        for i, (acc, course, want) in enumerate(entries, 1):
+            tag = f"课程{course}" if course is not None else "当前课程"
+            print(f"\n===== [{label}] {i}/{len(entries)} {tag} =====", flush=True)
+            # 每门课开跑前重算额度（上一门可能已消耗）。额度按账号合计，多门课共用。
+            q = gledger.quota_left(acc.label, sections_limit=acc.daily_sections,
+                                   minutes_limit=acc.daily_minutes)
+            n = want if q["left_sections"] is None else min(want, q["left_sections"])
+            if n <= 0 or q["exhausted"]:
+                print(f"  {acc.label} 额度已用完，跳过这门课", flush=True)
+                continue
+            code = run_one(acc, course=course, max_sections=n,
+                           max_total_hours=args.max_total_hours)
+            got.append({"label": acc.label, "course": course, "code": code})
+            if code != 0:
+                print(f"  ⚠ {acc.label} 退出码 {code}（掉登录/读不到列表/学时不涨）→ "
+                      f"记下，继续下一个账号", flush=True)
+        return got
+
+    print(f"\n并发数：{concurrency}（不同账号并行；同一账号多门课仍串行）", flush=True)
     results: list[dict] = []
-    for i, (acc, course, want) in enumerate(plan, 1):
-        print(f"\n===== [{i}/{len(plan)}] {acc.label} "
-              f"{('课程' + str(course)) if course is not None else '当前课程'} =====")
-        # 每门课开跑前重算额度（上一门可能已消耗）。额度按账号合计，多门课共用。
-        q = gledger.quota_left(acc.label, sections_limit=acc.daily_sections,
-                               minutes_limit=acc.daily_minutes)
-        n = want if q["left_sections"] is None else min(want, q["left_sections"])
-        if n <= 0 or q["exhausted"]:
-            print(f"  {acc.label} 额度已用完，跳过这门课")
-            continue
-        code = run_one(acc, course=course, max_sections=n,
-                       max_total_hours=args.max_total_hours)
-        results.append({"label": acc.label, "course": course, "code": code})
-        if code != 0:
-            print(f"  ⚠ {acc.label} 退出码 {code}（掉登录/读不到列表/学时不涨）→ "
-                  f"记下，继续下一个账号")
+    if concurrency <= 1:
+        for label, entries in groups.items():
+            results.extend(run_group(label, entries))
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(run_group, label, entries): label
+                       for label, entries in groups.items()}
+            for fut in as_completed(futures):
+                try:
+                    results.extend(fut.result())
+                except Exception as exc:                 # noqa: BLE001
+                    print(f"⚠ {futures[fut]} 组异常：{type(exc).__name__}: {exc}", flush=True)
+                    results.append({"label": futures[fut], "course": None, "code": 1})
 
     print("\n=== 调度汇总 ===")
     for r in results:
