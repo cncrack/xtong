@@ -154,8 +154,8 @@ def main() -> int:
     ap.add_argument("--pages", type=int, default=1, help="读到第几页（含）")
     ap.add_argument("--all", action="store_true", help="一路翻到最后一页")
     ap.add_argument("--course", default="",
-                    help="课程 value（列表页 ddlClass）；空 = 当前课程，"
-                         "缓存落 sections_<代号>.json")
+                    help="课程 value（列表页 ddlClass）；空 = 自动读当前选中课程，"
+                         "缓存落 sections_<代号>_<课程>.json（G-12 后不再落无后缀文件）")
     ap.add_argument("--cache-only", action="store_true", help="不连浏览器，读上次结果")
     args = ap.parse_args()
     label = args.label or _default_label()
@@ -202,8 +202,18 @@ def main() -> int:
                 return 3
 
         drv = gdriver.GxksDriver(page)
+        # G-12（2026-11-08）：没指定课程时，读**页面当前真实选中的课程**。
+        # 原来只在命令行 --course 给值才按课分文件；面板传空时写回无后缀老文件，
+        # 于是「刷新 → course 仍空 → 下次还传空」死循环（实测 default 永远停在
+        # sections_default.json，而刷课脚本按课写的是 sections_test_32.json）。
+        # driver.current_course() 读 ddlClass 的 selected value，零额外平台请求。
+        # ⚠ 指定课程优先：--course 明确给值时不能覆盖它（用户可能就要另一门课）。
+        if not course:
+            course = drv.current_course()
+        # ⚠ path 必须**重算**：L167 算路径时还没连浏览器，拿到的是旧 course。
+        cache = sections_cache.path(debug_dir, label, course)
         # 指定了课程就先切过去；切不过去直接停（不猜切换方式，见 driver.select_course）
-        if course:
+        if course and args.course:
             if not drv.select_course(course):
                 print(f"[FAIL] 切不到课程 {course}（该账号可能没有这门课，"
                       f"或站点改了切换方式）→ 停", file=sys.stderr)
