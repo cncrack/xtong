@@ -322,6 +322,30 @@ def main() -> int:
             wanted.remove(str(row["platform_chapter_id"]))
         if gdriver.section_status(row) == "done":
             print(f"[SKIP] {row['platform_chapter_id']} 已达标，跳过")
+            # 跳过时**顺手把平台真值回写进节缓存**（2026-11-08 用户实拍：
+            # 4.6 平台早学完，缓存却停在 11-04 的 not_started/未解锁）。
+            # 成因：① 昨晚播它时 read_row 还有「只读当前页」的 bug → progress
+            # 回读 row=None → 回写空转；② driver 今天用 find_section 知道它 done
+            # 并跳过，但**只有正在播的节**才有人回写 → 历史节永远没人纠正；
+            # ③ 面板「刷新节列表」对任务在跑的账号是拒绝的（防列表页抢播放页
+            # frame），人工也救不回来。这里 find_section 刚读过该行 ——
+            # **零额外平台请求**，把真值补进缓存，面板 4 秒轮询自然看到。
+            try:
+                gcache.update_row(Path("data/debug"), acc_label, course_value,
+                                  row["platform_chapter_id"],
+                                  done_minutes=row.get("done_minutes"),
+                                  state="done",
+                                  state_text=row.get("state_text") or "已完成",
+                                  practice_ready=glist.practice_ready(
+                                      row.get("practice_locked"), row.get("exam_id")),
+                                  practice_locked=row.get("practice_locked"),
+                                  exam_id=row.get("exam_id"),
+                                  name=str(row.get("name") or ""),
+                                  required_minutes=row.get("required_minutes"),
+                                  idx=row.get("idx"),
+                                  category=str(row.get("category") or ""))
+            except Exception as exc:              # noqa: BLE001
+                print(f"[WARN] SKIP 回写节缓存失败（不影响跳过）：{type(exc).__name__}")
             continue
 
         section = str(row["platform_chapter_id"])

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -896,6 +897,47 @@ def _account_rows() -> list[dict[str, Any]]:
 def _ledger_path(settings: Settings) -> Path:
     """当日额度账本。跟 `settings.data_dir` 走（测试用临时根目录时不会读到真实账本）。"""
     return settings.data_dir / "gxks_ledger.jsonl"
+
+
+# tick 心跳每 30 秒一次；连续 3 个周期没刷新 = 任务大概率已中断（手动停/硬停/崩溃）
+LEARNING_STALE_SECONDS = 90
+
+
+def _normalize_stale_learning(sections: dict[str, Any]) -> dict[str, Any]:
+    """把「心跳超时」的 learning 行降级为展示状态（done / not_started）。
+
+    背景（2026-11-08 用户：「进度区显示不稳定」）：`sections_cache.update_row`
+    的 `playing=True`（tick）会把正在播的节标成 learning 并刷新 `learning_at`。
+    任务中断后 tick 不再来，行会一直停在 learning —— 面板永远显示「学习中」
+    是误导（原代码靠 progress 回读 not_started 降级，但那个回降本身会把
+    正在播的节也打回，见 update_row 的修复说明）。
+
+    规则：`state == "learning"` 且 `learning_at` 距今超过 `LEARNING_STALE_SECONDS`
+    → 按 `done_minutes` 推导展示状态（与 update_row 撤回分支同一口径）。
+
+    ⚠ **只影响 /api/state 的展示，不改缓存文件**：文件里的 learning +
+    learning_at 是原始证据，任务恢复后 tick 会继续刷新、心跳重新变新鲜。
+    没有 `learning_at` 的老行（修复前写的）无法判断 → 保持原样。
+    """
+    if not sections or not sections.get("rows"):
+        return sections
+    cutoff = time.time() - LEARNING_STALE_SECONDS
+    for r in sections["rows"]:
+        if r.get("state") != "learning":
+            continue
+        try:
+            t = datetime.strptime(str(r.get("learning_at") or ""),
+                                  "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            continue                       # 老行没有时间戳 → 无法判断，保持原样
+        if t >= cutoff:
+            continue                       # 心跳还新鲜
+        dm = int(r.get("done_minutes") or 0)
+        rm = int(r.get("required_minutes") or 0)
+        done = dm >= rm > 0
+        r["state"] = "done" if done else "not_started"
+        r["state_text"] = "已完成" if done else "已中断（超 90 秒无心跳）"
+    return sections
 
 
 def _pick_sections_cache(debug_dir: Path, label: str,
@@ -1808,6 +1850,9 @@ def create_app(settings: Settings) -> FastAPI:
         # B1：节列表按课程分开存；`course` 给了就读那一份，没给就读该账号最新的一份
         sections, sections_course = (_pick_sections_cache(debug_dir, label, course)
                                      if label else ({}, ""))
+        # learning 行超 90 秒无 tick 心跳 → 任务大概率已中断，降级展示
+        # （只影响展示，不改缓存文件；见 _normalize_stale_learning）
+        sections = _normalize_stale_learning(sections)
         # 该账号**所有**课程的缓存清单（前端切换器用；2026-11-03 加）
         courses_cached = _list_course_caches(debug_dir, label) if label else []
         return {
