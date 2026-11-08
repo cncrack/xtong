@@ -1054,6 +1054,11 @@ def _account_cards(settings: Settings, *,
         } if running else None
         # 这个账号一共有几门课的缓存（多课程时卡片要能看出来）
         courses_cached = len(sections_cache.list_all(debug_dir, acc.label))
+        # **缓存完整性**（2026-11-08 用户实拍：test 显示「7/8 节」而平台实际 36 节）。
+        # 判据：完整读列表的任务（`gxks_sections.py --all`）一定会写 `pager` 字段；
+        # 只有 `run_gxks.py` 逐节回写产生的缓存**没有 pager**，行数只等于它经手过的节。
+        # 所以 `无 pager` = 这份缓存不完整，前端要提示「点刷新节列表」而不是假装 8 节就是全部。
+        sections_partial = bool(cached_rows) and not cached.get("pager")
         snap = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
         # `left = None` = 该账号把日节数设成 0（不限），卡片要显示“不限”而不是“0 剩”
         left = None if acc.daily_sections <= 0 else max(0, acc.daily_sections - today["sections"])
@@ -1081,6 +1086,8 @@ def _account_cards(settings: Settings, *,
             "sections": {"done": summary.get("done", 0),
                          "total": summary.get("sections", 0),
                          "read_at": cached.get("read_at", "")},
+            # 缓存不完整（只由刷课逐节回写、没跑过「刷新节列表」）→ 前端提示去刷新
+            "sections_partial": sections_partial,
             "running_section": running_section,          # G-11②：行内迷你卡（仅在跑时有值）
             "job": ({"kind": jobs[acc.label]["kind"], "since": jobs[acc.label]["since"]}
                     if acc.label in jobs else None),

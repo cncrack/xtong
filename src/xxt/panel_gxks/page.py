@@ -1163,6 +1163,14 @@ function practiceCell(row) {
     return '<span class="tag t-bank">可做</span> <span class="muted">#' +
       esc(row.exam_id) + "</span>";
   }
+  // ⚠ 正在学的节：平台此时 `practice_locked=true`（要学完才解锁），
+  // 直接写「未解锁」会和旁边的「学习中」并排成**自相矛盾**的观感
+  // （2026-11-08 用户实拍截图：同一行「学习中 + 未解锁」）。
+  // 这里改成「学完解锁」—— 语义准确（不是永久不可做），也不与「学习中」冲突。
+  if (row.state === "learning") {
+    return '<span class="tag t-low" title="正在学：平台要学完这一节才开放课后练习">' +
+      "学完解锁</span>";
+  }
   return '<span class="tag t-none">未解锁</span>';
 }
 
@@ -2818,7 +2826,6 @@ function renderSections(state) {
   // 标题写清「谁的哪门课」：多账号多课程时不写就只剩一个日期，容易看错人
   el("sec-meta").textContent = [card.display || state.label, course,
     "读于 " + (data.read_at || "?")].filter(Boolean).join(" · ");
-
   // 签名要覆盖**所有会变的数字**（2026-11-03 用户发现刷课时进度不动）：
   // 原来只有 read_at/节数/done/可练习 —— 但刷课中「已完成分钟数」在涨、
   // 「待学分钟数」在降，这些变了签名却不变 → 表格不重建 → 看着像没更新。
@@ -2870,6 +2877,14 @@ function renderSections(state) {
     '<span class="tag t-bank">可做练习 ' + (s.practice_ready || 0) + "</span>" +
     (data.pager ? '<span class="muted">平台分页 ' + esc(data.pager.current) + " / " +
       esc(data.pager.total) + "</span>" : "") +
+    // ⚠ 缓存不完整提示（2026-11-08 用户实拍：test 显示「7/8 节」，
+    // 但平台那门课其实有 36 节 —— 因为这份缓存只由刷课脚本逐节回写产生，
+    // 从没跑过「刷新节列表」，所以行数 ≠ 课程总节数）。
+    // 不加这条提示，用户会以为这门课只有 8 节、已经快学完了。
+    (card.sections_partial
+      ? '<span class="tag t-low" title="这份缓存只包含刷课脚本经手过的节，不是课程全量。' +
+        '点右上角「刷新节列表」读完整列表（约 1 分钟）">⚠ 缓存不全，请刷新</span>'
+      : "") +
     "</div>";
 
   // 待学 / 已完成并排（宽屏两列、窄屏自动堆叠），见 CSS .sec-cols。
