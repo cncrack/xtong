@@ -312,6 +312,17 @@ table.acct-tbl td.c-ops input.sec-n{width:38px;margin-left:3px;padding:2px 4px;
 /* 「本次」前缀（2026-11-08）：这个数字是**这一次**跑几节，不是每日额度。
    两个数字都长成输入框，用户设了 4 却看到今日 5 节 → 以为超刷。
    小号灰字，不抢按钮视觉，但让口径一眼可辨。 */
+/* G-11② 行内「在跑的迷你卡」（2026-11-08）：不新增列，挂在本节进度格下面。
+   节名用省略号不撑宽表格；迷你条复用 .mini-bar。375px 时字号放大到可读。 */
+.run-mini{display:flex;align-items:center;gap:5px;margin-top:3px;font-size:11px;
+  white-space:nowrap;max-width:190px}
+.run-mini-name{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;
+  color:var(--fg)}
+.run-mini-num{color:var(--muted);flex:none}
+.run-mini .mini-bar{width:26px;flex:none}
+@media (max-width:760px){
+  .run-mini{font-size:12px;max-width:150px}
+}
 table.acct-tbl td.c-ops .sec-n-lab{margin-left:3px;font-size:11px;color:var(--muted);
   vertical-align:middle;white-space:nowrap}
 /* 窄屏放大到手指可点（375px 约定） */
@@ -553,6 +564,15 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
          padding-bottom:4px;border-bottom:1px dashed var(--line);
          letter-spacing:.04em}
 .ops-sub:first-of-type{margin-top:2px}
+/* T5 日志工具条：窄屏换行，不靠横向滚动（375px 约定） */
+.log-tools{float:right;display:inline-flex;gap:6px;align-items:center;
+  font-weight:400;letter-spacing:0;flex-wrap:wrap}
+.log-tools select{font-size:12px;padding:2px 6px;border:1px solid var(--line);
+  border-radius:5px;background:var(--bg);color:var(--txt)}
+@media (max-width:760px){
+  .log-tools{float:none;display:flex;margin-top:6px}
+  .log-tools select{font-size:13px;padding:5px 8px}
+}
 /* 运行日志容器（2026-11-04 用户要求「高度调大些」「自动滚到最新」）：
    - 原来没有固定高度，日志一长整页被撑得很高；
    - 现在给 52vh 上限 + 内部滚动，默认**滚到底部看最新一行**；
@@ -838,7 +858,20 @@ button.mini{padding:3px 9px;font-size:13px}
        上半 = 当前账号任务的运行日志（4 秒轮询实时尾巴）；下半 = 操作记录表。 -->
   <section id="sec-ops">
     <h2>日志记录</h2>
-    <div class="ops-sub">运行日志 <span class="muted" id="runlog-meta"></span></div>
+    <div class="ops-sub">运行日志 <span class="muted" id="runlog-meta"></span>
+      <!-- T5（2026-11-08 用户确认）：默认「全部账号合并流」，每行前缀 [账号·课程]；
+           过滤下拉按账号收窄。单账号视图保留（点账号行 / 切回即可），
+           LOG_LINES 分桶不动，合并流只是一个新渲染器。 -->
+      <span class="log-tools">
+        <select id="log-mode" onchange="setLogMode(this.value)"
+                title="合并流 = 全部账号按时间混在一起，每行带账号前缀；单账号 = 只看当前选中账号">
+          <option value="merged">全部账号（合并流）</option>
+          <option value="single">单账号</option>
+        </select>
+        <select id="log-filter" onchange="LOG_FILTER=this.value; renderLogBox()"
+                title="只看某个账号的日志（合并流下生效）"></select>
+      </span>
+    </div>
     <div id="runlog"></div>
     <div class="ops-sub">操作记录</div>
     <div id="ops"></div>
@@ -1266,9 +1299,23 @@ function acctTr(c, accRow, cur) {
     '<span class="muted">' + esc(Math.round(Number(t.minutes) || 0)) + " 分</span>" +
     (r24Extra ? '<span class="c-r24" title="近 24 小时共 ' + esc(r24s) +
       ' 节（含跨零点前学的）">近24h ' + esc(r24s) + " 节</span>" : "") + "</td>";
+  // G-11②（2026-11-08 用户拍板）：行内「在跑的迷你卡」。
+  // 只在任务在跑且后端给了 running_section 时显示 —— 空闲账号不占视觉。
+  // 格式：账号·课程·节名 + x/y 分 + 迷你条；节名过长用 CSS 省略，全称进 title。
+  const rs = c.running_section;
+  const mini = (c.job && rs && rs.name)
+    ? '<span class="run-mini" title="' + esc(c.label) + ' · ' + esc(rs.course || "") +
+        ' · ' + esc(rs.name) + ' · ' + esc(rs.done_minutes) + '/' +
+        esc(rs.required_minutes) + ' 分">' +
+        '<span class="run-mini-name">' + esc(rs.name) + "</span>" +
+        '<span class="run-mini-num">' + esc(rs.done_minutes) + "/" +
+        esc(rs.required_minutes) + " 分</span>" +
+        miniBar(Number(rs.done_minutes) || 0,
+                Math.max(1, Number(rs.required_minutes) || 1)) + "</span>"
+    : "";
   html += '<td class="muted">' + (sec.total
     ? esc(sec.done) + "/" + esc(sec.total) + " 节"
-    : "—") + "</td>";
+    : "—") + mini + "</td>";
   // 登录列只留「快照时间」，把「无凭据」压成一个 ⚠ 图标（全称进 title）：
   // 92px 放不下「无快照 无凭据」两段文字，之前会把行高撑成两行。
   html += '<td class="muted">' + (snap.saved ? esc((snap.at || "").slice(5, 16))
@@ -2960,6 +3007,13 @@ function renderOps(state) {
 //     但它**不再负责日志**（`renderRunLog` 只在 SSE 断开时兜底重建）。
 const LOG_LINES = new Map();     // "label|kind" -> 行数组（倒序：索引 0 = 最新）
 const LOG_JOBS = new Map();      // "label|kind" -> {label, kind, since, ended_at, alive}
+// T5（2026-11-08）：合并流需要跨桶的**统一到达顺序**。
+// 每行记一个自增序号，合并时按序号倒序（最新在上），不依赖日志文本里的时间戳
+// （tick / 平台回读的格式不统一，解析时间戳不可靠）。
+const LOG_MERGED = [];           // [{seq, label, kind, text}]，追加顺序 = 到达顺序
+let LOG_SEQ = 0;
+let LOG_MODE = "merged";         // "merged" | "single"（用户可在工具条切换）
+let LOG_FILTER = "";             // 合并流下只看某个 label，空 = 全部
 
 // 日志滚动状态（2026-11-07，用户第二次反馈「往下查日志又被刷新」）
 //
@@ -3002,7 +3056,13 @@ function appendLogLines(label, kind, text) {
   for (const ln of lines) arr.unshift(ln);
   // 只保留最近 400 行，避免长时间运行后 DOM 过大
   if (arr.length > 400) arr.length = 400;
-  // 只有「当前正在显示的那个任务」才立刻重绘
+  // T5：同一批行也喂给合并流（按到达顺序编号，跨桶排序用）
+  for (const ln of lines) {
+    LOG_MERGED.push({ seq: ++LOG_SEQ, label: label, kind: kind, text: ln });
+  }
+  if (LOG_MERGED.length > 1200) LOG_MERGED.splice(0, LOG_MERGED.length - 1200);
+  // 合并流下**任何账号**来新行都要重绘；单账号下只重绘当前任务
+  if (LOG_MODE === "merged") { renderLogBox(); return; }
   const cur = pickLogJob((STATE && STATE.jobs) || [], LABEL);
   if (cur && logKey(cur.label, cur.kind) === key) renderLogBox();
 }
@@ -3027,7 +3087,96 @@ function logMetaHtml(job, running) {
         esc(job.ended_at || "?") + "）· 这是最后一次的输出</span>");
 }
 
+// T5：账号显示名（合并流前缀用），没有卡片时退回代号
+function logWho(label) {
+  const c = ((STATE && STATE.cards) || []).find((x) => x.label === label);
+  return (c && c.display) || label || "?";
+}
+
+// T5：合并流的**纯数据层** —— 按到达序号倒序（最新在上），可按账号过滤。
+// 每行产出 `{seq, prefix, text}`；前缀 [账号·课程]，课程取该账号当前缓存的 course。
+function mergedLogRows() {
+  const cards = (STATE && STATE.cards) || [];
+  return LOG_MERGED
+    .filter((r) => !LOG_FILTER || r.label === LOG_FILTER)
+    .slice().reverse()                       // 倒序：最新在上
+    .map((r) => {
+      const c = cards.find((x) => x.label === r.label) || {};
+      const course = c.course_value || c.course || "";
+      const prefix = "[" + logWho(r.label) + (course ? "·" + course : "") +
+        (r.kind && r.kind !== "study" ? "·" + r.kind : "") + "]";
+      return { seq: r.seq, prefix: prefix, text: r.text };
+    });
+}
+
+// T5：过滤下拉的选项来自**账号表**（全量），不受当前选中账号影响。
+function renderLogFilter() {
+  const sel = el("log-filter");
+  if (!sel) return;
+  const cards = (STATE && STATE.cards) || [];
+  let html = '<option value="">全部账号</option>';
+  for (const c of cards) {
+    html += '<option value="' + esc(c.label) + '"' +
+      (LOG_FILTER === c.label ? " selected" : "") + ">" +
+      esc(c.display || c.label) + "</option>";
+  }
+  sel.innerHTML = html;
+  sel.disabled = LOG_MODE !== "merged";
+  const mode = el("log-mode");
+  if (mode && mode.value !== LOG_MODE) mode.value = LOG_MODE;
+}
+
+// T5：模式切换。清锚点、恢复跟随（换视图后旧行号无意义）。
+function setLogMode(v) {
+  LOG_MODE = (v === "single") ? "single" : "merged";
+  RUNLOG_FOLLOW = true;
+  LOG_ANCHOR.clear();
+  renderLogFilter();
+  renderLogBox();
+}
+
+// T5：合并流的渲染器。与单账号版**并列**，LOG_LINES 分桶原样保留 →
+// 切回「单账号」零成本，出问题也只影响这一个新函数。
+function renderMergedLogBox() {
+  const box = el("runlog"), meta = el("runlog-meta");
+  if (!box) return;
+  const rows = mergedLogRows();
+  const jobs = (STATE && STATE.jobs) || [];
+  const live = jobs.filter((j) => j.alive);
+  if (meta) {
+    meta.innerHTML = '<span class="runlog-who">全部账号</span>' +
+      '<span class="runlog-kind">合并流</span>' +
+      '<span class="muted">' + (LOG_FILTER ? "只看 " + esc(logWho(LOG_FILTER)) + " · " : "") +
+      (live.length ? live.length + " 个任务在跑" : "无运行中任务") + " · 共 " +
+      rows.length + " 行</span>";
+  }
+  // ⚠ 滚动锚点按**全局行号**（合并流里一行就是一个全局序号），
+  // 与单账号版的 `LOG_ANCHOR` 分开存，互不清空。
+  const keepTop = box.scrollTop;
+  const wasAtTop = keepTop < 24 && RUNLOG_FOLLOW;
+  const pre = box.querySelector("pre");
+  const lh = (pre && parseFloat(getComputedStyle(pre).lineHeight)) || 18.75;
+  const anchorLine = wasAtTop ? undefined : Math.round(keepTop / lh);
+  const text = rows.length
+    ? rows.map((r) => esc(r.prefix) + " " + esc(r.text)).join("\n")
+    : "（还没有日志。合并流会把所有账号的刷课 / 练习 / 刷新输出按到达顺序混在一起。）";
+  box.innerHTML = '<div class="runlog-hint">↓ 最新在上；每行前缀 [账号·课程]' +
+    (RUNLOG_FOLLOW ? "" :
+      '<button class="mini" type="button" style="margin-left:8px" ' +
+      'onclick="scrolledToTop()">↑ 回到最新（已暂停跟随）</button>') +
+    "</div><pre>" + text + "</pre>";
+  // 新行插在顶部 → 未跟随（在看历史）时按「新增了多少行」把锚点往下挪，
+  // 这样眼前那一行不会被挤走（11-07 修的滚动不打断，在合并流下同样成立）。
+  const prevCount = (typeof MERGED_SHOWN_COUNT === "number") ? MERGED_SHOWN_COUNT : rows.length;
+  const added = Math.max(0, rows.length - prevCount);
+  MERGED_SHOWN_COUNT = rows.length;
+  box.scrollTop = wasAtTop ? 0
+    : (anchorLine !== undefined ? (anchorLine + added) * lh : keepTop);
+}
+let MERGED_SHOWN_COUNT = 0;
+
 function renderLogBox() {
+  if (LOG_MODE === "merged") { renderMergedLogBox(); return; }
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
   const label = LABEL;
@@ -3061,6 +3210,22 @@ function renderRunLog(state) {
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
   const jobs = (state && state.jobs) || [];
+  // T5：合并模式下不走单账号那套重建（它会整块覆盖 runlog 的 innerHTML）。
+  // 页面刚打开 / SSE 还没推过任何行时，用各任务 tail **初始化一次**合并流，
+  // 避免合并流空白；之后一律由 SSE 增量 appendLogLines 喂，不重复。
+  if (LOG_MODE === "merged") {
+    renderLogFilter();
+    if (!LOG_MERGED.length) {
+      for (const j of jobs) {
+        for (const ln of (j.tail || [])) {
+          LOG_MERGED.push({ seq: ++LOG_SEQ, label: j.label,
+                            kind: j.kind || "study", text: ln });
+        }
+      }
+    }
+    renderLogBox();
+    return;
+  }
   if (!jobs.length) {
     box.innerHTML = '<div class="empty">当前没有运行中的任务（刷课 / 做练习 / 刷新节列表的实时输出会显示在这里）。</div>';
     if (meta) meta.textContent = "";

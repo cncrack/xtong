@@ -1037,9 +1037,21 @@ def _account_cards(settings: Settings, *,
         # 近 24 小时（展示用）：刷课常跨零点，用户要看到「这一趟学了几节」（2026-11-03）
         recent = totals[acc.label]["recent"]
         cached, cached_course = _pick_sections_cache(debug_dir, acc.label)
+        cached_rows = cached.get("rows") or []
         summary = cached.get("summary") or {}
-        course = next((r.get("category") for r in cached.get("rows") or []
+        course = next((r.get("category") for r in cached_rows
                        if r.get("category")), "")
+        # G-11②（2026-11-08 用户拍板）：账号表行内「在跑的迷你卡」。
+        # 「正在学哪一节」从节缓存里 state=="learning" 的行取 —— 这是
+        # run_gxks.py 的 tick 每 30 秒打的标记（修复 A 后不会被 progress 回降），
+        # **零平台请求、零新接口**。没有 learning 行（任务刚起/已停）就留空。
+        running = next((r for r in cached_rows if r.get("state") == "learning"), None)
+        running_section = {
+            "name": str(running.get("name") or ""),
+            "done_minutes": int(running.get("done_minutes") or 0),
+            "required_minutes": int(running.get("required_minutes") or 0),
+            "course": str(running.get("category") or cached_course or ""),
+        } if running else None
         # 这个账号一共有几门课的缓存（多课程时卡片要能看出来）
         courses_cached = len(sections_cache.list_all(debug_dir, acc.label))
         snap = gbrowser.state_summary(gbrowser.state_path(settings, acc.label))
@@ -1069,6 +1081,7 @@ def _account_cards(settings: Settings, *,
             "sections": {"done": summary.get("done", 0),
                          "total": summary.get("sections", 0),
                          "read_at": cached.get("read_at", "")},
+            "running_section": running_section,          # G-11②：行内迷你卡（仅在跑时有值）
             "job": ({"kind": jobs[acc.label]["kind"], "since": jobs[acc.label]["since"]}
                     if acc.label in jobs else None),
         })
