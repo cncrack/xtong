@@ -2,7 +2,7 @@
 
 > **任何会话 / 任何开发工具接手前，先读本文件。**
 > 本文是"当前状态"的唯一真相；工作约定见 `AGENTS.md`，长期方案见 `docs/PLAN.md`，历史见 `docs/devlog/`。
-> 最近更新：**2026-11-08 夜（本轮）**——用户拍板 **G-4=A / T5 照方案 / G-12 改 / G-11②**，四项一次性落地：① **G-12** `gxks_sections.py` 接 `driver.current_course()` + **重算缓存路径**（原来连浏览器前就算好路径，刷新永远写回 `sections_default.json` 死循环）；② **G-4 A** `run_gxks_multi.py` 去硬写串行，改按账号分组的线程池并发，权威来源统一到面板 `max_concurrency`（默认 2）；PLAN §7.3.1/D12/§11.6 同步标「核实期结束」；③ **G-11②** 账号卡补 `running_section`，行内迷你卡显示「节名 x/y 分」；④ **T5** 日志合并流 + `[账号·课程]` 前缀 + 过滤下拉 + 全局行号锚点（保留 `LOG_LINES` 分桶可零成本回退）。`pytest` **1269 全绿**，`node --check` 通过，`push_check` PASS，`PAGE` 144785→**151543**。详见 devlog `2026-11-08-07`。
+> 最近更新：**2026-11-08 深夜（本轮）**——用户第三次截图「两账号待学区不一样」，查清**三件事**：① **真实差异**（不同学生同课进度不同，甲 2.1 节 done 62/60、乙 2.1 节才 learning 0/60）→ 不改数据；② **Bug A**：test 的「7/8 节」**不是课程总节数** —— 它从没跑过「刷新节列表」（`data/logs` 无 `gxks-sections-test-*`），缓存只由 `run_gxks.py` 逐节回写产生（8 行 vs 同课 36 行）→ 后端加 `sections_partial`（判据 = **无 `pager` 字段**），前端显示「⚠ 缓存不全，请刷新」；③ **Bug B**：learning 行同时显示「学习中 + 未解锁」自相矛盾 → 改「学完解锁」。另 **G-12 已实机验证通过**（`sections_default_32.json` 21:59:40 生成、36 行、course=32）。`pytest` **1278 全绿**，`PAGE` 151543→**152170**。详见 devlog `2026-11-08-08`。
 > **历史（10-24 ~ 10-28 超星侧会话 40~69）不再堆在本行**，见 `docs/devlog/` 与 §5「最近会话」。
 
 ---
@@ -27,7 +27,15 @@
 
 ## 3. 交接字段（每次会话收尾必更）
 
-- **进行中**：**2026-11-08 夜——四项一次性落地（G-12 / G-4 A / G-11② / T5）**（devlog `2026-11-08-07`）：
+- **进行中**：**2026-11-08 深夜——「两账号待学区不一样」第三次核查：两个真 bug 已修**（devlog `2026-11-08-08`）：
+  ① **真实差异**（不改数据）：不同学生同一门课进度不同 —— 甲 2.1 节 `done 62/60`、乙 2.1 节 `learning 0/60`，待学区内容不同是**对的**。
+  ② **Bug A（已修）**：test 的「7/8 节」**不是课程总节数**。它从没跑过「刷新节列表」（`data/logs` 无 `gxks-sections-test-*`），
+     `sections_test_32.json` 只有 8 行（同课在甲那份 36 行）——因为 `run_gxks.py` 用 `find_section` **逐页找单节、只回写经手的节**，从不全量读列表。
+     修：后端 `sections_partial = bool(cached_rows) and not cached.get("pager")`（完整读必写 pager，逐节回写不写，唯一可靠判据），前端「⚠ 缓存不全，请刷新」。
+  ③ **Bug B（已修）**：`practiceCell` 对 learning 行也显示「未解锁」→ 与「学习中」并排矛盾。改显示「学完解锁」+ title 说明。
+  ④ **G-12 实机验证通过**：`sections_default_32.json` 21:59:40 生成、36 行、`course=32`；旧无后缀文件停在 20:35 不再被写。
+  验证：新测试 9 条、全量 `pytest` **1278 全绿**、`node --check` 通过、`PAGE` 151543→**152170**。
+  **以下为本轮之前的历史流水（11-04 ~ 11-08 夜，保留供追溯）**：
   ① **G-12**：`gxks_sections.py` 加 `course = drv.current_course()` + **重算 `cache` 路径**（原来 L167 在连浏览器前就算好）+ `select_course` 改成只在显式给 `--course` 时切。旧文件保留、读方零改动（`_pick_sections_cache` 本就带课程优先）。
   ② **G-4 A**：`run_gxks_multi.py` 去硬写串行 → `resolve_concurrency()`（命令行 > 面板 `max_concurrency` > 默认 2）+ `ThreadPoolExecutor` **按账号分组并发**（同账号多门课仍串行，防额度算重/争 Chrome）；PLAN §7.3.1 / D12 / §11.6 / §九同步标「核实期结束」；`--max-concurrency 1` 可退回串行。
   ③ **G-11②**：卡片补 `running_section`（取缓存里 `learning` 行，零平台请求），行内迷你卡「节名 x/y 分」仅在跑时显示，详情区不动。
@@ -298,13 +306,13 @@
   `视频 95/1166s · 播放中 · 上报 1 次 · 页面计时 95 秒`；④ 只加事件字段，不碰
   `classify`/`plan_action`，播放行为零变化。
   ⚠ **其它坑**：① `start_chrome.ps1` 的 Chrome 参数必须与 `chrome._CHROME_ARGS` 一致（漏 `--no-proxy-server` → 视频分片解密失败）；② 该 ps1 必须带 BOM；③ `E:\xxt` 那个 worktree 的面板也抢 8301；④ `git checkout --` 会冲掉本轮改动；⑤ 动第一个文件前先搜 devlog；⑥ **别把 `DETACHED_PROCESS` 改回去**（会给控制台程序分配新控制台 → 弹黑窗口）；⑦ 沙箱内 **Playwright 起不来**（`EPERM: mkdtemp playwright-artifacts`）→ **解决办法：把 `TEMP`/`TMP` 指到 `data/tmp` 就能起**（11-07 实测），或起临时面板 + 临时 `XXT_ROOT` 渲染；⑧ **改 `start_chrome.ps1` 会丢 BOM**（edit 工具按 UTF-8 无 BOM 写回）→ 改完立刻验证 `[System.IO.File]::ReadAllBytes($p)[0..2]` 是 `EF BB BF`，`test_has_utf8_bom` 也会拦。
-- **下一步第一个动作**（**2026-11-08 夜起的验收**，devlog `2026-11-08-07` §交接块）：
-  1. 浏览器 **`Ctrl+F5`** 强刷 `http://127.0.0.1:8301`（热重载已自动吃进新代码；指纹 `PAGE len=151543 markers=CRLS`）
-  2. **点甲同学「刷新节列表」** → 应生成 `sections_default_32.json`；我读缓存确认 G-12 生效
-  3. 验收 **T5**：日志区默认「全部账号（合并流）」，有「模式」+「过滤」两个下拉；两账号同时起任务时看 `[账号·课程]` 前缀的交错 tick 行；往下滚不被挤走
-  4. 验收 **G-11②**：在跑的账号行出现「节名 x/y 分」迷你卡，空闲账号不显示
-  5. 验收 **G-4 A**（可选）：`run_gxks_multi.py --dry-run` 打印「并发数：2」；真并发需手动起该脚本，日常面板入口不变（默认仍是 2）
-  6. 旧验收项（复选框无小点 / 两账号同播不最小化 / 徽标+日志滚动 / tick 行格式 / 学习中不闪烁 / 4.6 已纠正）此前已实机通过，不再重复
+- **下一步第一个动作**（**2026-11-08 深夜起的验收**，devlog `2026-11-08-08` §交接块）：
+  1. 浏览器 **`Ctrl+F5`** 强刷（热重载已吃进新代码；指纹 `PAGE len=152170 markers=CRLS`）
+  2. 切到 **test** 账号的进度区 → 应出现 **「⚠ 缓存不全，请刷新」** 标签
+     → **点一次「刷新节列表」**（约 1 分钟）→ 刷新后节数应变成 36 口径，标签消失
+  3. 看**正在学的那一节**（test 的 2.1 或甲同学的 5.5）→ 练习列应显示 **「学完解锁」**，不再是「未解锁」
+  4. 甲同学那 3 节（5.5/5.6/5.7）仍显示「未学习/未解锁」—— 这是**平台真值**（前序没学完），
+     属 P-1；若你确认平台上这 3 节其实能看，告诉我，我再查
 - **阻塞点**：**无技术阻塞**。推送曾因 SSH 间歇性重置失败（`Connection reset by ... port 22`），
   **重试 2~3 次即通**（11-07 实测第三次成功，不是认证问题）。
 - **等用户**：
@@ -387,6 +395,7 @@
 | **G-11** | `panel_gxks/page.py` 交互 | 多账号时进度区要逐账号点按钮切换、日志按账号分开 | ✅ **已落地（2026-11-08 夜，devlog `2026-11-08-07` §三）**：`_account_cards` 补 `running_section`（取节缓存 `state=="learning"` 行，零平台请求），`acctTr` 行内 `.run-mini` 显示「节名 x/y 分」+ 迷你条，仅 `c.job` 在跑时显示；CSS 含 `≤760px` 断点；详情区 `renderSections` 不动（仍是单账号）。验收 `test_gxks_merged_log_and_mini_card.py` 6 条 |
 | **G-12** | `scripts/gxks_sections.py` + `panel_gxks/app.py` 刷新接口 | 🔴 **根因已查明，升级为 P0**：甲同学（default）缓存永远是 `sections_default.json`（`course=""`、多出 `pager` 字段），**点「刷新节列表」不会迁移**（20:35:11 实测刷新前后同一文件、同一格式）。链路：`refreshSections()` 传 `course: COURSE \|\| STATE.course \|\| ""` → 该账号 `course_value=""` → `gxks_sections.py --course ""` → 落无后缀文件；而 **`gxks_sections.py` 全程不调 `driver.current_course()`**（页面下拉明明 `value=32`，`run_gxks.py` 每次都打印「当前课程 value=32」）→ 死循环。对照：test 因刷课脚本按课回写，是 `sections_test_32.json`。影响：将来第二门课会互相覆盖；面板多一个 `pager` 徽标（用户说「两个账号进度区不一样显示」的第三成因） | ✅ **已修（2026-11-08 夜，devlog `2026-11-08-07` §一）**：`gxks_sections.py` 加 `course = drv.current_course()`（零额外平台请求）+ **重算 `cache` 路径**（原来 L167 在连浏览器前就算好）+ `select_course` 改为只在显式给 `--course` 时切 + help 文案改准。旧文件保留、`read_paths()` 回落不动，面板 `_pick_sections_cache` 本就带课程优先 → 读方零改动。验收 `test_gxks_sections_course.py` 6 条。**待用户点一次「刷新节列表」实机确认生成 `sections_default_32.json`**。另 P-1（那 3 节 locked）需实机看平台 |
 | **G-13** | `panel_gxks/page.py` 账号行「本次节数」vs 账号编辑「每日额度」 | **两个数字都长成输入框，极易混淆**（用户 11-08 实拍：设了 4 却看到今日 5 节 → 以为超刷；实为「本次 4 节 + 凌晨 1 节 = 今日 5 节」） | ✅ **已修（2026-11-08）**：账号行加「本次」前缀 + 口径写进 title；编辑弹窗改「每日额度（节）/（分钟）」并加一句与「本次」的区别；`.sec-n-lab` 样式含 375px 断点。`PAGE` 144108 → 144785，相关 200 测试全绿 |
+| **G-15** | `panel_gxks/app.py` + `page.py` | **两个显示 bug**（用户 11-08 21:59 第三次截图）：**A** test 的「7/8 节」不是课程总节数——它从没跑过「刷新节列表」，缓存只由 `run_gxks.py` 逐节回写产生（8 行 vs 同课 36 行），面板却当成全量；**B** learning 行同时显示「学习中 + 未解锁」，自相矛盾 | ✅ **已修（2026-11-08 深夜，devlog `2026-11-08-08`）**：A 后端加 `sections_partial`（判据 = **缓存无 `pager` 字段** —— 完整读列表必写 pager，逐节回写不写，这是唯一可靠区分），前端「⚠ 缓存不全，请刷新」；B `practiceCell` 对 learning 行改显示「学完解锁」+ title。验收 `test_gxks_partial_cache_and_locked.py` 9 条，全量 1278 全绿 |
 | **G-14** | 课程「多对多」扩展接口（T1/Q30） | 用户 11-08 问「前面提的多对多方案是否给了、落实了」→ 核查：**方案已给**（PLAN §五 L138~147 三层多对多 + devlog `2026-11-08-01` §二/§三），**骨架大半落地**：`accounts[].courses`、`run_gxks_multi.py` 逐课调度、`ledger.course` + `course+section_id` 去重键、`sections_<label>_<course>.json` 分文件、`driver.list_courses/current_course/select_course`（回读校验）、`run_gxks.py --course`、面板 `#sel-course` 切换器。**三处缺口**：① Q30 平台切课方式**未证实**（`ddlClass` 只有 1 项 `value=32`、`onchange=""`）→ 需第二门课样本，**不可猜**；② ~~`gxks_sections.py` 未接 `current_course()`~~ → ✅ **已修（G-12，devlog 07）**；③ T7 `accountRows`/`paintAccountRows` 虚拟滚动接口**只写了设计、没落码** | ⏳ **「先留扩展接口」做法**（devlog `2026-11-08-06` §三）：不动平台假设，② 已补好，单课程也走「按课分文件」；将来第二门课出现 → `list_courses()` 自动多一项 → 切换器自动显示（`list.length>1`）→ 缓存自动分文件，**无需改架构**。① 等样本，③ 排到 >50 账号时 |
 
 ### P0（必须修，影响可用性/验证可信度）
