@@ -1321,9 +1321,23 @@ function acctTr(c, accRow, cur) {
         miniBar(Number(rs.done_minutes) || 0,
                 Math.max(1, Number(rs.required_minutes) || 1)) + "</span>"
     : "";
-  html += '<td class="muted">' + (sec.total
-    ? esc(sec.done) + "/" + esc(sec.total) + " 节"
-    : "—") + mini + "</td>";
+  // **课程进度列**（2026-11-08 用户：「7/8 节是有问题的吧，这个应该显示学了几节，
+  // 总的有多少节吧」）。
+  // 原来的 `done/total 节` 有歧义：`total` 是**这份缓存的行数**，缓存不全时
+  // 就成了「7/8」—— 用户会读成「这门课只有 8 节」。现在分开写清：
+  //   ① 有完整缓存（跑了「刷新节列表」）→ 「已学 34 节 / 共 36 节」；
+  //   ② 缓存不全（只有刷课脚本经手过的节）→ 「已学 7 节 · 总数未知」+ ⚠ 提示，
+  //      **绝不拿缓存行数冒充课程总节数**。
+  const secDone = Number(sec.done) || 0;
+  const secTotal = Number(sec.total) || 0;
+  const secCell = secTotal
+    ? (c.sections_partial
+        ? '<span title="这份缓存只含刷课脚本经手过的节，不是课程全量。' +
+          '点「刷新节列表」读完整列表后才知道总节数">已学 ' + esc(secDone) +
+          ' 节 · 总数未知</span>'
+        : '已学 ' + esc(secDone) + " 节 / 共 " + esc(secTotal) + " 节")
+    : "—";
+  html += '<td class="muted">' + secCell + mini + "</td>";
   // 登录列只留「快照时间」，把「无凭据」压成一个 ⚠ 图标（全称进 title）：
   // 92px 放不下「无快照 无凭据」两段文字，之前会把行高撑成两行。
   html += '<td class="muted">' + (snap.saved ? esc((snap.at || "").slice(5, 16))
@@ -2865,15 +2879,33 @@ function renderSections(state) {
   const doneRowsOrdered = doneRows.slice().sort(byOrder);
   const todoLeft = todoRows.reduce((a, r) =>
     a + Math.max(0, numv(r.required_minutes) - numv(r.done_minutes)), 0);
+  // **正在学第几节**（2026-11-08 用户要求：「待学这边应该显示的是全部是多少节，
+  // 正在学第几节」）。序号取它在**待学列表里的位置**（1 起），不是平台节号 ——
+  // 用户要的是「还差 29 节里正在做第几个」这种进度感。
+  // 没有 learning 行（任务没跑 / 已停）就不写这一段，不显示假序号。
+  const learningRow = todoRows.find(r => r.state === "learning");
+  const learningNo = learningRow ? todoRows.indexOf(learningRow) + 1 : 0;
 
+  // ⚠ 缓存不全时**不能拿缓存行数当分母**（2026-11-08 用户：「7/8 节是有问题的吧」）：
+  // 那会把「已学 7 节」画成 87% 满格，看着像快学完了。此时进度条按「已学节数」
+  // 画成不确定态（分母 = 已知行数但标注不全），并把总节数写「?」。
+  const totalKnown = !card.sections_partial;
   let html = '<div class="bars">' +
-    barHtml("节数", doneRows.length, rows.length) +
+    barHtml("节数", doneRows.length, rows.length,
+            totalKnown ? "" : "缓存不全，总节数未知（点「刷新节列表」补全）") +
     barHtml("学时", eff, need, played > eff ? "实际播放 " + played + " 分" : "") +
     "</div>";
   html += '<div class="row" style="margin-bottom:2px">' +
     '<span class="tag t-done">已完成 ' + doneRows.length + " 节</span>" +
     '<span class="tag ' + (todoRows.length ? "t-learn" : "t-none") + '">待学 ' +
     todoRows.length + " 节</span>" +
+    // 「正在学第几节」（2026-11-08 用户要求）：一眼看出待学总量与当前进度，
+    // 不用去列表里数。序号 = 待学列表里的位置。
+    (learningRow
+      ? '<span class="tag t-learn" title="待学共 ' + todoRows.length +
+        ' 节；正在学其中第 ' + learningNo + ' 节：' + esc(learningRow.name) + '">' +
+        "正在学第 " + learningNo + " / " + todoRows.length + " 节</span>"
+      : "") +
     '<span class="tag t-bank">可做练习 ' + (s.practice_ready || 0) + "</span>" +
     (data.pager ? '<span class="muted">平台分页 ' + esc(data.pager.current) + " / " +
       esc(data.pager.total) + "</span>" : "") +
@@ -2899,8 +2931,10 @@ function renderSections(state) {
   html += '<div class="sec-cols">';
   html += '<details class="blk todo" data-blk="todo"' +
     (SEC_OPEN.todo ? " open" : "") + "><summary>待学" +
-    '<span class="sum">' + todoRows.length + " 节 · 还差 " + todoLeft +
-    ' 分钟</span></summary><div class="body">' +
+    '<span class="sum">共 ' + todoRows.length + " 节 · 还差 " + todoLeft + " 分钟" +
+    // 正在学哪一节也写进标题（2026-11-08 用户要求），折叠时也看得到
+    (learningRow ? " · 正在学第 " + learningNo + " 节" : "") +
+    "</span></summary><div class=\"body\">" +
     (todoRows.length ? secTableHtml(todoRows, true) : todoEmptyMsg) +
     "</div></details>";
   html += '<details class="blk" data-blk="done"' +
