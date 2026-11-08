@@ -572,6 +572,7 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 @media (max-width:760px){
   .log-tools{float:none;display:flex;margin-top:6px}
   .log-tools select{font-size:13px;padding:5px 8px}
+  .log-tools #log-filter-q{width:96px;font-size:13px;padding:5px 8px}
 }
 /* 运行日志容器（2026-11-04 用户要求「高度调大些」「自动滚到最新」）：
    - 原来没有固定高度，日志一长整页被撑得很高；
@@ -864,12 +865,17 @@ button.mini{padding:3px 9px;font-size:13px}
            LOG_LINES 分桶不动，合并流只是一个新渲染器。 -->
       <span class="log-tools">
         <select id="log-mode" onchange="setLogMode(this.value)"
-                title="合并流 = 全部账号按时间混在一起，每行带账号前缀；单账号 = 只看当前选中账号">
+                title="合并流 = 全部账号按时间混在一起，每行带账号前缀；单账号 = 选一个账号看它的日志">
           <option value="merged">全部账号（合并流）</option>
           <option value="single">单账号</option>
         </select>
-        <select id="log-filter" onchange="LOG_FILTER=this.value; renderLogBox()"
-                title="只看某个账号的日志（合并流下生效）"></select>
+        <!-- 账号多时下拉会很长（100 账号 = 101 项）→ 加一个即时过滤框。
+             只做本地字符串过滤，不引入虚拟滚动（T7/T8 排到 >50 账号时）。 -->
+        <input id="log-filter-q" type="search" placeholder="搜账号" autocomplete="off"
+               oninput="renderLogFilter()" title="输入账号名/代号即时过滤下拉选项"
+               style="width:84px;font-size:12px;padding:2px 6px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--txt)">
+        <select id="log-filter" onchange="setLogFilter(this.value)"
+                title="选要看哪个账号的日志"></select>
       </span>
     </div>
     <div id="runlog"></div>
@@ -3062,7 +3068,12 @@ const LOG_JOBS = new Map();      // "label|kind" -> {label, kind, since, ended_a
 const LOG_MERGED = [];           // [{seq, label, kind, text}]，追加顺序 = 到达顺序
 let LOG_SEQ = 0;
 let LOG_MODE = "merged";         // "merged" | "single"（用户可在工具条切换）
-let LOG_FILTER = "";             // 合并流下只看某个 label，空 = 全部
+// ⚠ LOG_FILTER 在**两种模式**下都生效，但语义不同（2026-11-08 修 bug）：
+//   - merged：过滤合并流，空 = 全部账号；
+//   - single：决定「看哪个账号的日志」，空 = 跟随当前选中账号 LABEL。
+// 原来只在 merged 下渲染下拉、single 下 disabled → 用户切到单账号后
+// 下拉是空的灰的，且没法选第二个账号（只能点账号表行），实拍反馈。
+let LOG_FILTER = "";
 
 // 日志滚动状态（2026-11-07，用户第二次反馈「往下查日志又被刷新」）
 //
@@ -3112,7 +3123,9 @@ function appendLogLines(label, kind, text) {
   if (LOG_MERGED.length > 1200) LOG_MERGED.splice(0, LOG_MERGED.length - 1200);
   // 合并流下**任何账号**来新行都要重绘；单账号下只重绘当前任务
   if (LOG_MODE === "merged") { renderLogBox(); return; }
-  const cur = pickLogJob((STATE && STATE.jobs) || [], LABEL);
+  // single 模式下「当前看的账号」可能由 #log-filter 指定，不再是 LABEL
+  const viewLabel = LOG_FILTER || LABEL;
+  const cur = pickLogJob((STATE && STATE.jobs) || [], viewLabel);
   if (cur && logKey(cur.label, cur.kind) === key) renderLogBox();
 }
 
@@ -3159,25 +3172,56 @@ function mergedLogRows() {
 }
 
 // T5：过滤下拉的选项来自**账号表**（全量），不受当前选中账号影响。
+// 2026-11-08 修 bug：原来只在 merged 模式调用 → single 模式下下拉空白且 disabled。
+// 现在两种模式都渲染；账号多时用 #log-filter-q 做本地即时过滤。
 function renderLogFilter() {
   const sel = el("log-filter");
   if (!sel) return;
   const cards = (STATE && STATE.cards) || [];
-  let html = '<option value="">全部账号</option>';
+  const qEl = el("log-filter-q");
+  const q = ((qEl && qEl.value) || "").trim().toLowerCase();
+  // single 模式下「全部账号」不是合法选项（那是合并流的入口，由 #log-mode 管），
+  // 不显示它，避免用户选了却没反应。
+  const isSingle = LOG_MODE === "single";
+  let html = isSingle ? "" : '<option value="">全部账号</option>';
+  let shown = 0;
   for (const c of cards) {
-    html += '<option value="' + esc(c.label) + '"' +
+    const name = String(c.display || c.label || "");
+    if (q && !name.toLowerCase().includes(q) &&
+        !String(c.label || "").toLowerCase().includes(q)) continue;
+    const v = esc(c.label);
+    html += '<option value="' + v + '"' +
       (LOG_FILTER === c.label ? " selected" : "") + ">" +
-      esc(c.display || c.label) + "</option>";
+      esc(name) + "</option>";
+    shown++;
   }
+  if (isSingle && !shown) html = '<option value="">（没有匹配的账号）</option>';
+  if (!isSingle && q && !shown) html += '<option value="" disabled>（无匹配）</option>';
   sel.innerHTML = html;
-  sel.disabled = LOG_MODE !== "merged";
+  // ⚠ 不再 disabled：single 模式下它是「选看哪个账号」的唯一入口。
+  sel.disabled = false;
+  sel.title = isSingle ? "选要看哪个账号的日志（切换后立刻生效）"
+                       : "只看某个账号的日志；空 = 全部账号";
+  if (qEl) qEl.style.display = cards.length > 12 ? "" : "none";
   const mode = el("log-mode");
   if (mode && mode.value !== LOG_MODE) mode.value = LOG_MODE;
+}
+
+// 下拉选择：merged = 过滤；single = 换要看的账号（不必去点账号表行）
+function setLogFilter(v) {
+  LOG_FILTER = v || "";
+  renderLogBox();
 }
 
 // T5：模式切换。清锚点、恢复跟随（换视图后旧行号无意义）。
 function setLogMode(v) {
   LOG_MODE = (v === "single") ? "single" : "merged";
+  // 切到单账号时若过滤值为空，默认跟随当前选中账号；切回合并流则清空过滤
+  if (LOG_MODE === "single") {
+    if (!LOG_FILTER) LOG_FILTER = LABEL || "";
+  } else {
+    if (LOG_FILTER === LABEL) LOG_FILTER = "";
+  }
   RUNLOG_FOLLOW = true;
   LOG_ANCHOR.clear();
   renderLogFilter();
@@ -3228,7 +3272,9 @@ function renderLogBox() {
   if (LOG_MODE === "merged") { renderMergedLogBox(); return; }
   const box = el("runlog"), meta = el("runlog-meta");
   if (!box) return;
-  const label = LABEL;
+  // ⚠ single 模式下看哪个账号，由 #log-filter 决定（不必去点账号表行）；
+  // 过滤值为空时退回当前选中账号 LABEL。2026-11-08 修「第二个账号切不过去」。
+  const label = (LOG_MODE === "single" && LOG_FILTER) ? LOG_FILTER : LABEL;
   const job = pickLogJob((STATE && STATE.jobs) || [], label);
   const key = job ? logKey(job.label, job.kind) : logKey(label, "study");
   const arr = LOG_LINES.get(key) || [];
@@ -3262,8 +3308,9 @@ function renderRunLog(state) {
   // T5：合并模式下不走单账号那套重建（它会整块覆盖 runlog 的 innerHTML）。
   // 页面刚打开 / SSE 还没推过任何行时，用各任务 tail **初始化一次**合并流，
   // 避免合并流空白；之后一律由 SSE 增量 appendLogLines 喂，不重复。
+  // ⚠ 两种模式都要渲染过滤下拉（原来只在 merged 下 → single 模式下拉空白）
+  renderLogFilter();
   if (LOG_MODE === "merged") {
-    renderLogFilter();
     if (!LOG_MERGED.length) {
       for (const j of jobs) {
         for (const ln of (j.tail || [])) {
@@ -3282,7 +3329,8 @@ function renderRunLog(state) {
   }
   // 优先看**本账号正在跑**的；没有在跑的，就回退到本账号**刚结束**的那条
   // （2026-11-03 用户要求：跑完了还能回看日志）。`alive===false` 是后端留的尾巴。
-  const cur = pickLogJob(jobs, state.label);
+  const cur = pickLogJob(jobs, (LOG_MODE === "single" && LOG_FILTER)
+                                 ? LOG_FILTER : state.label);
   const running = cur.alive !== false;
   // 记下任务信息，供 SSE 增量渲染用（键 `label|kind`，同账号两任务不混）
   const curKey = logKey(cur.label, cur.kind);
