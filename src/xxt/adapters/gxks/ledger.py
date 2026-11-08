@@ -191,6 +191,86 @@ def recent_totals(path: str | Path | None = None, account: str = "",
             "section_ids": sorted(ids)}
 
 
+def batch_totals(path: str | Path | None = None, accounts: list[str] = (),
+                 day: str | None = None, hours: int = 24) -> dict[str, dict]:
+    """**一次**读全量账本、按账号聚合「今日 + 近 N 小时」（面板卡片用）。
+
+    为什么（2026-11-08 T4）：`app._account_cards` 原来对每个账号各调
+    `today_totals` + `recent_totals`，而两者都各自 `read_rows()` —— 把整个
+    jsonl 读进内存逐行解析。这是 O(账号数 × 行数)：100 账号 × 每 4 秒轮询
+    = 每 4 秒 200 次全量读，面板会卡。这里**只读一次**、单遍按账号分桶，
+    复杂度降到 O(行数)。
+
+    返回 `{account: {"today": {...}, "recent": {...}}}`，两个子结构与
+    `today_totals` / `recent_totals` 的返回**逐字段同口径**：今日认 `date`、
+    近 N 小时认 `at`；去重键 `course + section_id`；分钟数解析失败的行
+    跳过分钟累计但节数照算（与单账号版一致）。
+    """
+    day = day or _today()
+    hours = max(1, int(hours or 24))
+    since = datetime.now().timestamp() - hours * 3600
+    labels = [str(a) for a in accounts]
+    buckets: dict[str, dict] = {
+        a: {"t_keys": set(), "t_ids": set(), "t_min": 0.0, "t_pc": {},
+            "r_keys": set(), "r_ids": set(), "r_min": 0.0}
+        for a in dict.fromkeys(labels)          # 去重但保持顺序
+    }
+    for row in read_rows(path):
+        acc = row.get("account")
+        if acc not in buckets:
+            continue
+        b = buckets[acc]
+        # —— 今日（墙钟日，额度口径）
+        if row.get("date") == day:
+            row_course = str(row.get("course") or "")
+            if row.get("result") == "done":
+                b["t_keys"].add((row_course, str(row.get("section_id"))))
+                b["t_ids"].add(str(row.get("section_id")))
+            try:
+                mins = float(row.get("minutes") or 0)
+            except (TypeError, ValueError):
+                continue
+            b["t_min"] += mins
+            pc = b["t_pc"].setdefault(row_course, {"sections": set(), "minutes": 0.0})
+            pc["minutes"] += mins
+            if row.get("result") == "done":
+                pc["sections"].add(str(row.get("section_id")))
+        # —— 近 N 小时（滑动窗口，展示口径）
+        try:
+            at = datetime.fromisoformat(str(row.get("at") or ""))
+        except ValueError:
+            continue
+        if at.timestamp() < since:
+            continue
+        if row.get("result") == "done":
+            b["r_keys"].add((str(row.get("course") or ""), str(row.get("section_id"))))
+            b["r_ids"].add(str(row.get("section_id")))
+        try:
+            b["r_min"] += float(row.get("minutes") or 0)
+        except (TypeError, ValueError):
+            continue
+    return {
+        a: {
+            "today": {
+                "date": day, "account": a, "course": None,
+                "sections": len(b["t_keys"]),
+                "minutes": round(b["t_min"], 1),
+                "section_ids": sorted(b["t_ids"]),
+                "courses": {k: {"sections": len(v["sections"]),
+                                "minutes": round(v["minutes"], 1)}
+                            for k, v in sorted(b["t_pc"].items())},
+            },
+            "recent": {
+                "hours": hours,
+                "sections": len(b["r_keys"]),
+                "minutes": round(b["r_min"], 1),
+                "section_ids": sorted(b["r_ids"]),
+            },
+        }
+        for a, b in buckets.items()
+    }
+
+
 def quota_left(account: str, *, sections_limit: int, minutes_limit: int,
                path: str | Path | None = None, day: str | None = None,
                course: str | None = None) -> dict:

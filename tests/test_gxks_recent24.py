@@ -114,7 +114,9 @@ class TestRecent24InUI(unittest.TestCase):
         import inspect
         src = inspect.getsource(app._account_cards)
         self.assertIn("recent24", src)
-        self.assertIn("recent_totals", src)
+        # T4（2026-11-08）：卡片改用 `batch_totals` 一次读全量账本按账号聚合，
+        # 不再每账号各调 recent_totals（近24h 口径仍由 batch 内部同口径算出）。
+        self.assertIn("batch_totals", src)
 
     def test_today_cell_shows_recent_badge(self):
         from xxt.panel_gxks.page import PAGE

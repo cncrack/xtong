@@ -1027,11 +1027,15 @@ def _account_cards(settings: Settings, *,
     # 实测 5 个账号把 `/api/state` 拖到 6078ms（面板每 4 秒轮询一次，界面一直卡在等）
     if alive is None:
         alive = gchrome.ports_alive([a.port for a in accounts])
+    # T4（2026-11-08）：账本**只读一次**、内存按账号聚合。原来每个账号各调
+    # `today_totals` + `recent_totals`（两者都各自把整个 jsonl 读进内存解析），
+    # 100 账号 × 每 4 秒轮询 = 每 4 秒 200 次全量读 → 面板卡。
+    totals = gledger.batch_totals(ledger_path, [a.label for a in accounts])
     out: list[dict[str, Any]] = []
     for acc in accounts:
-        today = gledger.today_totals(ledger_path, acc.label)
+        today = totals[acc.label]["today"]
         # 近 24 小时（展示用）：刷课常跨零点，用户要看到「这一趟学了几节」（2026-11-03）
-        recent = gledger.recent_totals(ledger_path, acc.label, hours=24)
+        recent = totals[acc.label]["recent"]
         cached, cached_course = _pick_sections_cache(debug_dir, acc.label)
         summary = cached.get("summary") or {}
         course = next((r.get("category") for r in cached.get("rows") or []
