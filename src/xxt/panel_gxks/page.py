@@ -309,9 +309,15 @@ table.acct-tbl td.c-ops button{margin-left:3px;padding:2px 7px}
 table.acct-tbl td.c-ops input.sec-n{width:38px;margin-left:3px;padding:2px 4px;
   font-size:13px;text-align:center;border:1px solid var(--line);border-radius:5px;
   vertical-align:middle}
+/* 「本次」前缀（2026-11-08）：这个数字是**这一次**跑几节，不是每日额度。
+   两个数字都长成输入框，用户设了 4 却看到今日 5 节 → 以为超刷。
+   小号灰字，不抢按钮视觉，但让口径一眼可辨。 */
+table.acct-tbl td.c-ops .sec-n-lab{margin-left:3px;font-size:11px;color:var(--muted);
+  vertical-align:middle;white-space:nowrap}
 /* 窄屏放大到手指可点（375px 约定） */
 @media (max-width:760px){
   table.acct-tbl td.c-ops input.sec-n{width:46px;padding:5px 4px;font-size:14px}
+  table.acct-tbl td.c-ops .sec-n-lab{font-size:12px}
 }
 /* 端口列单行：端口号 + 活/停 标签不折行（用户 2026-11-02 明确要求） */
 table.acct-tbl td.c-port{white-space:nowrap}
@@ -900,12 +906,13 @@ button.mini{padding:3px 9px;font-size:13px}
             <div class="hint">一账号一端口，点「随机」自动分配</div>
           </div>
           <div class="fld">
-            <label for="f-sections">日节数上限</label>
+            <label for="f-sections">每日额度（节）</label>
             <input id="f-sections" type="number" min="0" max="40" placeholder="10">
-            <div class="hint">0 = 不限；<b>按账号合计</b></div>
+            <div class="hint">0 = 不限；<b>按账号合计</b>，管<b>一天总共</b>能学几节<br>
+              与表格里的「本次」框不同：那个只管<b>这一次</b>点「学习」跑几节</div>
           </div>
           <div class="fld">
-            <label for="f-minutes">日时长上限</label>
+            <label for="f-minutes">每日额度（分钟）</label>
             <input id="f-minutes" type="number" min="0" max="1440" placeholder="600">
             <div class="hint">0 = 不限；建议 ≥ 节数×60</div>
           </div>
@@ -1301,12 +1308,18 @@ function acctTr(c, accRow, cur) {
       SEC_N.set(c.label, Math.min(perRunDefault(), cap));
     }
     const n = Math.min(Number(SEC_N.get(c.label)) || perRunDefault(), cap);
-    html += '<input class="sec-n" type="number" min="1" max="' + cap + '" value="' + n +
+    // ⚠ 这个数字是「**本次**跑几节」，不是「每日额度」（2026-11-08 用户实拍：
+    // 设了 4 却看到今日 5 节，以为超刷 —— 其实是「本次 4 节 + 早上 1 节 = 今日 5 节」）。
+    // 两个数字都长成一个输入框，不加前缀极易混。前缀 + 口径写进 title。
+    html += '<span class="sec-n-lab" title="本次点「学习」最多跑几节；' +
+      '与「每日额度」无关——日额度在「✎ 编辑」里，管一天总共">本次</span>' +
+      '<input class="sec-n" type="number" min="1" max="' + cap + '" value="' + n +
       '" data-label="' + esc(c.label) + '" title="本次跑几节（1~' + cap +
       '，日上限还剩 ' + (left === Infinity ? "不限" : left) + ' 节）" ' +
       'oninput="rememberSecN(this)" onchange="rememberSecN(this)">' +
       '<button class="mini primary" onclick="startStudyN(this)" data-label="' + esc(c.label) +
-      '" title="按左边数字跑；中途可随时停止，学时保留">学习</button>' +
+      '" title="按左边「本次」数字跑这一趟；中途可随时停止，学时保留。' +
+      '每日总量受「每日额度」限制（在 ✎ 编辑里）">学习</button>' +
       // 浏览器没开时给一个「一键」：起浏览器→等就绪→开始学习（2026-11-06 用户要求）。
       // 浏览器已经开着就不显示 —— 那时「学习」本身就是一步到位，多一个按钮是噪音。
       (c.port_alive ? "" :
