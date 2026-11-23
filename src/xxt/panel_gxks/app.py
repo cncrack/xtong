@@ -102,9 +102,24 @@ def _register_chrome_task(label: str) -> dict[str, Any]:
 
     为什么要自动注册（用户 2026-11-23 选「方案 C」）：账号会有很多，
     让用户手工为每个账号跑一遍 `Register-ScheduledTask` 不现实。
-    这里用 PowerShell 的 ScheduledTasks 模块注册，与用户手工执行的那条命令等价。
 
-    ⚠ **只串行注册**（`_TASK_REGISTER_LOCK`）；注册完的启动是并行的。
+    ## ⚠ 为什么调 `.ps1` 文件而不是 `powershell -Command "..."`
+    （2026-11-23 踩到的真 bug）
+
+    最初用 `-Command` 拼一大串，其中 `-Argument` 的值带引号：
+    `-Argument "-NoProfile -ExecutionPolicy Bypass -File \"...ps1\" -Label x"`。
+    经过 `subprocess` → `powershell -Command` 两层转义后**引号失效**，
+    PowerShell 把 `-ExecutionPolicy` 当成 `New-ScheduledTaskAction` 自己的参数：
+    `New-ScheduledTaskAction : A parameter cannot be found that matches
+     parameter name 'ExecutionPolicy'` → 整个注册失败。
+
+    更糟的是旧实现用 `| Out-Null` 再 `Write-Output "REGISTERED"`，
+    **报错后那行照样执行**，于是 `"REGISTERED" in stdout` 判成成功 ——
+    表现为「静默没注册，点启动才报任务不存在」。
+
+    现在：把注册逻辑放进 `scripts/register_chrome_task.ps1`，Python 只用
+    `-File <脚本> -Label <label>` 调用，**零转义**；并用 `$LASTEXITCODE` + 明确的
+    `OK:`/`FAIL:` 前缀判断，不再靠字符串碰运气。
     """
     name = _chrome_task_name(label)
     with _TASK_REGISTER_LOCK:
@@ -118,35 +133,52 @@ def _register_chrome_task(label: str) -> dict[str, Any]:
                 return {"ok": True, "created": False}
         except (subprocess.TimeoutExpired, OSError):
             pass
-        script = _chrome_script_path()
-        ps = (
-            f'$a=New-ScheduledTaskAction -Execute powershell.exe '
-            f'-Argument "-NoProfile -ExecutionPolicy Bypass -File \\"{script}\\" -Label {label}";'
-            f'$p=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" '
-            f'-LogonType Interactive -RunLevel Limited;'
-            f'Register-ScheduledTask -TaskName "{name}" -Action $a -Principal $p -Force '
-            f'| Out-Null; Write-Output "REGISTERED"'
-        )
+        reg_script = ROOT / "scripts" / "register_chrome_task.ps1"
         try:
             done = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", str(reg_script), "-Label", label],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=60)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "注册计划任务超时（60 秒）"}
         except OSError as exc:
             return {"ok": False, "error": f"无法调用 powershell：{exc}"}
-        if done.returncode == 0 and "REGISTERED" in (done.stdout or ""):
+        out = (done.stdout or "").strip()
+        err = (done.stderr or "").strip()
+        if done.returncode == 0 and "OK:" in out:
             return {"ok": True, "created": True}
+        denied = ("拒绝访问" in out or "拒绝访问" in err
+                  or "Access is denied" in out or "Access is denied" in err)
+        if denied:
+            return {"ok": False,
+                    "error": "自动注册计划任务失败：**需要管理员权限**。\n"
+                             "`Register-ScheduledTask` 创建「以 Administrator 运行」的任务"
+                             "需要提权，面板是普通权限进程，所以会被拒绝。\n"
+                             "请在**管理员 PowerShell 窗口**执行一次"
+                             "（一次注册全部账号，之后一直有效）：\n"
+                             + _manual_register_hint(label, all_accounts=True)}
         return {"ok": False,
                 "error": "自动注册计划任务失败。\n"
-                         f"stdout: {(done.stdout or '').strip()[:400]}\n"
-                         f"stderr: {(done.stderr or '').strip()[:400]}\n"
-                         f"可手工执行：\n{_manual_register_hint(label)}"}
+                         f"任务名：{name}\n"
+                         f"stdout: {out[:400]}\n"
+                         f"stderr: {err[:400]}\n"
+                         f"可手工执行：\n{_manual_register_hint(label, all_accounts=True)}"}
 
 
-def _manual_register_hint(label: str) -> str:
-    """注册失败的兜底：给用户可直接复制的一条命令。"""
+def _manual_register_hint(label: str, *, all_accounts: bool = False) -> str:
+    """注册失败的兜底：给用户可直接复制的命令。
+
+    ⚠ **权限事实**（2026-11-23 实测）：`Register-ScheduledTask` 创建
+    「以 Administrator 运行」的任务时**需要提权**；面板是普通权限进程，
+    调用会得到 `FAIL: 拒绝访问`。所以自动注册只在面板本身以管理员启动时才成功。
+    失败时必须引导用户跑**批量脚本**（一次注册全部账号，不必逐个来）。
+    """
+    root = ROOT
+    if all_accounts:
+        return (f'cd {root}\n'
+                f'powershell -NoProfile -ExecutionPolicy Bypass '
+                f'-File {root}\\scripts\\register_all_chrome_tasks.ps1')
     name = _chrome_task_name(label)
     script = _chrome_script_path()
     return (

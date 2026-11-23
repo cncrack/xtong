@@ -77,16 +77,90 @@ class TestParallelNotSerial(unittest.TestCase):
         self.assertNotIn("_TASK_REGISTER_LOCK", seg)
 
 
+class TestRegisterScript(unittest.TestCase):
+    """**2026-11-23 踩到的真 bug**（注册静默失败）的回归守护。
+
+    旧实现用 `powershell -Command "... -Argument \\"-NoProfile ...\\" ..."`，
+    经 subprocess → powershell 两层转义后引号失效，PowerShell 把
+    `-ExecutionPolicy` 当成 `New-ScheduledTaskAction` 自己的参数：
+    `A parameter cannot be found that matches parameter name 'ExecutionPolicy'`。
+    更糟的是后面还有 `Write-Output "REGISTERED"`，报错后照样执行 →
+    面板 `"REGISTERED" in stdout` 判成成功 → **静默没注册**，
+    点「启动并登录」才报「任务不存在」。
+
+    现在：注册逻辑放进独立 `.ps1`，`-File` 调用零转义；
+    成功判据 = `exitcode == 0` **且** stdout 含 `OK:`。
+    """
+
+    def setUp(self):
+        self.reg = (Path(__file__).resolve().parents[1] / "scripts"
+                    / "register_chrome_task.ps1")
+
+    def test_script_exists_and_has_bom(self):
+        raw = self.reg.read_bytes()
+        self.assertEqual(raw[:3], b"\xef\xbb\xbf",
+                         "Windows PowerShell 5.1 按 GBK 读无 BOM 的 .ps1，中文注释会解析失败")
+
+    def test_uses_file_not_inline_command(self):
+        seg = APP_SRC.split("def _register_chrome_task(", 1)[1].split(
+            "def _manual_register_hint", 1)[0]
+        self.assertIn("register_chrome_task.ps1", seg)
+        self.assertIn('"-File"', seg)
+        self.assertNotIn('"-Command"', seg)
+
+    def test_success_needs_exitcode_and_marker(self):
+        seg = APP_SRC.split("def _register_chrome_task(", 1)[1].split(
+            "def _manual_register_hint", 1)[0]
+        # 代码体（去掉 docstring 里的反例描述）应含两个判据
+        code = seg.split('"""', 2)[-1]
+        self.assertIn("returncode == 0", code)
+        self.assertIn('"OK:" in out', code)
+        # 「REGISTERED」只允许出现在 docstring 的反例说明里，代码里不许有
+        self.assertNotIn('"REGISTERED"', code)
+
+    def test_script_reports_failure_explicitly(self):
+        text = self.reg.read_text(encoding="utf-8-sig")
+        self.assertIn('Write-Output "OK: $taskName"', text)
+        self.assertIn('Write-Output "FAIL:', text)
+        self.assertIn("exit 1", text)
+        self.assertNotIn("REGISTERED", text)
+
+    def test_script_passes_label_into_action(self):
+        text = self.reg.read_text(encoding="utf-8-sig")
+        self.assertIn("-Label $Label", text)
+        self.assertIn("xxt-gxks-chrome-$Label", text)
+
+    def test_permission_denied_points_to_bulk_script(self):
+        """**2026-11-23 实测**：`Register-ScheduledTask` 建「以 Administrator 运行」的任务
+        需要提权，面板是普通权限进程 → `FAIL: 拒绝访问`。
+
+        这种情况必须明确告诉用户「需要管理员权限」并指向**批量脚本**
+        （一次注册全部账号，不用逐个来），而不是让他反复重试。
+        """
+        seg = APP_SRC.split("def _register_chrome_task(", 1)[1].split(
+            "def _manual_register_hint", 1)[0]
+        code = seg.split('"""', 2)[-1]
+        self.assertIn("denied", code)
+        self.assertIn("需要管理员权限", code)
+        self.assertIn("all_accounts=True", code)
+        self.assertIn("register_all_chrome_tasks.ps1", APP_SRC)
+
+    def test_bulk_script_exists_with_bom(self):
+        p = Path(__file__).resolve().parents[1] / "scripts" / "register_all_chrome_tasks.ps1"
+        self.assertTrue(p.exists())
+        self.assertEqual(p.read_bytes()[:3], b"\xef\xbb\xbf")
+
+
 class TestAutoRegister(unittest.TestCase):
     def test_register_function_exists(self):
         self.assertIn("def _register_chrome_task(", APP_SRC)
         self.assertIn("def _manual_register_hint(", APP_SRC)
 
-    def test_register_passes_label_in_action(self):
-        """关键：`-Label` 必须写进**任务动作**（运行期传不进去）。"""
+    def test_register_delegates_label_to_script(self):
+        """label 作为 `-Label` 参数传给注册脚本（脚本再写进任务动作）。"""
         seg = APP_SRC.split("def _register_chrome_task(", 1)[1].split(
             "def _manual_register_hint", 1)[0]
-        self.assertIn("-Label {label}", seg)
+        self.assertIn('"-Label", label', seg)
 
     def test_preregister_on_startup(self):
         """用户选方案 C：启动时预注册已有账号。"""
