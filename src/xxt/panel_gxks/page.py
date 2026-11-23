@@ -560,6 +560,18 @@ tr.s-none td:first-child{box-shadow:inset 3px 0 0 #d9dce1}
 /* 多课程/多章节时的分组小标题行 */
 tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 /* 日志记录区的子标题（运行日志 / 操作记录） */
+/* G-8 待确认清单（2026-11-11）：告诉用户「哪个章节哪一题出问题」。
+   要显眼但不红色报警——它是「需人核对」，不是「出错」。 */
+.pending-box{margin-top:10px;padding:8px 10px;border:1px solid #e6c98a;
+  border-radius:8px;background:#fffdf5}
+.pending-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin-bottom:6px;font-size:12.5px}
+.pending-box .stem{display:inline-block;max-width:320px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+@media (max-width:760px){
+  .pending-box .stem{max-width:160px}
+  .pending-head{font-size:13px}
+}
 .ops-sub{font-size:12.5px;font-weight:700;color:var(--txt);margin:12px 0 6px;
          padding-bottom:4px;border-bottom:1px dashed var(--line);
          letter-spacing:.04em}
@@ -3021,11 +3033,56 @@ function renderWork(state) {
   html += '<div class="muted" style="margin-top:8px">' +
     "答案已经填进浏览器页面（未提交）。请到那个 Chrome 窗口核对，确认无误后" +
     "<b>自己点「交卷」</b>——脚本连着浏览器时点交卷会点不动。</div>";
+  // G-8（2026-11-11 用户要求）：待确认清单。要求三件事 ——
+  //   ① 明确告诉「哪个章节哪里出问题」→ 每行写出 节名/第几题/原因
+  //   ② 记录留痕可查 → 数据来自 gx_pending 表（后端已带 pending/pending_counts）
+  //   ③ 可跳过继续下一题 → 不阻塞任务；这里只做展示与标记
+  html += renderPendingBlock(state);
   box.innerHTML = html;
+}
+
+// G-8：待确认清单。`state.pending` 只含**当前账号**（后端按 label 过滤），
+// `state.pending_counts` 是**全部账号**的合计（顶部红点用）。
+function renderPendingBlock(state) {
+  const rows = (state && state.pending) || [];
+  const counts = (state && state.pending_counts) || {};
+  const total = Number(counts.__total__ || 0);
+  if (!rows.length && !total) return "";
+  const REASON_CN = {
+    ai_used: "AI 生成（无平台标准答案）",
+    no_site_answer: "题库无标准答案",
+    low_confidence: "模型自评不太确定",
+    type_blocked: "题型未实测",
+    check_mismatch: "回填回读不一致",
+    subjective: "主观题（需人工核对）",
+  };
+  let h = '<div class="pending-box"><div class="pending-head">' +
+    '<span class="tag t-low">待确认 ' + esc(total) + " 题</span>" +
+    '<span class="muted">确认前不要交卷；可跳过继续下一题，任务不会被卡住</span>' +
+    "</div>";
+  if (rows.length) {
+    h += '<div class="table-wrap"><table><thead><tr>' +
+      "<th>节</th><th class=num>题</th><th>原因</th><th>题干</th><th>时间</th>" +
+      "</tr></thead><tbody>";
+    for (const r of rows) {
+      const reasons = (r.risk && r.risk.reasons) || [r.reason];
+      const why = reasons.map((x) => REASON_CN[x] || x).join("、");
+      h += "<tr><td>" + esc(r.section_name || r.section_id || "—") +
+        "</td><td class=num>" + esc(r.question_ordinal) + "</td>" +
+        '<td><span class="tag t-low" title="' + esc(why) + '">' +
+        esc(REASON_CN[r.reason] || r.reason) + "</span></td>" +
+        '<td><span class="stem" title="' + esc(r.stem) + '">' +
+        esc(r.stem) + "</span></td>" +
+        '<td class="muted">' + esc((r.created_at || "").slice(5, 16)) + "</td></tr>";
+    }
+    h += "</tbody></table></div>";
+  }
+  return h + "</div>";
 }
 
 const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
   "study-stop": "停止学习", "work-open": "打开练习", "work-fill": "回填完成",
+  "work-review": "待确认", "work-verify": "核对通过", "work-skip": "跳过该题",
   "work-submit": "交卷", "sections-read": "刷新节列表", "stop": "停止",
   "browser-start": "启动浏览器", "browser-stop": "停止浏览器",
   "session-check": "检查会话", "session-restore": "恢复登录",

@@ -39,6 +39,7 @@ from ..core import runmark
 from ..store import gxks_ai_config
 from ..store import gxks_ops
 from ..store import gxks_panel_settings
+from ..store import gxks_pending
 from ..store.schema_gxks import open_question_bank
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -1859,6 +1860,14 @@ def create_app(settings: Settings) -> FastAPI:
         db = open_question_bank(settings.data_dir / "gxks_questions.db")
         try:
             ops = gxks_ops.recent_ops(db, account_label=label or None, limit=60)
+            # G-8（2026-11-11）：待确认队列。必须在 close 之前查完 ——
+            # 原来我把查询写在 return 字典里，那时连接已关，实测报
+            # `sqlite3.ProgrammingError: Cannot operate on a closed database`。
+            # 前端「本次作答」区显示待确认清单，顶部红点用 `__total__`。
+            pending_rows = (gxks_pending.list_pending(
+                db, account_label=label, status=gxks_pending.PENDING, limit=100)
+                if label else [])
+            pending_counts = gxks_pending.pending_counts(db)
         finally:
             db.close()
         # 端口探活**一次并发做完**，卡片与浏览器区共用同一份结果。
@@ -1907,6 +1916,8 @@ def create_app(settings: Settings) -> FastAPI:
             "jobs": _jobs_snapshot(include_finished=True),
             "sections": sections or None,
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
+            "pending": pending_rows,
+            "pending_counts": pending_counts,
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
                         if label else None),
             # 全部账号的浏览器/会话状态（悬停预览用；键 = 账号代号）
