@@ -28,6 +28,7 @@ import os
 import random
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from xxt.config import find_project_root
@@ -199,6 +200,27 @@ def is_valid_label(label: str) -> bool:
     return bool(_LABEL_RE.match(str(label or "")))
 
 
+def suggest_label(existing: list[str] | tuple[str, ...] | set[str] = (),
+                  *, prefix: str = "user") -> str:
+    """为「没填代号」的新账号生成一个可用代号：`user01`、`user02`…
+
+    为什么不把中文名转拼音（用户 2026-11-23 决定）：
+    拼音要额外第三方依赖（`pypinyin`），多音字与重名仍要兜底；而 `label` 只是
+    **内部标识**（目录名 / 任务名 / 账本字段），给人看的名字放 `display` 字段，
+    面板「账号」列显示的就是 display，所以 `userNN` 完全够用。
+
+    ⚠ 代号必须匹配 `_LABEL_RE`（小写字母数字_-，≤24 字符）。两位补零到 99，
+    超过 99 自动用三位，因此不会因为账号多而撞名。
+    """
+    used = {str(x or "").strip().lower() for x in existing}
+    for n in range(1, 10000):
+        cand = f"{prefix}{n:02d}" if n < 100 else f"{prefix}{n}"
+        if len(cand) <= 24 and cand not in used:
+            return cand
+    # 理论上到不了这里（10000 个都占了）；给个明显可改的兜底
+    return f"{prefix}{datetime.now():%H%M%S}"
+
+
 # ------------------------------------------------------------------ 写：增删改
 
 #: 面板/脚本都会用的硬边界（越界**报错**，不静默钳制——静默钳制会让人以为改成功了）。
@@ -353,8 +375,14 @@ def save_account(
     rows = _read_raw_with_legacy(p)
 
     label = str(fields.get("label") or "").strip().lower()
+    # 代号留空 + 新增账号 → 自动生成 `user01`（用户 2026-11-23 决定：不加拼音库）。
+    # ⚠ 只对**新增**生效：编辑已有账号时 label 为空说明调用方没打算改代号，
+    # 直接换成 userNN 会让 profile/缓存/账本全部对不上（改代号=重命名，必须显式）。
+    if not label and not original_label:
+        label = suggest_label([str(r.get("label") or "") for r in rows])
     if not is_valid_label(label):
-        raise AccountError("代号只能用 a-z 0-9 _ -，且以字母或数字开头、不超过 24 个字符")
+        raise AccountError("代号只能用 a-z 0-9 _ -，且以字母或数字开头、不超过 24 个字符"
+                           "（留空会自动生成 user01 这类代号）")
 
     key = str(original_label or "").strip().lower()
     idx = next((i for i, r in enumerate(rows)

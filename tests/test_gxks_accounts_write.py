@@ -69,10 +69,27 @@ def test_save_creates_file_when_missing(tmp_path, monkeypatch) -> None:
 def test_save_rejects_bad_label(tmp_path) -> None:
     p = _seed(tmp_path, [])
     # 注意：`save_account` 先把代号 `.lower()` 再校验，所以 "A-B" 是合法的（存成 a-b）
-    for bad in ("甲同学", "a b", "", "-lead", "x" * 30, "a/b"):
+    # ⚠ 2026-11-23 起「留空自动生成 userNN」，所以 "" 不再是错误；
+    #    但**显式给了非法代号**仍必须拒（这里用非空非法值验）。
+    for bad in ("甲同学", "a b", "-lead", "x" * 30, "a/b"):
         with pytest.raises(acc.AccountError):
             acc.save_account({"label": bad, "port": 9222}, path=p)
     assert _read(p) == []
+
+
+def test_save_autogenerates_label_when_blank(tmp_path) -> None:
+    """2026-11-23（用户定案）：新增账号时代号留空 → 自动生成 user01、user02…
+
+    不加拼音库，直接用 `userNN` 递增。给人看的中文名放 `display`。
+    """
+    p = _seed(tmp_path, [])
+    a1 = acc.save_account({"label": "", "port": 9222, "display": "甲同学"}, path=p)
+    a2 = acc.save_account({"label": "", "port": 9223, "display": "乙同学"}, path=p)
+    assert a1.label == "user01"
+    assert a2.label == "user02"
+    assert a1.display == "甲同学"
+    assert a2.display == "乙同学"
+    assert [r["label"] for r in _read(p)] == ["user01", "user02"]
 
 
 def test_label_is_lowercased(tmp_path) -> None:
