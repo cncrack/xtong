@@ -151,6 +151,59 @@ class TestRegisterScript(unittest.TestCase):
         self.assertEqual(p.read_bytes()[:3], b"\xef\xbb\xbf")
 
 
+class TestTwoPhaseParallel(unittest.TestCase):
+    """**2026-11-23 用户实测「只启动一个」**：方案 B 只解决了文件隔离，
+    没解决批量循环仍逐个等端口（实测 2 个账号间隔 1 分 44 秒）。
+
+    修法（用户拍板方案 A）：拆成两阶段
+      ① `_trigger_chrome()` 只写 spec + `schtasks /run`，**立即返回不等端口**；
+      ② 全部触发完后，`_await_chrome_ready()` 统一等。
+    这样整批耗时 ≈ 最慢的一个，而不是 N 倍。
+
+    ⚠ 只对 `start-browser` 预触发：`start`/`start-and-study` 要按并发闸/额度
+    逐个判定，无条件预触发会让「本该被拦下」的账号也把 Chrome 起了。
+    """
+
+    def test_trigger_does_not_wait(self):
+        """`_trigger_chrome` 必须**不等端口**（否则又变串行）。"""
+        seg = APP_SRC.split("def _trigger_chrome(", 1)[1].split(
+            "def _await_chrome_ready", 1)[0]
+        self.assertNotIn("port_alive", seg)
+        self.assertNotIn("for _ in range(80)", seg)
+        self.assertIn('"triggered": True', seg)
+
+    def test_await_is_separate_function(self):
+        seg = APP_SRC.split("def _await_chrome_ready(", 1)[1][:900]
+        self.assertIn("port_alive", seg)
+        self.assertIn("for _ in range(80)", seg)
+
+    def test_single_account_still_triggers_then_awaits(self):
+        """单独点一个账号：触发后立即等（行为不变，用户不会觉得变慢）。"""
+        seg = APP_SRC.split("def _start_chrome_interactive_impl(", 1)[1][:800]
+        self.assertIn("_trigger_chrome(label, port)", seg)
+        self.assertIn("_await_chrome_ready(label, port, result)", seg)
+
+    def test_batch_pretriggers_all_then_waits(self):
+        """批量必须先全部触发，再进循环。"""
+        seg = APP_SRC.split('if action == "start-browser" and len(labels) > 1:', 1)[1][:700]
+        self.assertIn("pretriggered[label] = _trigger_chrome(", seg)
+
+    def test_pretrigger_only_for_start_browser(self):
+        """`start` 不能预触发（要过额度/并发闸）。"""
+        seg = APP_SRC.split("pretriggered: dict[str, dict[str, Any]] = {}", 1)[0][-400:]
+        self.assertIn('action == "start-browser"', APP_SRC)
+        # 确认 start-and-study 不在预触发条件里
+        cond = APP_SRC.split("pretriggered: dict[str, dict[str, Any]] = {}", 1)[1][:120]
+        self.assertIn('action == "start-browser"', cond)
+        self.assertNotIn("start-and-study", cond)
+
+    def test_browser_start_one_skips_retrigger(self):
+        """预触发过的账号只等端口，不能重复 /run（会多起实例）。"""
+        seg = APP_SRC.split("def _browser_start_one(", 1)[1][:2200]
+        self.assertIn("pretriggered", seg)
+        self.assertIn("_await_chrome_ready", seg)
+
+
 class TestAutoRegister(unittest.TestCase):
     def test_register_function_exists(self):
         self.assertIn("def _register_chrome_task(", APP_SRC)

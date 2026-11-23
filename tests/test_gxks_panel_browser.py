@@ -434,7 +434,10 @@ class TestGxksPanelBrowser(unittest.TestCase):
             body = self.client.post("/api/session/relogin", json={"label": "jia"}).json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["message"], "已重新登录")
-        self.assertIn("--relogin", run.call_args.args[0])
+        # 同上：按内容找 relogin 那条，不取最后一次调用
+        argv = next(c.args[0] for c in run.call_args_list
+                    if "--relogin" in c.args[0])
+        self.assertIn("--relogin", argv)
 
     def test_relogin_verify_code_stops_and_sends_human(self):
         (self.root / "data" / "account.local.json").write_text(
@@ -447,7 +450,12 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertTrue(body["need_human"])
         self.assertIn("验证码", body["error"])
-        argv = run.call_args.args[0]
+        # ⚠ 2026-11-23：`subprocess.run` 被全局 mock，而面板现在还会调
+        # `schtasks /query`（计划任务自动注册）等别的子进程。
+        # 不能直接取 `run.call_args`（那是最后一次调用，可能是 schtasks），
+        # 要**按内容找出 relogin 那条**。
+        argv = next(c.args[0] for c in run.call_args_list
+                    if "--relogin" in c.args[0])
         self.assertEqual(argv[argv.index("--port") + 1], "9222")   # 端口按账号表，不猜
 
 

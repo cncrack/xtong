@@ -375,6 +375,24 @@ def _start_chrome_interactive_impl(label: str, port: int) -> dict[str, Any]:
     tmp = ROOT / "data" / "tmp"
     spec = tmp / f"chrome_start_{label}.json"
     result = tmp / f"chrome_start_{label}.result.json"
+    res = _trigger_chrome(label, port)
+    if not res.get("ok"):
+        return res
+    return _await_chrome_ready(label, port, result)
+
+
+def _trigger_chrome(label: str, port: int) -> dict[str, Any]:
+    """**只触发**该账号的 Chrome 启动（写 spec + `schtasks /run`），**不等端口**。
+
+    2026-11-23 从 `_start_chrome_interactive_impl` 拆出，为了批量真并行：
+    批量时先对所有账号调本函数（每个几十毫秒），再统一用
+    `_await_chrome_ready()` 等端口 —— 而不是「起一个等一个」。
+
+    返回 `{"ok": bool, "error"?: str, "output"?: str}`。
+    """
+    tmp = ROOT / "data" / "tmp"
+    spec = tmp / f"chrome_start_{label}.json"
+    result = tmp / f"chrome_start_{label}.result.json"
     tmp.mkdir(parents=True, exist_ok=True)
     result.unlink(missing_ok=True)
     # 任务不存在就自动注册（用户 2026-11-23 选「方案 C」：预注册 + 懒注册）
@@ -429,7 +447,21 @@ def _start_chrome_interactive_impl(label: str, port: int) -> dict[str, Any]:
                              f"原始输出：{(done.stderr or done.stdout or '').strip()[:500]}\n"
                              f"排查：schtasks /query /tn {task_name} /fo LIST /v",
                     "output": f"{done.stdout or ''}{done.stderr or ''}"}
-    # 等 Chrome 冷启动 + 端口就绪（脚本自己最多等 30 秒，这里留点余量）
+    # 触发成功即返回，**不等端口**（等端口在 `_await_chrome_ready`）。
+    # 这样批量时可以先全部触发再统一等，避免「起一个等一个」变成串行。
+    return {"ok": True, "triggered": True}
+
+
+def _await_chrome_ready(label: str, port: int, result: Path) -> dict[str, Any]:
+    """等该账号端口的 Chrome 就绪；超时则读脚本写的结果文件拿错误原因。
+
+    ⚠ 2026-11-23 从 `_start_chrome_interactive_impl` 尾部**抽出来**：
+    批量启动时不能「起一个就等一个」（那等于串行，7 个账号要排队几分钟）。
+    现在拆成两阶段：
+      ① `_trigger_chrome(label, port)` 只写 spec + `schtasks /run`，**立即返回**；
+      ② 全部触发完后，再对每个账号调本函数统一等端口。
+    单独点一个账号时仍走「触发 → 立即等」，行为不变。
+    """
     for _ in range(80):
         time.sleep(0.5)
         if gchrome.port_alive(port):
@@ -1881,7 +1913,8 @@ def app_factory() -> FastAPI:
 
 
 def _browser_start_one(settings: Settings, label: str, *,
-                       run_session: Any) -> dict[str, Any]:
+                       run_session: Any,
+                       pretriggered: dict[str, Any] | None = None) -> dict[str, Any]:
     """为一个账号拉起 Chrome 并弄好登录态。返回面板回包（`ok`/`skipped`/`error`）。
 
     ## 为什么抽成模块级（2026-11-06 P1）
@@ -1913,7 +1946,15 @@ def _browser_start_one(settings: Settings, label: str, *,
     if any(j["label"] == acc.label for j in _jobs_snapshot()):
         return {"ok": False, "blocked": True,
                 "error": "该账号有任务在跑，先「停止」再启动浏览器"}
-    started = _start_chrome_interactive(acc.label, acc.port)
+    # 批量并行：调用方可能已经**提前触发**过（只 `schtasks /run`、没等端口），
+    # 这时这里只等端口，不再重复触发（重复 /run 会多起一个 Chrome 实例风险）。
+    pre = (pretriggered or {}).get(acc.label)
+    if pre is not None and pre.get("ok"):
+        started = _await_chrome_ready(
+            acc.label, acc.port,
+            ROOT / "data" / "tmp" / f"chrome_start_{acc.label}.result.json")
+    else:
+        started = _start_chrome_interactive(acc.label, acc.port)
     if not started.get("ok"):
         return {"ok": False, "error": started.get("error") or "Chrome 没起来"}
     _remember_browser(settings, acc.label, int(started.get("pid") or 0),
@@ -2572,6 +2613,28 @@ def create_app(settings: Settings) -> FastAPI:
             # 全局日总量闸（P2b）：**整批**先判一次。它不按账号细分，
             # 一旦今天合计学够了，这一批一个都不该起。
             fleet_refused = _check_fleet_daily(settings)
+        # ---- 批量启动浏览器：**两阶段并行**（2026-11-23 用户实测「只启动一个」）----
+        #
+        # 旧实现是「起一个 → 等端口就绪（最多 40 秒）→ 起下一个」，所以 2 个账号
+        # 实测间隔 1 分 44 秒，用户以为「只启动了一个」。方案 B 只解决了文件隔离，
+        # 没解决这个等待串行。
+        #
+        # 现在：**先把所有账号都触发了**（每个几十毫秒），进循环时端口大多已在起，
+        # `_browser_start_one` 内部的等待被大幅摊薄 → 整批耗时≈最慢的一个。
+        #
+        # ⚠ 只对 `start-browser` 做：`start`/`start-and-study` 要按并发闸/额度逐个
+        # 判定，不能无条件预触发（否则会被拦下的账号也把 Chrome 起了）。
+        pretriggered: dict[str, dict[str, Any]] = {}
+        if action == "start-browser" and len(labels) > 1:
+            for label in labels:
+                if alive_map.get(ports.get(label, 0)):
+                    continue          # 已经在跑，不用触发
+                try:
+                    pretriggered[label] = _trigger_chrome(
+                        label, ports.get(label, 0))
+                except Exception as exc:                       # noqa: BLE001
+                    pretriggered[label] = {"ok": False,
+                                           "error": f"{type(exc).__name__}: {exc}"}
         for label in labels:
             if action in ("start", "start-and-study"):
                 if fleet_refused:
@@ -2605,7 +2668,9 @@ def create_app(settings: Settings) -> FastAPI:
                     if got.get("ok"):
                         started_n += 1
             elif action == "start-browser":
-                got = _browser_start_one(settings, label, run_session=_session_script)
+                got = _browser_start_one(settings, label,
+                                         run_session=_session_script,
+                                         pretriggered=pretriggered)
             elif action == "stop":
                 got = _stop_one(settings, label)
             elif action in ("enable", "disable"):

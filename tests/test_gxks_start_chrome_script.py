@@ -101,9 +101,9 @@ class TestChromeSpecIncludesUrl(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "src"))
         from xxt.panel_gxks import app as A
         import inspect
-        # 2026-11-23 方案 B：写 spec 的是 `_start_chrome_interactive_impl`
-        # （旧的 `_locked` 版本已删 —— 不再需要串行锁，见下一条测试）。
-        src = inspect.getsource(A._start_chrome_interactive_impl)
+        # 2026-11-23 两阶段并行：写 spec 的是 `_trigger_chrome`
+        # （`_start_chrome_interactive_impl` 现在只负责「触发 + 等」的组合）。
+        src = inspect.getsource(A._trigger_chrome)
         self.assertIn('"url"', src)
         self.assertIn("MAIN_PAGE", src)
 

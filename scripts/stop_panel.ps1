@@ -40,9 +40,9 @@ if ($targets.Count -eq 0) {
     exit 0
 }
 
-foreach ($pid in $targets) {
-    Write-Output "  正在停止 PID $pid（含子进程）..."
-    & taskkill /PID $pid /T /F 2>&1 | ForEach-Object { "    $_" }
+foreach ($targetPid in $targets) {
+    Write-Output "  正在停止 PID $targetPid（含子进程）..."
+    & taskkill /PID $targetPid /T /F 2>&1 | ForEach-Object { "    $_" }
 }
 
 Start-Sleep -Milliseconds 800
