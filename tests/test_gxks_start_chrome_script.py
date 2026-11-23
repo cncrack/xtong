@@ -101,23 +101,34 @@ class TestChromeSpecIncludesUrl(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "src"))
         from xxt.panel_gxks import app as A
         import inspect
-        # 2026-11-07：真正写 spec 的是 `_start_chrome_interactive_locked`
-        # （外层 `_start_chrome_interactive` 只拿串行锁，防两个账号同时起浏览器互相覆盖 spec）。
-        src = inspect.getsource(A._start_chrome_interactive_locked)
+        # 2026-11-23 方案 B：写 spec 的是 `_start_chrome_interactive_impl`
+        # （旧的 `_locked` 版本已删 —— 不再需要串行锁，见下一条测试）。
+        src = inspect.getsource(A._start_chrome_interactive_impl)
         self.assertIn('"url"', src)
         self.assertIn("MAIN_PAGE", src)
 
-    def test_browser_start_is_serialized(self):
-        """**P1 回归**：`data/tmp/chrome_start.json` 全局唯一，两个账号同时起会互相覆盖。
+    def test_browser_start_is_parallel_per_account(self):
+        """**2026-11-23 方案 B**：多账号必须能**并行**启动，不再串行。
 
-        所以外层必须拿 `_CHROME_START_LOCK`。谁把锁去掉，这条立刻红。
+        历史：11-07 的 P1 用全局唯一 `chrome_start.json` + 进程内锁串行，
+        因为计划任务动作是注册时写死的、传不进参数。
+        但用户明确「账号数量多，必须能同时开」→ 改为：
+        每账号一个任务 `xxt-gxks-chrome-<label>`，`-Label` 在**注册时**写进动作，
+        spec/result 文件按 label 分开 → 互不覆盖，可并行，无账号数上限。
+
+        谁把串行锁加回来、或把文件改成全局唯一，这条立刻红。
         """
         sys.path.insert(0, str(ROOT / "src"))
         from xxt.panel_gxks import app as A
         import inspect
-        src = inspect.getsource(A._start_chrome_interactive)
-        self.assertIn("_CHROME_START_LOCK", src)
-        self.assertIn("locked", src, "外层应转调 locked 版本，而不是自己写 spec")
+        src = inspect.getsource(A._start_chrome_interactive_impl)
+        self.assertNotIn("_CHROME_START_LOCK", src)
+        # 文件必须按 label 分开
+        self.assertIn('chrome_start_{label}.json', src)
+        self.assertIn('chrome_start_{label}.result.json', src)
+        # 外层只做转调，不自己写 spec
+        outer = inspect.getsource(A._start_chrome_interactive)
+        self.assertIn("_start_chrome_interactive_impl", outer)
 
 
 if __name__ == "__main__":

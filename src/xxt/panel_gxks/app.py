@@ -66,16 +66,117 @@ def _job_key(label: str, kind: str) -> str:
 # 面板自己拉起的浏览器（只记我们起的，用于"停止浏览器"时只杀自己那一只）
 _BROWSERS: dict[str, dict[str, Any]] = {}
 _BROWSER_LOCK = threading.Lock()
-_CHROME_TASK = "xxt-gxks-chrome"   # 交互式计划任务（见 scripts/start_chrome.ps1）
+#: 旧版全局任务名。**保留不删**（用户 2026-11-23 同意）：
+#: 本仓库可能有其它 worktree（`E:\xxt`）或手工脚本仍在用它。
+#: 新代码一律用 `_chrome_task_name(label)` 生成带账号代号的任务名。
+_CHROME_TASK = "xxt-gxks-chrome"
 
-#: 串行化「启动浏览器」：计划任务与 `data/tmp/chrome_start.json` 都是**全局唯一**的，
-#: 两个账号同时点「启动并登录」会互相覆盖 spec（后写的赢）→ 起错 profile / 端口对不上，
-#: 而且两边的 result 文件也会互相踩（2026-11-07 查出的 P1）。
-#: 用**进程内互斥**而不是按 label 分文件：计划任务的动作是注册时写死的
-#: `-File start_chrome.ps1`，运行期传不进参数/环境变量，分文件只会让脚本找不到 spec。
-#: 代价：两个账号的启动会排队（每个 10~40 秒），这本来就是可接受的 —— 同时开两个
-#: Chrome 反而抢资源。
-_CHROME_START_LOCK = threading.Lock()
+#: 串行化**任务注册**（只注册串行；启动本身并行，见方案 B）。
+_TASK_REGISTER_LOCK = threading.Lock()
+
+_CHROME_TASK_PREFIX = "xxt-gxks-chrome"
+
+
+def _chrome_task_name(label: str) -> str:
+    """该账号的计划任务名：`xxt-gxks-chrome-<label>`（2026-11-23 方案 B）。
+
+    `label` 是**账号代号**（`[a-z0-9_-]`，见 `accounts._LABEL_RE`），不是序号也不是端口：
+    - 用序号会随排序/删除/筛选变化，不能当唯一标识；
+    - 用端口则用户改端口后面板上的「随机」按钮会让旧任务失效；
+    - label 是账号的固定身份，改名才变（改名本身就是一种重命名操作）。
+    """
+    return f"{_CHROME_TASK_PREFIX}-{label}"
+
+
+def _chrome_script_path() -> Path:
+    return ROOT / "scripts" / "start_chrome.ps1"
+
+
+def _schtasks_available() -> bool:
+    """`schtasks` 是否可用（非 Windows / 受限环境下降级，不抛错）。"""
+    return os.name == "nt"
+
+
+def _register_chrome_task(label: str) -> dict[str, Any]:
+    """注册该账号的交互式计划任务（幂等）。返回 `{ok, error?}`。
+
+    为什么要自动注册（用户 2026-11-23 选「方案 C」）：账号会有很多，
+    让用户手工为每个账号跑一遍 `Register-ScheduledTask` 不现实。
+    这里用 PowerShell 的 ScheduledTasks 模块注册，与用户手工执行的那条命令等价。
+
+    ⚠ **只串行注册**（`_TASK_REGISTER_LOCK`）；注册完的启动是并行的。
+    """
+    name = _chrome_task_name(label)
+    with _TASK_REGISTER_LOCK:
+        # 已存在就不重复注册（幂等）
+        try:
+            probe = subprocess.run(
+                ["schtasks", "/query", "/tn", name],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=20)
+            if probe.returncode == 0:
+                return {"ok": True, "created": False}
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        script = _chrome_script_path()
+        ps = (
+            f'$a=New-ScheduledTaskAction -Execute powershell.exe '
+            f'-Argument "-NoProfile -ExecutionPolicy Bypass -File \\"{script}\\" -Label {label}";'
+            f'$p=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" '
+            f'-LogonType Interactive -RunLevel Limited;'
+            f'Register-ScheduledTask -TaskName "{name}" -Action $a -Principal $p -Force '
+            f'| Out-Null; Write-Output "REGISTERED"'
+        )
+        try:
+            done = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "注册计划任务超时（60 秒）"}
+        except OSError as exc:
+            return {"ok": False, "error": f"无法调用 powershell：{exc}"}
+        if done.returncode == 0 and "REGISTERED" in (done.stdout or ""):
+            return {"ok": True, "created": True}
+        return {"ok": False,
+                "error": "自动注册计划任务失败。\n"
+                         f"stdout: {(done.stdout or '').strip()[:400]}\n"
+                         f"stderr: {(done.stderr or '').strip()[:400]}\n"
+                         f"可手工执行：\n{_manual_register_hint(label)}"}
+
+
+def _manual_register_hint(label: str) -> str:
+    """注册失败的兜底：给用户可直接复制的一条命令。"""
+    name = _chrome_task_name(label)
+    script = _chrome_script_path()
+    return (
+        f'$a=New-ScheduledTaskAction -Execute powershell.exe -Argument '
+        f'"-NoProfile -ExecutionPolicy Bypass -File {script} -Label {label}";'
+        f'$p=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" '
+        f'-LogonType Interactive -RunLevel Limited;'
+        f'Register-ScheduledTask -TaskName {name} -Action $a -Principal $p -Force'
+    )
+
+
+def _chrome_task_state(label: str) -> dict[str, Any]:
+    """查该账号任务是否已注册（面板显示用，不阻塞）。"""
+    name = _chrome_task_name(label)
+    try:
+        done = subprocess.run(
+            ["schtasks", "/query", "/tn", name, "/fo", "LIST"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15)
+    except (subprocess.TimeoutExpired, OSError):
+        return {"name": name, "registered": False, "state": "unknown"}
+    if done.returncode != 0:
+        return {"name": name, "registered": False, "state": "missing"}
+    state = ""
+    for line in (done.stdout or "").splitlines():
+        if line.strip().startswith("Status:"):
+            state = line.split(":", 1)[1].strip()
+            break
+    return {"name": name, "registered": True, "state": state or "Ready"}
+
 
 # ------------------------------------------------------------------ 日志推送
 #
@@ -206,38 +307,54 @@ def _start_chrome_interactive(label: str, port: int) -> dict[str, Any]:
 
     ## 为什么不能直接 Popen
 
-    面板本身跑在后台计划任务（非交互会话）里，由它 `subprocess.Popen` 起的 Chrome
+    面板本身可能跑在后台计划任务（非交互会话）里，由它 `subprocess.Popen` 起的 Chrome
     **拿不到桌面、直接退出** → 调试端口永远起不来。实测：同一组参数从交互式 shell
     起就 100% 正常，从面板起永远是「Chrome 起来了但端口没响应」。
 
-    ## 做法
+    ## 做法（2026-11-23 方案 B 改造）
 
-    计划任务 `xxt-gxks-chrome`（`-LogonType Interactive`）跑
-    `scripts/start_chrome.ps1`（有桌面）。面板只写参数文件 → 触发 → 读结果。
-    Chrome 因此**不属于面板的子进程**，面板重启/退出都不会带走它。
+    每账号一个计划任务 `xxt-gxks-chrome-<label>`（`-LogonType Interactive`）跑
+    `scripts/start_chrome.ps1 -Label <label>`（有桌面）。面板只写该账号的参数文件
+    → 触发该账号的任务 → 读该账号的结果。Chrome 因此**不属于面板的子进程**，
+    面板重启/退出都不会带走它。
 
-    返回 `{"ok": bool, "pid"?: int, "error"?: str}`。
+    ## 并发（2026-11-23 改：**不再串行**）
 
-    ## 并发安全（2026-11-07 修的 P1）
+    旧版（11-07 的 P1）用全局唯一的 `chrome_start.json` + 进程内互斥锁串行，
+    因为计划任务动作是注册时写死的、传不进参数。**账号一多就只能排队**
+    （每个 10~40 秒），用户明确「账号数量多，必须能同时开」。
 
-    `data/tmp/chrome_start.json` 与 `chrome_start.result.json` 是**全局唯一**的两个文件，
-    计划任务的动作也在注册时写死。两个账号同时点「启动并登录」时，后写的 spec 会覆盖
-    前一个 → 起错 profile / 端口对不上，result 也会互相踩。
-    所以整个「写 spec → 触发 → 等端口」必须**串行**（`_CHROME_START_LOCK`）。
-    代价是第二个账号要排队等前一个起完（10~40 秒），这是可接受的：同时开两个 Chrome
-    反而抢资源。
+    现在：`-Label` 在**注册任务时写进动作**，各账号 spec/result 文件按 label 分开，
+    互不覆盖 → **多账号可真并行**，无账号数上限。
+
+    ⚠ Chrome 本身仍会抢资源；如需限制同时启动数，由面板的并发闸控制（不是这里）。
     """
-    with _CHROME_START_LOCK:
-        return _start_chrome_interactive_locked(label, port)
+    return _start_chrome_interactive_impl(label, port)
 
 
-def _start_chrome_interactive_locked(label: str, port: int) -> dict[str, Any]:
-    """`_start_chrome_interactive` 的实际实现（调用方必须已持有 `_CHROME_START_LOCK`）。"""
+def _start_chrome_interactive_impl(label: str, port: int) -> dict[str, Any]:
+    """真正执行启动（2026-11-23 方案 B：**不再持锁**，各账号并行）。
+
+    与旧版的区别：
+    - spec/result 文件**按 label 分开**（`chrome_start_<label>.json`），互不覆盖；
+    - 每个账号有自己的计划任务 `xxt-gxks-chrome-<label>`（任务不存在则自动注册）；
+    - 删掉了进程内串行锁 —— 账号数量多时必须能同时起。
+    """
     tmp = ROOT / "data" / "tmp"
-    spec = tmp / "chrome_start.json"
-    result = tmp / "chrome_start.result.json"
+    spec = tmp / f"chrome_start_{label}.json"
+    result = tmp / f"chrome_start_{label}.result.json"
     tmp.mkdir(parents=True, exist_ok=True)
     result.unlink(missing_ok=True)
+    # 任务不存在就自动注册（用户 2026-11-23 选「方案 C」：预注册 + 懒注册）
+    task_name = _chrome_task_name(label)
+    probe = subprocess.run(["schtasks", "/query", "/tn", task_name],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=20) \
+        if _schtasks_available() else None
+    if probe is not None and probe.returncode != 0:
+        reg = _register_chrome_task(label)
+        if not reg.get("ok"):
+            return {"ok": False, "error": reg.get("error") or "计划任务注册失败"}
     # 带上启动 URL（`selectors.MAIN_PAGE`，学习入口）：不给 URL 时 Chrome 停在
     # `chrome://new-tab-page/`，而刷课脚本要求页面里已有课程列表帧（cdp 模式故意
     # 不导航，免得打断人工操作）→ 点「开始学习」会立刻报「找不到平台页面」。
@@ -247,22 +364,39 @@ def _start_chrome_interactive_locked(label: str, port: int) -> dict[str, Any]:
     spec.write_text(json.dumps({"label": label, "port": int(port),
                                 "url": selectors.MAIN_PAGE}), encoding="utf-8")
     try:
-        done = subprocess.run(["schtasks", "/run", "/tn", _CHROME_TASK],
+        done = subprocess.run(["schtasks", "/run", "/tn", task_name],
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=20)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "触发计划任务超时"}
+        return {"ok": False, "error": "触发计划任务超时（20 秒）"}
+    # **报错必须如实**（2026-11-23 修的真 bug）：旧版只要 returncode != 0 就
+    # 一律说「任务不存在」，把用户引向重复注册；而实际上可能是权限、瞬时失败等。
+    # 这里按 stderr/stdout 原文分支，并把原始输出带回，绝不丢弃。
     if done.returncode != 0:
-        task = ROOT / "scripts" / "start_chrome.ps1"
-        return {"ok": False,
-                "error": "交互式任务 xxt-gxks-chrome 不存在或起不来。\n"
-                         "在**你自己的 PowerShell 窗口**里执行一次（只需一次，之后一直有效）：\n"
-                         f'$a=New-ScheduledTaskAction -Execute powershell.exe -Argument '
-                         f'"-NoProfile -ExecutionPolicy Bypass -File {task}";'
-                         f'$p=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" '
-                         f'-LogonType Interactive -RunLevel Limited;'
-                         f'Register-ScheduledTask -TaskName {_CHROME_TASK} -Action $a '
-                         f'-Principal $p -Force'}
+        blob = f"{done.stdout or ''}\n{done.stderr or ''}".lower()
+        if "currently running" in blob:
+            # 任务正在跑：不是错误，等它把端口起来即可
+            pass
+        elif "cannot find" in blob or "找不到" in blob:
+            return {"ok": False,
+                    "error": "计划任务不存在且自动注册未生效。\n"
+                             f"任务名：{task_name}\n"
+                             "请在你的 PowerShell 窗口执行一次：\n"
+                             + _manual_register_hint(label),
+                    "output": f"{done.stdout or ''}{done.stderr or ''}"}
+        elif "access is denied" in blob or "拒绝访问" in blob:
+            return {"ok": False,
+                    "error": "无权触发计划任务（Access is denied）。\n"
+                             "请以管理员身份启动面板，或在任务计划程序里确认该任务属于当前用户。\n"
+                             f"任务名：{task_name}",
+                    "output": f"{done.stdout or ''}{done.stderr or ''}"}
+        else:
+            return {"ok": False,
+                    "error": f"触发计划任务失败（returncode={done.returncode}）。\n"
+                             f"任务名：{task_name}\n"
+                             f"原始输出：{(done.stderr or done.stdout or '').strip()[:500]}\n"
+                             f"排查：schtasks /query /tn {task_name} /fo LIST /v",
+                    "output": f"{done.stdout or ''}{done.stderr or ''}"}
     # 等 Chrome 冷启动 + 端口就绪（脚本自己最多等 30 秒，这里留点余量）
     for _ in range(80):
         time.sleep(0.5)
@@ -1835,6 +1969,27 @@ def create_app(settings: Settings) -> FastAPI:
     except Exception:                                      # noqa: BLE001
         pass
 
+    # **预注册各账号的交互式计划任务**（2026-11-23 方案 C）。
+    # 用户要求「启动时预注册 + 新增账号时懒注册」，这样点「启动并登录」时是秒起。
+    # ⚠ 放后台线程：`schtasks /query` 每个账号一次，7 个就是 7 次子进程，
+    # 同步做会让面板启动白等几秒；而且注册失败不该阻塞面板可用。
+    def _preregister_chrome_tasks() -> None:
+        try:
+            accounts_now = gaccounts.load_accounts()
+        except Exception:                                  # noqa: BLE001
+            return
+        for acc in accounts_now:
+            if not acc.enabled:
+                continue
+            try:
+                _register_chrome_task(acc.label)
+            except Exception:                              # noqa: BLE001
+                continue                                   # 单个失败不影响其他账号
+
+    if _schtasks_available():
+        threading.Thread(target=_preregister_chrome_tasks,
+                         name="gxks-chrome-tasks", daemon=True).start()
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         # ⚠ 必须显式禁缓存（2026-11-02 用户反复"看不到新功能"的真因）：
@@ -1920,6 +2075,9 @@ def create_app(settings: Settings) -> FastAPI:
             "pending_counts": pending_counts,
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
                         if label else None),
+            # 该账号的交互式计划任务状态（2026-11-23 方案 B）：面板显示「已注册 / 未注册」，
+            # 下次真出问题时一眼看到，不用猜。查一次 schtasks，只在有 label 时做。
+            "chrome_task": _chrome_task_state(label) if label else None,
             # 全部账号的浏览器/会话状态（悬停预览用；键 = 账号代号）
             "browsers": browsers,
             # AI 配置（厂商列表 + 当前选中 + **是否配了 Key**；Key 本身永不回显）

@@ -22,15 +22,28 @@
 # 按系统 ANSI（中文系统是 GBK）读，中文注释会变成乱码并**导致解析失败**
 # （2026-11-03 踩过：任务结果码 1、无任何输出）。改动后请确认 BOM 还在。
 
+param(
+    # 账号代号（如 jia / default）。2026-11-23 方案 B：
+    # 每个账号一个计划任务，`-Label` 在**注册任务时**就写进动作，
+    # 运行期不需要传参（schtasks 传不进参数）。
+    # 留空 = 回落旧的全局单文件行为（兼容手工 / 旧任务调用）。
+    [string]$Label = ""
+)
+
 $ErrorActionPreference = "Stop"
 # 仓库根 = 本脚本的上一级。不写死盘符：同一仓库有多个 worktree（E:\xxt / E:\xxt-gxks）。
 $root = Split-Path -Parent $PSScriptRoot
-# ⚠ 参数文件名是**固定的**，一次只能有一个待处理的启动请求。
-# 并发安全靠面板侧的进程内互斥锁（`_start_chrome_interactive` 里的 `_CHROME_START_LOCK`），
-# 不靠"文件名带 label" —— 计划任务的动作是启动时注册死的（`-File <本脚本>`），
-# 传不进每次运行的环境变量/参数，按 label 分文件只会让脚本找不到 spec。
-$specPath = Join-Path $root "data\tmp\chrome_start.json"
-$resultPath = Join-Path $root "data\tmp\chrome_start.result.json"
+# ⚠ 文件名规则（2026-11-23 方案 B）：
+#   有 -Label → `chrome_start_<label>.json`，各账号**各自独立**，可并行启动；
+#   无 -Label → 回落 `chrome_start.json`，行为与旧版完全一致（不破坏已有手工用法）。
+# 旧版是全局唯一一个 spec，靠面板侧互斥锁串行 —— 账号一多就排队，已废弃。
+if ([string]::IsNullOrWhiteSpace($Label)) {
+    $specPath = Join-Path $root "data\tmp\chrome_start.json"
+    $resultPath = Join-Path $root "data\tmp\chrome_start.result.json"
+} else {
+    $specPath = Join-Path $root "data\tmp\chrome_start_$Label.json"
+    $resultPath = Join-Path $root "data\tmp\chrome_start_$Label.result.json"
+}
 
 function Write-Result($obj) {
     ($obj | ConvertTo-Json -Depth 5) | Set-Content -Path $resultPath -Encoding UTF8

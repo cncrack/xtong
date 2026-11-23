@@ -2283,12 +2283,22 @@ function renderBrowser(state, browser, label) {
     ? "· " + (card.display || card.label) + "（端口 " + (b.port || "?") + "）"
     : "";
   // 三枚标签排一行（用户 2026-11-02 截图要求），见 .b-tags
+  // + 交互式计划任务状态（2026-11-23 方案 B）：每账号一个任务，
+  // 未注册时会自动注册，但**注册失败**是「启动不了浏览器」的常见原因，
+  // 所以必须让用户一眼能看到，而不是等点了按钮才报错。
+  const task = (state && state.chrome_task) || null;
   let html = '<div class="b-tags">' +
     '<span class="tag ' + (managed ? "t-ai" : "t-bank") + '">' +
     (managed ? "managed · 程序自起（容器形态）" : "cdp · 连你已开的 Chrome") + "</span>" +
     '<span class="tag ' + (b.port_alive ? "t-done" : "t-none") + '">端口 ' +
     esc(b.port) + (b.port_alive ? " 活着" : " 未监听") + "</span>" +
     (b.started_by_panel ? '<span class="tag t-learn">面板启动 · ' + esc(b.since) + "</span>" : "") +
+    (task
+      ? '<span class="tag ' + (task.registered ? "t-done" : "t-low") +
+        '" title="交互式计划任务：' + esc(task.name || "") +
+        '（每个账号一个，首次使用时自动注册）">任务' +
+        (task.registered ? " 已注册" : " 未注册") + "</span>"
+      : "") +
     "</div>";
   // 登录状态写到「会话」行末尾的占位里（用户 2026-11-02：「可以把已登录放在这一行」）
   //
