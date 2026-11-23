@@ -5,13 +5,18 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-GXKS_SCHEMA_VERSION = 3
+GXKS_SCHEMA_VERSION = 4
 # 1 → 2（2026-10-30）：仅新增 `gx_q_items.fingerprint` 索引。
 #   跨节同题（题 ID 不同、内容相同）靠 fingerprint 归并，导出时不必全表扫。
 # 2 → 3（2026-10-30）：新增 `gx_ops` 操作日志表。面板要“记录操作记录”
 #   （用户原话），而超星的 `run_logs` 是账号 + 章节维度、绑 `accounts` 表，
 #   新站账号用 `account_label`，两边表结构不同，因此单独建表而不是复用。
 #   建表语句全部 IF NOT EXISTS，旧库（版本 1/2）可原地升到 3，不重建数据。
+# 3 → 4（2026-11-11）：新增 `gx_pending` 待人工确认队列表（G-8 定稿）。
+#   为什么不能复用 gx_ops：那是**只追加流水**，改不了状态；队列需要
+#   pending → verified/skipped/expired/submitted 的状态迁移 + 「谁、何时、
+#   怎么决定」的留痕。用户 11-11 明确「按建议还是建 gx_pending 表」。
+#   同样全部 IF NOT EXISTS，旧库原地升级。
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -95,6 +100,34 @@ CREATE TABLE IF NOT EXISTS gx_ops (
 );
 CREATE INDEX IF NOT EXISTS gx_ops_by_account ON gx_ops(account_label, id);
 CREATE INDEX IF NOT EXISTS gx_ops_by_action ON gx_ops(action, id);
+
+-- G-8（2026-11-11）：待人工确认队列。一行 = **一题**的风险，不是一整卷，
+-- 因为用户要求「明确告诉是哪个章节哪里出问题了」+「可以跳过继续下一题」。
+-- 主观题禁止自动入库/共享（见 gxks_questions.objective_registry），
+-- 但主观题的待确认记录照样进这张表（人核对或重新生成）。
+CREATE TABLE IF NOT EXISTS gx_pending (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    account_label TEXT NOT NULL,
+    course_id TEXT NOT NULL DEFAULT '',
+    section_id TEXT NOT NULL DEFAULT '',
+    section_name TEXT NOT NULL DEFAULT '',
+    exercise_id TEXT NOT NULL DEFAULT '',
+    question_ordinal INTEGER NOT NULL,
+    type_code TEXT NOT NULL DEFAULT '',
+    stem TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL,
+    risk_json TEXT,
+    work_file TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT NOT NULL DEFAULT '',
+    decided_at TEXT NOT NULL DEFAULT '',
+    decision_note TEXT NOT NULL DEFAULT '',
+    op_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS gx_pending_by_account ON gx_pending(account_label, status, id);
+CREATE INDEX IF NOT EXISTS gx_pending_by_status ON gx_pending(status, id);
 """
 
 

@@ -26,6 +26,9 @@ ACTIONS = (
     "study-stop",    # 主动停止学习
     "work-open",     # 打开某节练习（新建答卷）
     "work-fill",     # 题目已回填（不提交）
+    "work-review",   # G-8：产出待确认清单（哪题不确定、为什么）
+    "work-verify",   # G-8：人工核对通过
+    "work-skip",     # G-8：跳过该题 / 转人工（继续下一题，不阻塞）
     "work-submit",   # 交卷（人工或 auto_submit）
     "sections-read", # 读了一次节列表（面板「刷新」）
     "browser-start", # 面板拉起了该账号的 Chrome（本机 cdp 形态）

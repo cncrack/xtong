@@ -212,6 +212,39 @@ def _norm(text: object) -> str:
     return " ".join(str(text or "").split())
 
 
+# ---------------------------------------------------------------- 客观题共享闸门
+# 用户 2026-11-11 定案：「客观题（单选/多选/判断）如果有账号做过、提交了，
+# 答案正确可以直接收入库中，其它账号直接从题库调用；主观题就不行」。
+#
+# 题型代码来自平台自带的 `tx_arr`（见 work.parse_tx_arr），名称不必我们维护。
+# 这里只认**已实测**的客观题代码；未列出的（含简答/论述/操作题）一律不进共享池。
+# 已实测：2 = 单选（allowed_types 默认值）。多选/判断等放行后把代码加进这里即可，
+# 这就是「题库结构留扩展余地」的落点。
+OBJECTIVE_TYPE_CODES = frozenset({"2"})
+
+
+def is_objective(type_code: str) -> bool:
+    """该题型是不是客观题（答案唯一、可跨账号共享标准答案）。"""
+    return str(type_code or "").strip() in OBJECTIVE_TYPE_CODES
+
+
+def objective_registry(conn: sqlite3.Connection, *, type_code: str,
+                       standard_source: str | None) -> bool:
+    """判断一份答案证据**能否进入共享答案池**。
+
+    三条同时满足：
+    ① 是客观题（主观题禁止共享，用户定案）；
+    ② `standard_source == 'site'`（平台判分页给出的客观标准答案，不是 AI 推的）；
+    ③ 查库侧 `lookup_answer` 本来也只认 site，这里保持一致。
+
+    ⚠ 注意「做对了才收入」：用户说的是答案**正确**才入库。本函数只判题型与来源，
+    `is_correct` 的真伪由调用方（导入流水线）按判分页决定——见
+    `import_bundle` 的 `answer.is_correct` 字段。两者分开，避免把
+    「答错的题的标准答案」误当成「这题不能共享」（答错时标准答案依然可信）。
+    """
+    return is_objective(type_code) and standard_source == "site"
+
+
 def lookup_answer(conn: sqlite3.Connection, *, stem: str, options: list[str]) -> dict | None:
     """按题干 + 选项查题库里的**平台标准答案**（在线作答用）。
 
@@ -229,9 +262,13 @@ def lookup_answer(conn: sqlite3.Connection, *, stem: str, options: list[str]) ->
     if not stem_norm or not opts_norm:
         return None
     item_rows = conn.execute(
-        "SELECT id FROM gx_q_items WHERE stem = ? ORDER BY id DESC", (stem_norm,)
+        "SELECT id, type_code FROM gx_q_items WHERE stem = ? ORDER BY id DESC", (stem_norm,)
     ).fetchall()
-    for (item_id,) in item_rows:
+    for item_id, type_code in item_rows:
+        # ⚠ 主观题禁止共享（用户 2026-11-11 定案）：即使判分页里带 site 标准答案，
+        # 也不给别的账号用——简答/论述答案不唯一，跨账号复用会误导。
+        if not is_objective(type_code):
+            continue
         part_rows = conn.execute(
             "SELECT part_key, content_json FROM gx_q_parts "
             "WHERE item_id = ? AND kind = 'option' ORDER BY ordinal", (item_id,)
