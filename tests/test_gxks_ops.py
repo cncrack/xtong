@@ -16,14 +16,23 @@ def _conn(tmp_path) -> sqlite3.Connection:
     return conn
 
 
-def test_schema_version_is_three_and_has_ops_table(tmp_path):
+def test_schema_version_is_four_and_has_ops_table(tmp_path):
+    """v3 → v4（2026-11-11）：新增 `gx_pending`，`gx_ops` 结构不变。
+
+    ⚠ 这里只断言「等于 `GXKS_SCHEMA_VERSION`」+ 版本下限，
+    不再硬编码具体数字 —— 否则每次升版都要改这条测试（11-11 踩过）。
+    """
     with closing(_conn(tmp_path)) as conn:
         ver = conn.execute(
             "SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()[0]
-        assert int(ver) == GXKS_SCHEMA_VERSION == 3
+        assert int(ver) == GXKS_SCHEMA_VERSION >= 4
         cols = {r[1] for r in conn.execute("PRAGMA table_info(gx_ops)")}
         assert {"at", "account_label", "action", "result", "detail",
                 "payload_json"} <= cols
+        # v4 新增的表
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gx_pending'"
+        ).fetchone()
 
 
 def test_migrate_is_idempotent(tmp_path):
