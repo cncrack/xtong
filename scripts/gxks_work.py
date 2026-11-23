@@ -39,9 +39,15 @@ from xxt.adapters.gxks import work as gwork  # noqa: E402
 from xxt.ai.llm import LLMClient, LLMError  # noqa: E402
 from xxt.ai.quiz import build_messages, parse_llm_json  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
-from xxt.store import gxks_ops  # noqa: E402
-from xxt.store.gxks_questions import lookup_answer  # noqa: E402
+from xxt.store import gxks_ops, gxks_pending  # noqa: E402
+from xxt.store.gxks_questions import is_objective, lookup_answer  # noqa: E402
 from xxt.store.schema_gxks import open_question_bank  # noqa: E402
+
+#: 模型自报置信度低于它 → 在核对单里标「模型自己说不太确定」。
+#: ⚠ **只作展示提示，不作任何闸门**（2026-11-11 用户质疑后修正）：
+#: 这个数来自 LLM 自己输出，没有校准、也不是准确率，拿它决定「能不能自动交卷」
+#: 等于把判断权交给模型的自评。真正的闸门是「题库里有没有平台 site 标准答案」。
+LOW_CONFIDENCE = 0.85
 
 EXIT_OK, EXIT_NO_PAGE, EXIT_LOGIN, EXIT_TYPE, EXIT_FAIL = 0, 2, 3, 4, 5
 
@@ -86,6 +92,64 @@ def _make_llm(settings: Settings, chapter: str) -> Callable[[dict], dict]:
                 "reason": data.get("reason", "")}
 
     return ask
+
+
+def build_review(plan: list[dict], *, low_confidence: float = LOW_CONFIDENCE) -> dict:
+    """G-9 第 1 级 + G-8：产出「交卷前核对单」的风险明细（纯函数，可离线测）。
+
+    用户 2026-11-11 定案两条，都很容易写错：
+
+    ① **`confidence` 不作闸门**。它是 `_make_llm` 里 LLM 自报的
+       `data.get("confidence", 0.0)` —— 主观、无校准、不是答案准确率。
+       只作展示提示（「模型自己说不太确定」），不参与任何自动决策。
+
+    ② **客观题 / 主观题分开**：
+       - 客观题（单选/多选/判断）答案唯一。命中题库 `site` 标准答案就直接用；
+         没有才走 AI，并标 `no_site_answer` 等人核对（待验证）。
+       - 主观题答案不唯一，**禁止自动入库、禁止跨账号共享**
+         （见 `gxks_questions.objective_registry`），一律进待确认。
+
+    唯一的硬条件 = 该题有没有平台 `site` 标准答案，由 `source == "bank"` 表达
+    （`lookup_answer` 只认 `standard_source='site'`）。
+
+    `auto_eligible` 只表示「数据上满足 G-9 第 2 级的条件」，
+    **本轮第 2 级仍未启用**（见 devlog 2026-11-11-02），调用方不得据此直接交卷。
+    """
+    risks: list[dict] = []
+    for p in plan:
+        objective = is_objective(str(p.get("type_code") or ""))
+        reasons: list[str] = []
+        if not objective:
+            reasons.append("subjective")
+        if p.get("source") == "ai":
+            reasons.append("ai_used")
+            if objective:
+                reasons.append("no_site_answer")
+        conf = float(p.get("confidence") or 0.0)
+        if p.get("source") == "ai" and conf < low_confidence:
+            reasons.append("low_confidence")
+        if reasons:
+            risks.append({
+                "ordinal": int(p["ordinal"]),
+                "type_code": str(p.get("type_code") or ""),
+                "type_name": str(p.get("type_name") or ""),
+                "stem": str(p.get("stem") or ""),
+                "source": p.get("source"),
+                "confidence": conf,
+                "reasons": reasons,
+                "primary_reason": reasons[0],
+            })
+    counts = {
+        "total": len(plan),
+        "bank": sum(1 for p in plan if p.get("source") == "bank"),
+        "ai": sum(1 for p in plan if p.get("source") == "ai"),
+        "risk": len(risks),
+    }
+    auto_eligible = bool(plan) and all(
+        is_objective(str(p.get("type_code") or "")) and p.get("source") == "bank"
+        for p in plan
+    )
+    return {"risks": risks, "counts": counts, "auto_eligible": auto_eligible}
 
 
 def _ensure_login(page, settings: Settings, label: str = "") -> bool:
@@ -203,16 +267,24 @@ def main() -> int:
             print("[4/4] 只出答案，未动页面（reference 模式）")
 
         items = [{"ordinal": p["ordinal"], "qid": p["qid"],
+                  "type_code": p.get("type_code", ""),
                   "type_name": p["type_name"], "stem": p["stem"],
                   "options": p["options"], "keys": p["keys"],
                   "answer_text": _answer_text(p, p["keys"]),
                   "source": p["source"], "confidence": p["confidence"],
                   "reason": p["reason"]} for p in plan]
+        review = build_review(plan, low_confidence=LOW_CONFIDENCE)
+        pending_ids: list[int] = []
+        if do_fill and do_submit and not review["auto_eligible"]:
+            print("[!] risky items found -> auto submit skipped")
+            do_submit = False
+
         result = {
             "ok": True, "label": label, "mode": mode,
             "section_id": args.section_id, "section_name": args.section_name,
             "exercise_id": args.exercise_id, "landed_url": landed,
             "filled": bool(filled), "submitted": bool(do_fill and do_submit),
+            "review": review,
             "questions": items,
             "summary": {"total": len(items), "bank": bank_hits,
                         "ai": len(items) - bank_hits,
@@ -232,11 +304,37 @@ def main() -> int:
                   f"（题库 {bank_hits} / AI {len(items) - bank_hits}）"
                   if result["filled"] else
                   f"{args.section_name or args.section_id} 仅出答案 {len(items)} 题")
-        gxks_ops.record_op(db, account_label=label,
-                           action="work-fill" if result["filled"] else "work-open",
-                           detail=detail, result="ok",
-                           section_id=args.section_id, section_name=args.section_name,
-                           exercise_id=args.exercise_id, payload=result["questions"])
+        op_id = gxks_ops.record_op(
+            db, account_label=label,
+            action="work-fill" if result["filled"] else "work-open",
+            detail=detail, result="ok",
+            section_id=args.section_id, section_name=args.section_name,
+            exercise_id=args.exercise_id, payload=result["questions"])
+
+        for risk in review["risks"]:
+            pending_ids.append(gxks_pending.add(
+                db, account_label=label,
+                question_ordinal=int(risk["ordinal"]),
+                reason=str((risk.get("reasons") or ["ai_used"])[0]),
+                course_id=str(args.course or ""),
+                section_id=args.section_id, section_name=args.section_name,
+                exercise_id=args.exercise_id,
+                type_code=str(risk.get("type_code") or ""),
+                stem=str(risk.get("stem") or ""),
+                risk=risk, work_file=out_path.name, op_id=op_id))
+        if pending_ids:
+            gxks_ops.record_op(
+                db, account_label=label, action="work-review", result="ok",
+                detail="pending {} item(s): {}".format(
+                    len(pending_ids),
+                    ", ".join("Q{} {}".format(r["ordinal"], r["primary_reason"])
+                              for r in review["risks"]))[:200],
+                section_id=args.section_id, section_name=args.section_name,
+                exercise_id=args.exercise_id,
+                payload={"pending_ids": pending_ids,
+                         "counts": review["counts"],
+                         "auto_eligible": review["auto_eligible"]})
+
         print(f"[OK] 结果已写 {out_path.name}")
         print(json.dumps(result, ensure_ascii=False))
         return EXIT_OK
