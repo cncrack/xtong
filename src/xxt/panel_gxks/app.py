@@ -2925,6 +2925,74 @@ def _page_fingerprint() -> str:
     return f"PAGE len={len(PAGE)} markers={hits}"
 
 
+def _is_elevated() -> bool:
+    """当前进程是不是**管理员提权**启动的（Windows）。
+
+    用户 2026-11-23 问「我怎么知道是管理员还是普通权限」—— 与其让他去查
+    `whoami /groups`，不如启动时直接把结论打出来。
+
+    ⚠ 判据是**提权**（High Mandatory Level），不是「属于 Administrators 组」：
+    普通管理员组用户双击启动时是 Medium 完整性级别，`Register-ScheduledTask`
+    建「以 Administrator 运行」的任务仍会「拒绝访问」。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+def _print_permission_and_tasks() -> None:
+    """启动时打印权限与计划任务状态（2026-11-23）。
+
+    目的：把两件容易踩的事**提前说清**，而不是等用户点按钮才报错 ——
+    ① 面板有没有提权（决定「新增账号能否自动注册计划任务」）；
+    ② 当前账号表里有哪些账号**缺**计划任务（缺了启动浏览器就会失败）。
+    """
+    if os.name != "nt":
+        return
+    elevated = _is_elevated()
+    if elevated:
+        print("[OK] 运行权限：**管理员（已提权）**"
+              " → 新增账号时能自动注册计划任务")
+    else:
+        print("[!] 运行权限：普通权限（未提权）"
+              "\n      影响：新增账号时**无法自动注册**计划任务（会提示「拒绝访问」）。"
+              "\n      需要时请用管理员 PowerShell 跑一次（一条命令注册全部账号）："
+              "\n        powershell -NoProfile -ExecutionPolicy Bypass "
+              "-File scripts\\register_all_chrome_tasks.ps1")
+    if not _schtasks_available():
+        return
+    try:
+        accounts_now = gaccounts.load_accounts()
+    except Exception:                                      # noqa: BLE001
+        return
+    missing: list[str] = []
+    for acc in accounts_now:
+        if not acc.enabled:
+            continue
+        try:
+            if not _chrome_task_state(acc.label).get("registered"):
+                missing.append(acc.label)
+        except Exception:                                  # noqa: BLE001
+            missing.append(acc.label)
+    if missing:
+        print(f"[!] 计划任务：{len(missing)} 个账号**缺少**计划任务 → "
+              f"{'、'.join(missing)}")
+        if elevated:
+            print("      已提权，启动后会在后台自动补注册（稍等几秒）")
+        else:
+            print("      未提权，自动补注册会失败。请在管理员窗口跑："
+                  "\n        powershell -NoProfile -ExecutionPolicy Bypass "
+                  "-File scripts\\register_all_chrome_tasks.ps1")
+    else:
+        print(f"[OK] 计划任务：{len(accounts_now)} 个账号都已注册（"
+              f"{_chrome_task_name('x')} 这类名字，每账号一个）")
+
+
 def serve(settings: Settings) -> int:
     """启动独立面板（uvicorn 阻塞直到 Ctrl+C）。
 
@@ -2969,6 +3037,10 @@ def serve(settings: Settings) -> int:
              else "→ 改了代码必须手动重启面板，否则跑的还是旧代码"))
     # **页面指纹**：磁盘上是新代码 ≠ 进程里是新代码。打出来，新旧一眼可辨。
     print(f"[OK] 页面指纹：{_page_fingerprint()}")
+    # **权限 + 计划任务自检**（2026-11-23 用户问「我怎么知道是管理员还是普通权限」）：
+    # 直接把答案打出来，并把「哪些账号缺计划任务 / 能不能自动注册」说清，
+    # 不让用户去猜、也不等点「启动并登录」才失败。
+    _print_permission_and_tasks()
     # **拒绝第二个实例**：端口已被别的进程监听 → 明确报错退出，不静默绑上去。
     # （Windows 允许多 socket 绑同一地址，请求会随机分流到旧 worker。）
     if _port_in_use(host, port):
