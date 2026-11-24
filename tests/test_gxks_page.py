@@ -149,6 +149,24 @@ class TestStartBrowserButtonScope(unittest.TestCase):
         self.assertIn("btn-bstart", seg)
         self.assertIn("启动 \" + n + \" 个", seg)
         self.assertIn("启动并登录", seg)
+
+    def test_checkbox_click_refreshes_right_card(self):
+        """勾选后必须重绘右侧卡片（2026-11-24 实拍：不刷新则文案一直不变）。
+
+        用户截图证据：勾了 default + test 两个，右侧按钮仍是「启动并登录」。
+        根因是单行勾选只调了 `renderBatchBar`（表格上方那排），
+        没调 `renderBrowserBatch`（右侧卡片），文案更新被漏掉。
+        """
+        seg = PAGE.split('const cb = e.target.closest(".acct-pick");', 1)[1].split(
+            'if (e.target.closest("button")) return;', 1)[0]
+        self.assertIn("renderBrowserBatch()", seg,
+                      "单行勾选后必须刷新右侧卡片，否则按钮文案不更新")
+
+    def test_select_all_refreshes_right_card(self):
+        """表头全选后同样要刷新右侧卡片。"""
+        seg = PAGE.split('const all = e.target.closest("#acct-all");', 1)[1].split(
+            'const cb = e.target.closest(".acct-pick");', 1)[0]
+        self.assertIn("renderBrowserBatch()", seg)
     def test_batch_start_browser_button_only_when_needed(self):
         """批量「启动浏览器」（P1）：只在选中里**真有浏览器没开**时才出现。
 

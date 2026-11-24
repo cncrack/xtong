@@ -3680,6 +3680,7 @@ el("accounts").addEventListener("click", (e) => {
     if (all.checked) shown.forEach((c) => SEL.add(c.label));
     else shown.forEach((c) => SEL.delete(c.label));
     renderAccounts(STATE || {});
+    renderBrowserBatch();      // 右侧按钮文案/可用性跟着变（2026-11-24 同上）
     return;
   }
   const cb = e.target.closest(".acct-pick");
@@ -3687,6 +3688,10 @@ el("accounts").addEventListener("click", (e) => {
     const lab = cb.dataset.label;
     if (cb.checked) SEL.add(lab); else SEL.delete(lab);
     renderBatchBar(visibleCards(STATE || {}));
+    // ⚠ 2026-11-24：右侧「浏览器与会话」卡片也要跟着刷新。
+    // 之前只调了 `renderBatchBar`（表格上方那排），右侧 `#btn-bstart` 的文案
+    // 就一直是「启动并登录」—— 用户勾了 2 个仍看到旧文字，以为改动没生效。
+    renderBrowserBatch();
     const all2 = el("acct-all");
     const shown = visibleCards(STATE || {});
     if (all2) all2.checked = shown.length > 0 && shown.every((c) => SEL.has(c.label));
