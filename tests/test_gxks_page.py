@@ -143,12 +143,48 @@ class TestStartBrowserButtonScope(unittest.TestCase):
         self.assertIn('"/api/browser/start"', seg)
 
     def test_right_button_label_follows_selection(self):
-        """勾 ≥2 个时右侧按钮文案要变（否则用户仍以为它只起一个）。"""
-        seg = PAGE.split("function renderBrowserBatch()", 1)[1].split(
-            "async function batchBrowserAction", 1)[0]
+        """勾 ≥2 个时右侧按钮文案要变（否则用户仍以为它只起一个）。
+
+        ⚠ 2026-11-24：文案判定**只在 `renderBrowser` 一处**（不是 `renderBrowserBatch`）。
+        原因见下一条测试：两处都写会让按钮闪。
+        """
+        seg = PAGE.split("function renderBrowser(state, browser, label)", 1)[1].split(
+            "function ", 1)[0]
         self.assertIn("btn-bstart", seg)
-        self.assertIn("启动 \" + n + \" 个", seg)
+        self.assertIn("picked >= 2", seg)
+        self.assertIn('"启动 " + picked + " 个"', seg)
         self.assertIn("启动并登录", seg)
+
+    def test_button_label_has_single_source_of_truth(self):
+        """按钮文案**只能有一个写入点**，否则会闪（2026-11-24 用户实拍）。
+
+        用户原话：「当我勾选第 2 个账号时，右边按钮会变成启动2个，过一会儿
+        又变成原来的了，一会儿又变成启动2个，来回变换」。
+
+        真因：`renderBrowserBatch()`（4 秒轮询末尾）和 `hoverAcctSide()` →
+        `renderBrowserFor()`（鼠标划过账号行）**都写 `#btn-bstart`**，
+        两个来源交替覆盖 → 按钮闪烁。
+
+        约定：只在 `renderBrowser()` 里写文案，它的判定已含 `SEL.size`；
+        `renderBrowserBatch()` 只负责**触发一次重绘**，不直接写文案。
+        """
+        batch_seg = PAGE.split("function renderBrowserBatch()", 1)[1].split(
+            "async function batchBrowserAction", 1)[0]
+        self.assertNotIn("bstart.textContent", batch_seg,
+                         "renderBrowserBatch 不能直接写按钮文案（会和 renderBrowser 打架）")
+        self.assertIn("renderBrowserFor", batch_seg,
+                      "应改为触发重绘，由 renderBrowser 统一写文案")
+
+    def test_hover_path_also_respects_selection(self):
+        """鼠标划过账号行（hoverAcctSide → renderBrowserFor）时文案也要对。
+
+        这是闪烁问题的另一半：悬停会调 `renderBrowserFor`，若它不看 `SEL.size`，
+        文案就在「启动 N 个」和「启动并登录」之间来回跳。
+        """
+        seg = PAGE.split("function renderBrowser(state, browser, label)", 1)[1].split(
+            "function ", 1)[0]
+        self.assertIn("SEL.size", seg, "悬停路径也要读勾选数，否则文案会闪")
+
 
     def test_checkbox_click_refreshes_right_card(self):
         """勾选后必须重绘右侧卡片（2026-11-24 实拍：不刷新则文案一直不变）。

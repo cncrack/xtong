@@ -2381,9 +2381,17 @@ function renderBrowser(state, browser, label) {
   //
   // 做法：按钮文案随状态变，并把原因写进 title：
   //   端口活着 → 「已运行」+ 灰；缺 Chrome → 「缺 Chrome」；否则「启动并登录」。
+  //
+  // ⚠ 2026-11-24：**文案与 title 必须同时考虑勾选数**。
+  // 用户实拍：「勾选第 2 个账号时右边按钮会变成启动 2 个，过一会儿又变成原来的、
+  // 一会儿又变回来」——因为 `hoverAcctSide()`（鼠标划过账号行）也会调本函数，
+  // 而这里原来无条件写「启动并登录」；4 秒轮询末尾的 `renderBrowserBatch()`
+  // 又写「启动 N 个」→ 两个来源来回覆盖，按钮就闪。
+  // 现在两个函数用同一套判定（`startBtnLabel()`），谁后执行都不会打架。
   const startBtn = el("btn-bstart");
   if (startBtn) {
     startBtn.disabled = !!b.port_alive || !b.can_start;
+    const picked = SEL.size;
     if (!b.can_start) {
       startBtn.textContent = "缺 Chrome";
       startBtn.title = "没找到 Chrome：设环境变量 XXT_GXKS_CHROME 指向 chrome.exe";
@@ -2391,9 +2399,15 @@ function renderBrowser(state, browser, label) {
       startBtn.textContent = "已运行";
       startBtn.title = "端口 " + b.port + " 已经在监听 = 这个账号的浏览器开着，" +
         "不需要再启动。要重启请先点右边「停止」。";
+    } else if (picked >= 2) {
+      // 勾了多个：这个按钮是多账号入口（`startBrowser()` 会转批量）
+      startBtn.textContent = "启动 " + picked + " 个";
+      startBtn.title = "勾选了 " + picked + " 个账号：会为它们全部拉起 Chrome" +
+        "（已在跑的自动跳过），并各自注入登录态";
     } else {
       startBtn.textContent = "启动并登录";
-      startBtn.title = "用本账号的端口与 profile 目录拉起 Chrome，并自动注入登录态快照（一键可用）";
+      startBtn.title = "用本账号的端口与 profile 目录拉起 Chrome，" +
+        "并自动注入登录态快照（一键可用）。勾选 2 个以上账号时这里会自动变成批量";
     }
   }
   el("btn-bstop").disabled = !b.started_by_panel;
@@ -2714,20 +2728,19 @@ function renderBrowserBatch() {
     const pickable = ((STATE && STATE.cards) || []).filter((c) => !c.job);
     selAll.disabled = pickable.length === 0;
   }
-  // 右侧「浏览器 → 启动并登录」的文案随勾选数变化（用户 2026-11-24 选方案 C）。
-  // 勾 0~1 个：只管当前账号；勾 ≥2 个：行为已改成批量，文案必须跟着改，
-  // 否则用户还是以为它只起一个。这是「两个按钮名字撞车」问题的正解。
+  // 右侧「浏览器 → 启动并登录」的文案随勾选数变化 —— **不在这里写**。
+  //
+  // ⚠ 2026-11-24 用户实拍「按钮一会儿变一会儿变回」的教训：
+  // 这个函数和 `renderBrowserFor()`（鼠标划过账号行时也会被调）都想写
+  // `#btn-bstart` 的文案，两个来源交替覆盖 → 按钮闪。
+  // 现在**只有 `renderBrowserFor()` 一处写它**，判定里已经考虑 `SEL.size`。
+  // 这里只负责触发一次重绘，保证勾选变化能立刻反映到按钮上。
   const bstart = el("btn-bstart");
-  if (bstart && !bstart.disabled) {
-    if (n >= 2) {
-      bstart.textContent = "启动 " + n + " 个";
-      bstart.title = "勾选了 " + n + " 个账号：会为它们**全部**拉起 Chrome" +
-        "（已在跑的自动跳过），并各自注入登录态";
-    } else {
-      bstart.textContent = "启动并登录";
-      bstart.title = "用本账号的端口与 profile 目录拉起 Chrome，" +
-        "并自动注入登录态快照（一键可用）。勾选 2 个以上账号时这里会自动变成批量";
-    }
+  if (bstart && STATE) {
+    const who = (typeof browserLabel === "function" && browserLabel()) ||
+                (STATE.label || "");
+    const card = (STATE.cards || []).find((c) => c.label === who);
+    if (card) renderBrowserFor(STATE, who);
   }
 }
 
