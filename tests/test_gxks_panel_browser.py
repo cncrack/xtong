@@ -319,7 +319,10 @@ class TestGxksPanelBrowser(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["message"], "已登录")
         self.assertEqual(body["session"]["url"], payload["url"])
-        argv = self.run_call.call_args.args[0]
+        # ⚠ 面板还会调 `schtasks /query`（计划任务自检）等别的子进程，
+        # `run.call_args` 可能是那一条 → 按内容找带 `--port` 的会话检查命令。
+        argv = next(c.args[0] for c in self.run_call.call_args_list
+                    if "--port" in c.args[0])
         self.assertEqual(argv[argv.index("--port") + 1], "9222")
 
     def test_session_check_reports_not_logged_in(self):
@@ -367,7 +370,11 @@ class TestGxksPanelBrowser(unittest.TestCase):
             body = self.client.post("/api/session/restore", json={"label": "jia"}).json()
         self.assertTrue(body["ok"])
         self.assertIn("恢复登录", body["message"])
-        self.assertIn("--restore", run.call_args.args[0])
+        # ⚠ `subprocess.run` 被全局 mock，面板还会调 `schtasks /query`（计划任务自检）
+        # 等别的子进程 → 不能取 `run.call_args`（最后那次可能是 schtasks），按内容找。
+        argv = next(c.args[0] for c in run.call_args_list
+                    if "--restore" in c.args[0])
+        self.assertIn("--restore", argv)
 
     def test_restore_reports_ticket_rejected(self):
         self._write_state()

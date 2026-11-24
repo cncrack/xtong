@@ -117,6 +117,38 @@ class TestAccountTable(unittest.TestCase):
             self.assertIn("batchAction(\\'" + act + "\\')", PAGE)
         self.assertIn("/api/accounts/batch", PAGE)
 
+
+class TestStartBrowserButtonScope(unittest.TestCase):
+    """右侧「启动并登录」在勾选多个账号时必须走批量（2026-11-24 用户实拍踩坑）。
+
+    用户原话：「我选择林鑫阳和 test 这两个账号启动，还是只有林鑫阳这个浏览器打开」。
+    真因：`startBrowser()` 用 `browserLabel()` = `HOVER_LABEL || LABEL`，**永远只指向
+    一个账号**；而左侧表格上方那个「启动浏览器」才是批量的。两个按钮名字几乎一样、
+    同屏可见，用户点了右边那个，自然只起一个。
+
+    用户 2026-11-24 选方案 C：**行为 + 文案都改**。
+    """
+
+    def test_start_browser_delegates_to_batch_when_multiple(self):
+        seg = PAGE.split("async function startBrowser()", 1)[1].split(
+            "async function stopBrowser()", 1)[0]
+        self.assertIn("[...SEL]", seg, "必须看勾选集合，而不是只看当前账号")
+        self.assertIn("picked.length >= 2", seg)
+        self.assertIn("batchBrowserAction", seg)
+
+    def test_single_account_keeps_original_path(self):
+        """只勾 0~1 个时仍走单账号接口（最常见场景，不弹多余确认框）。"""
+        seg = PAGE.split("async function startBrowser()", 1)[1].split(
+            "async function stopBrowser()", 1)[0]
+        self.assertIn('"/api/browser/start"', seg)
+
+    def test_right_button_label_follows_selection(self):
+        """勾 ≥2 个时右侧按钮文案要变（否则用户仍以为它只起一个）。"""
+        seg = PAGE.split("function renderBrowserBatch()", 1)[1].split(
+            "async function batchBrowserAction", 1)[0]
+        self.assertIn("btn-bstart", seg)
+        self.assertIn("启动 \" + n + \" 个", seg)
+        self.assertIn("启动并登录", seg)
     def test_batch_start_browser_button_only_when_needed(self):
         """批量「启动浏览器」（P1）：只在选中里**真有浏览器没开**时才出现。
 

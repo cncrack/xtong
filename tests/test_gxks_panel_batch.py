@@ -104,8 +104,51 @@ class TestAccountsBatch(unittest.TestCase):
     def test_disable_writes_batch_note_in_ops(self):
         self._batch(["a1"], "disable")
         rows = self.client.get("/api/ops").json()["rows"]
-        self.assertEqual(rows[0]["action"], "account-toggle")
-        self.assertIn("批量", rows[0]["detail"])
+        # ⚠ 2026-11-24：批量现在还会写一条 `batch` 汇总（排在更前面），
+        # 所以不能再直接用 rows[0]，要按 action 找。
+        row = next(r for r in rows if r["action"] == "account-toggle")
+        self.assertIn("批量", row["detail"])
+
+    # ------------------------------------------------- 批量动作本身要留痕（2026-11-24）
+    #
+    # 用户原话：「你这个启动在日志里面也没有显示记录。要有显示比较合理吧」
+    #
+    # 之前只有**成功启动的账号**各记一条 `browser-start`，批量动作本身没有任何记录。
+    # 于是「勾了 2 个只动了 1 个」时，日志里看不出第二个是被跳过、还是压根没提交
+    # —— 这正是 2026-11-24 排查了两轮的根因。现在补一条 `batch` 汇总。
+
+    def test_batch_action_writes_summary_op(self):
+        """任何批量动作都要写一条 `batch` 汇总（提交了几个、成了谁）。"""
+        self._batch(["a1", "a2"], "disable")
+        rows = self.client.get("/api/ops").json()["rows"]
+        batch = [r for r in rows if r["action"] == "batch"]
+        self.assertEqual(len(batch), 1, "批量动作必须留一条汇总记录")
+        self.assertIn("提交 2 个", batch[0]["detail"])
+        self.assertIn("成功 2", batch[0]["detail"])
+        # 汇总不归属单个账号，否则会污染单账号日志视图
+        self.assertEqual(batch[0]["account_label"] or "", "")
+
+    def test_batch_summary_records_each_label(self):
+        """payload 里要有**逐账号结果**，否则仍无法判断谁被跳过、为什么。"""
+        self._batch(["a1", "a2"], "disable")
+        rows = self.client.get("/api/ops").json()["rows"]
+        batch = next(r for r in rows if r["action"] == "batch")
+        payload = batch["payload"]          # `recent_ops` 已把 payload_json 解成 payload
+        self.assertEqual(payload["action"], "disable")
+        self.assertEqual(sorted(payload["labels"]), ["a1", "a2"])
+        got = sorted(x["label"] for x in payload["results"])
+        self.assertEqual(got, ["a1", "a2"])
+
+    def test_batch_summary_written_even_when_some_fail(self):
+        """有失败时也要留痕（result=error），否则失败批次反而查不到。"""
+        with mock.patch.object(panel_app.gaccounts, "set_enabled",
+                               side_effect=lambda label, want: label == "a1"):
+            self._batch(["a1", "a2"], "disable")
+        rows = self.client.get("/api/ops").json()["rows"]
+        batch = [r for r in rows if r["action"] == "batch"]
+        self.assertEqual(len(batch), 1)
+        self.assertEqual(batch[0]["result"], "error")
+        self.assertIn("失败 1", batch[0]["detail"])
 
     # ---------------------------------------------------------------- 开始（走与单个相同的逻辑）
 

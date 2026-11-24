@@ -40,6 +40,7 @@ ACTIONS = (
     "account-edit",  # 面板修改账号（端口/额度/显示名/凭据）
     "account-toggle",  # 面板启用 / 停用账号
     "account-del",   # 面板删除账号（profile 与登录态快照保留）
+    "batch",         # 批量动作汇总（提交了谁、成了谁、跳过谁、为什么）
     "stop",          # 通用停止（面板 ■ 按钮）
     "error",         # 任何失败；detail 写原因，code 带机器码
 )

@@ -2572,6 +2572,21 @@ def create_app(settings: Settings) -> FastAPI:
         if unknown:
             return {"ok": False, "error": f"账号表里没有：{'、'.join(unknown)}"}
 
+        # 诊断留痕（2026-11-24 用户报「选了 2 个账号只启动一个」）：
+        # 前端到底提交了几个 label，必须在服务端说得清 —— 否则只能靠猜
+        # 「是没勾上」还是「勾上了但被跳过」。
+        # 写 data/tmp/batch_last.json（不是 print）：用户面板在他的窗口里跑，
+        # print 的 stdout AI 读不到，落盘才能核对真相。
+        try:
+            (ROOT / "data" / "tmp").mkdir(parents=True, exist_ok=True)
+            (ROOT / "data" / "tmp" / "batch_last.json").write_text(
+                json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "action": action, "labels": labels,
+                            "n": len(labels)}, ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:                                      # noqa: BLE001
+            pass
+
         if action == "delete":
             if not body.get("confirm"):
                 return {"ok": False, "error": "批量删除需要二次确认"}
@@ -2743,6 +2758,42 @@ def create_app(settings: Settings) -> FastAPI:
                 note += (f"；{len(fleet)} 个因「全局日时长已满」未启动"
                          f"（{ '、'.join(r['label'] for r in fleet) }）"
                          "——要接着跑就到「面板设置」调高「全局日时长上限」")
+        # ---- 批量汇总留痕（2026-11-24 用户：「启动在日志里面也没有显示记录」）----
+        #
+        # 之前只有**成功启动的账号**各记一条 `browser-start`，批量动作本身没有记录。
+        # 于是「勾了 2 个只动了 1 个」时，日志里完全看不出第二个是被跳过、
+        # 还是压根没提交 —— 用户和我都只能靠猜。这里补一条 `batch` 汇总：
+        #   detail  = 一句话（提交 N 个、成了谁、跳过谁）
+        #   payload = 完整的逐账号结果（含每个的 message/原因），供排查。
+        # 用 `account_label=""`（批量不针对单个账号），避免污染单账号日志视图。
+        try:
+            _reasons = "；".join(
+                f"{r['label']}={r['message']}" for r in results
+                if not r["ok"] and r["message"])
+            _detail = (f"批量「{action}」提交 {len(labels)} 个："
+                       f"成功 {len(done)}（{names}）")
+            if skipped:
+                _detail += f"、跳过 {len(skipped)}"
+            if queued:
+                _detail += f"、排队 {len(queued)}"
+            if blocked:
+                _detail += f"、需先处理 {len(blocked)}"
+            if failed:
+                _detail += f"、失败 {len(failed)}"
+            if _reasons:
+                _detail += f"。原因：{_reasons[:300]}"
+            _db = open_question_bank(settings.data_dir / "gxks_questions.db")
+            try:
+                gxks_ops.record_op(
+                    _db, account_label="", action="batch", detail=_detail,
+                    result="ok" if not failed else "error",
+                    payload={"action": action, "labels": labels,
+                             "results": results})
+            finally:
+                _db.close()
+        except Exception:                                      # noqa: BLE001
+            pass                      # 留痕失败不能反过来弄挂批量本身
+
         if failed:
             why = "；".join(f"{r['label']}：{r['message']}" for r in failed[:5])
             more = "" if len(failed) <= 5 else f" 等 {len(failed)} 个"

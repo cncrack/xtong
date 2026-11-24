@@ -2610,7 +2610,25 @@ async function saveKey() {
 
 // 启动浏览器并**自动注入登录态**（2026-11-03 用户要的「一键」）：
 // 后端起完 Chrome 会调 `--restore` 注入快照 cookie，所以比普通启动慢（约 10 秒）。
+//
+// ## 为什么勾了多个就走批量（2026-11-24 用户实拍踩坑）
+//
+// 用户原话：「我选择林鑫阳和 test 这两个账号启动，还是只有林鑫阳这个浏览器打开」。
+// 真因：这个按钮原来看 `browserLabel()` = `HOVER_LABEL || LABEL`，**永远只指向一个**
+// 账号——用户勾了 2 个，它只管当前高亮的那一个。而左侧表格上方那个「启动浏览器」
+// 才是批量的，两个按钮名字几乎一样、同屏可见，谁都分不清。
+//
+// 现在的规则（用户 2026-11-24 选方案 C：行为 + 文案都改）：
+// - 勾了 **≥2 个** → 走批量接口，把勾选的都起（与左侧批量按钮同一条路）；
+// - 勾了 0~1 个 → 保持原行为，只起当前账号（最常见场景，不弹多余确认）。
+// 按钮文案也会随勾选数变化（见 `renderBrowserBatch`），不再靠猜。
 async function startBrowser() {
+  const picked = [...SEL];
+  if (picked.length >= 2) {
+    // 交给批量那条路：它有「已在跑就跳过 / 逐个等」的完整策略，
+    // 也统一写 `batch` 汇总日志（2026-11-24 补的）。
+    return batchBrowserAction("start-browser");
+  }
   toast("正在启动 Chrome 并注入登录态（约 10 秒）…");
   hideNotice();
   const data = await post("/api/browser/start", { label: browserLabel() });
@@ -2695,6 +2713,21 @@ function renderBrowserBatch() {
   if (selAll) {
     const pickable = ((STATE && STATE.cards) || []).filter((c) => !c.job);
     selAll.disabled = pickable.length === 0;
+  }
+  // 右侧「浏览器 → 启动并登录」的文案随勾选数变化（用户 2026-11-24 选方案 C）。
+  // 勾 0~1 个：只管当前账号；勾 ≥2 个：行为已改成批量，文案必须跟着改，
+  // 否则用户还是以为它只起一个。这是「两个按钮名字撞车」问题的正解。
+  const bstart = el("btn-bstart");
+  if (bstart && !bstart.disabled) {
+    if (n >= 2) {
+      bstart.textContent = "启动 " + n + " 个";
+      bstart.title = "勾选了 " + n + " 个账号：会为它们**全部**拉起 Chrome" +
+        "（已在跑的自动跳过），并各自注入登录态";
+    } else {
+      bstart.textContent = "启动并登录";
+      bstart.title = "用本账号的端口与 profile 目录拉起 Chrome，" +
+        "并自动注入登录态快照（一键可用）。勾选 2 个以上账号时这里会自动变成批量";
+    }
   }
 }
 
@@ -3098,7 +3131,7 @@ const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
   "session-check": "检查会话", "session-restore": "恢复登录",
   "session-relogin": "重新登录", "account-add": "新增账号",
   "account-edit": "修改账号", "account-toggle": "启停账号",
-  "account-del": "删除账号", "error": "出错" };
+  "account-del": "删除账号", "batch": "批量操作", "error": "出错" };
 
 function renderOps(state) {
   const rows = state.ops || [];
