@@ -35,11 +35,13 @@ from xxt.adapters.gxks import browser as gbrowser  # noqa: E402
 from xxt.adapters.gxks import driver as gdriver  # noqa: E402
 from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
+from xxt.adapters.gxks import practice  # noqa: E402
 from xxt.adapters.gxks import work as gwork  # noqa: E402
 from xxt.ai.llm import LLMClient, LLMError  # noqa: E402
 from xxt.ai.quiz import build_messages, parse_llm_json  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
 from xxt.store import gxks_ops, gxks_pending  # noqa: E402
+from xxt.store import gxks_questions  # noqa: E402
 from xxt.store.gxks_questions import is_objective, lookup_answer  # noqa: E402
 from xxt.store.schema_gxks import open_question_bank  # noqa: E402
 
@@ -251,6 +253,8 @@ def main() -> int:
 
         filled: list[dict] = []
         checked: dict[int, str] = {}
+        # G-7：交卷后回收的判分结果（没交卷时保持 None，不参与 result）
+        graded_bundle: dict | None = None
         if do_fill:
             print("[4/4] 回填（不提交）…")
             filled = gwork.fill_answers(
@@ -263,6 +267,43 @@ def main() -> int:
             if do_submit:
                 print("[!!] auto_submit=true → 交卷")
                 gwork.submit(paper["frame"])
+                # G-7（2026-11-24 用户方案 A）：交卷成功后**立刻回收判分页入库**。
+                #
+                # 为什么必须在这里做：平台只在判分页（`viewExam.aspx`）显示「标准答案」，
+                # 那是**平台官方答案**（不是 AI 推的），也是题库唯一的可信来源。
+                # 离开这个页面就再也拿不到了（除非重新做一遍）。
+                #
+                # ⚠ 入库失败**绝不能影响交卷结果**：交卷是既成事实，入库只是附加收益。
+                # 所以整段包在 try 里，出错只记日志。
+                try:
+                    print("[5/5] 等判分页并入库（客观题）…")
+                    graded = gwork.wait_graded(page)
+                    graded_bundle = practice.parse_review_online(
+                        account_label=label,
+                        review_url=graded["url"], review_html=graded["html"],
+                        raw_rows=paper["raw_rows"],
+                        type_map=paper.get("type_map") or {},
+                        exercise_id=args.exercise_id,
+                        section_id=args.section_id,
+                        section_name=args.section_name,
+                        start_time="")
+                    saved = gxks_questions.import_bundle(db, graded_bundle)
+                    print(f"      入库 {'新增' if saved.get('inserted') else '已存在'} "
+                          f"{saved.get('questions')} 题"
+                          f"（题目全入；答案只入客观题）")
+                    # 平台官方答案 = 已核验，不必继续挂在待确认清单上（用户 2026-11-24）
+                    site_ordinals = [
+                        q["ordinal"] for q in (graded_bundle.get("questions") or [])
+                        if is_objective(q.get("type_code", ""))
+                        and (q.get("answer") or {}).get("standard_source") == "site"]
+                    cleared = gxks_pending.verify_by_site_answer(
+                        db, account_label=label, exercise_id=args.exercise_id,
+                        ordinals=site_ordinals)
+                    if cleared:
+                        print(f"      待确认清单：{cleared} 题已按平台标准答案标为已核验")
+                except Exception as exc:                       # noqa: BLE001
+                    print(f"[WARN] 判分页入库未完成：{type(exc).__name__}: {exc}")
+                    print("       交卷本身已成功，不受影响。")
         else:
             print("[4/4] 只出答案，未动页面（reference 模式）")
 
@@ -285,6 +326,11 @@ def main() -> int:
             "exercise_id": args.exercise_id, "landed_url": landed,
             "filled": bool(filled), "submitted": bool(do_fill and do_submit),
             "review": review,
+            "graded": ({"imported": True,
+                        "questions": len(graded_bundle.get("questions") or []),
+                        "got_score": graded_bundle.get("got_score"),
+                        "total_score": graded_bundle.get("total_score")}
+                       if graded_bundle else None),
             "questions": items,
             "summary": {"total": len(items), "bank": bank_hits,
                         "ai": len(items) - bank_hits,
