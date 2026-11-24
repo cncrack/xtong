@@ -465,11 +465,13 @@ def _await_chrome_ready(label: str, port: int, result: Path) -> dict[str, Any]:
     for _ in range(80):
         time.sleep(0.5)
         if gchrome.port_alive(port):
-            pid = 0
-            try:
-                pid = int(json.loads(result.read_text(encoding="utf-8")).get("pid") or 0)
-            except Exception:                                   # noqa: BLE001
-                pass
+            # ⚠ pid 用**端口真实持有者**，不信 result 文件里的（2026-11-24 方案 B）。
+            # 背景：`start_chrome.ps1` 的 `Start-Process` 拿到的是**启动器进程**，
+            # 它会把工作交接给新进程后自己退出；脚本若写它的 pid，面板拿到的是死 pid，
+            # 于是「停止浏览器」杀不掉真进程、「是否在运行」判错（用户报「林鑫阳登不上」）。
+            # result 文件已经尽量修了（脚本侧查 OwningProcess）；这里再兜一层，
+            # 即使脚本侧漏了（比如它退出的时机），面板也能拿到活的 pid。
+            pid = gchrome.port_owner_pid(port)
             return {"ok": True, "pid": pid}
     err = ""
     try:

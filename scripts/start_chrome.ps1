@@ -101,7 +101,38 @@ try {
               "常见原因：该 profile 已被另一个**不带调试端口**的 Chrome 占用 —— " +
               "先关掉那个 Chrome 再重试。"
     }
-    Write-Result @{ ok = $true; port = $port; label = $label; pid = $proc.Id }
+    # ⚠ pid 必须取**端口真实持有者**，不能取 `Start-Process -PassThru` 的 `$proc.Id`
+    # （2026-11-24 修的真 bug：用户报「林鑫阳登不上」）。
+    #
+    # 为什么：`chrome.exe` 是启动器。它检查到没有已有实例后，会**建 profile 锁并把
+    # 自己交接给新进程**，然后 `$proc` 那个进程就退出了。于是
+    #   - 端口确实通了（用户看起来"启动了"）；
+    #   - 但我们记下的 pid 已经死了；
+    #   - 面板拿这个死 pid 去找"是否还在运行"→ 判定失败/超时；
+    #   - 「停止浏览器」也杀不掉真正在跑的那个。
+    #
+    # 实测证据：22:37:09 记 pid=27024 并写 ok:true，22:37:22 面板报"等了 40 秒
+    # 端口仍未响应"，之后 27024 早已不存在而浏览器窗口曾经出现过。
+    #
+    # 所以：等到端口通之后，**再查一次谁在监听**，用那个 pid。
+    $procId = 0
+    for ($k = 0; $k -lt 10; $k++) {
+        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        if ($conn -and $conn.OwningProcess -gt 0) {
+            $procId = [int]$conn.OwningProcess
+            break
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    # 兜底：查不到监听者就退回启动器 pid，并在结果里标注（面板据此决定是否信任）
+    $ownerKnown = $true
+    if ($procId -le 0) {
+        $procId = $proc.Id
+        $ownerKnown = $false
+    }
+    Write-Result @{ ok = $true; port = $port; label = $label; pid = $procId;
+                   launcher_pid = $proc.Id; owner_known = $ownerKnown }
 }
 catch {
     Write-Result @{ ok = $false; error = $_.Exception.Message }

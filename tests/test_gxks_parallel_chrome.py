@@ -348,5 +348,41 @@ class TestSuggestLabel(unittest.TestCase):
             self.assertTrue(gaccounts.is_valid_label(gaccounts.suggest_label(taken)))
 
 
+class TestPidIsPortOwner(unittest.TestCase):
+    """pid 必须是**端口真实持有者**，不能是 Chrome 启动器（2026-11-24 方案 A+B）。
+
+    用户报「林鑫阳登不上」。根因：`chrome.exe` 是启动器，`Start-Process` 拿到它后，
+    它会建 profile 锁并交接给新进程，然后自己退出。脚本拿启动器 pid 写 result →
+    面板记到死 pid → 「是否在运行」判错、「停止」杀不掉真进程。
+    修：脚本侧查 OwningProcess（方案 A），面板侧再兜一层（方案 B）。
+    """
+
+    def test_script_writes_port_owner_not_launcher(self):
+        """start_chrome.ps1 要查 `Get-NetTCPConnection` 拿 OwningProcess，不写 $proc.Id。"""
+        self.assertIn("Get-NetTCPConnection", PS1)
+        self.assertIn("OwningProcess", PS1)
+        self.assertIn("$proc.Id", PS1)
+        # 取**最后一次** Write-Result 写入前的代码段（第一个 Write-Result 是函数定义）
+        # ⚠ 不能用 split(...,1)[0]：那是切到 `function Write-Result`，不是真正写入。
+        seg = PS1.rsplit("Write-Result @{", 1)[0]
+        self.assertIn("OwningProcess", seg, "脚本要查端口持有者")
+
+    def test_app_uses_port_owner_as_backstop(self):
+        """面板等端口就绪后，用 `port_owner_pid` 兜底，不信 result 文件里的 pid。"""
+        self.assertIn("port_owner_pid", APP_SRC)
+        seg = APP_SRC.split("def _await_chrome_ready(", 1)[1].split(
+            "def ", 1)[0]
+        self.assertIn("gchrome.port_owner_pid(", seg)
+        # 不再直接读 result 文件的 pid 当唯一依据
+        self.assertNotIn('result.read_text(encoding="utf-8")).get("pid")', seg)
+
+    def test_port_owner_pid_function_exists(self):
+        """chrome.py 提供 `port_owner_pid`（netstat 查 LISTENING）。"""
+        import inspect
+        chrome_src = inspect.getsource(app.gchrome.port_owner_pid)
+        self.assertIn("netstat", chrome_src)
+        self.assertIn("LISTENING", chrome_src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -126,6 +126,42 @@ def port_alive(port: int, *, timeout: float = 0.5) -> bool:
         return False
 
 
+def port_owner_pid(port: int) -> int:
+    """返回**监听该调试端口**的进程 pid（没有则 0）。
+
+    ## 为什么需要（2026-11-24 方案 B，真 bug）
+
+    用户报「林鑫阳登不上」：`start_chrome.ps1` 用 `Start-Process -PassThru`
+    拿到的 pid 是 **chrome 启动器**，它把工作交接给新进程后自己退出。
+    脚本若把这个死 pid 写进 result，面板拿它去判断"是否在运行"/"停止浏览器"
+    全错。脚本侧已经改成查 OwningProcess（方案 A），但为了防它漏（比如退出
+    时机竞态），面板等端口就绪后**再查一次真实持有者**（方案 B）。
+
+    用 `netstat -ano` 查本地端口，跨平台也能跑（Windows 有 `Get-NetTCPConnection`，
+    但 netstat 不依赖 cmdlet，差异小）。不访问平台，零外网请求。
+    """
+    try:
+        if os.name != "nt":
+            return 0                              # 本机是 Windows；其它平台暂不查
+        import subprocess
+        done = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=8)
+        for line in (done.stdout or "").splitlines():
+            # "  TCP  127.0.0.1:9222  ...  LISTENING  12345"
+            if line.startswith("  TCP") and "LISTENING" in line:
+                parts = line.split()
+                if len(parts) >= 5:
+                    try:
+                        addr = parts[1]
+                        if addr.endswith(f":{int(port)}"):
+                            return int(parts[4])
+                    except ValueError:
+                        continue
+    except Exception:                             # noqa: BLE001
+        pass
+    return 0
+
+
 def ports_alive(ports: list[int], *, timeout: float = 0.5) -> dict[int, bool]:
     """**并发**探活多个端口，返回 `{端口: 是否活着}`。
 
