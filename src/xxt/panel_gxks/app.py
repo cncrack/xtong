@@ -1941,8 +1941,28 @@ def _browser_start_one(settings: Settings, label: str, *,
         # 端口已经活着 = 浏览器已在运行。对单个按钮来说这是"成功"（用户想要的状态已达成），
         # 但对批量来说它是**跳过**（没必要重复起）。这里统一标 skipped，
         # 由调用方决定怎么呈现（单个接口会把 skipped 当成 ok 返回，见 browser_start）。
-        return {"ok": False, "skipped": True,
-                "message": f"端口 {acc.port} 已在运行"}
+        #
+        # ⚠ 2026-11-24 用户实拍：「2 个账号已经启动了，一个登录，第二个 test 登录不了，
+        # 原先不是已经有 cookie 了吗」。真因：**端口活着 ≠ 登录态有效**。
+        # `.ASPXAUTH` 是会话级 cookie（`expires=-1`），关窗即失效、服务端也有超时；
+        # 旧逻辑一看到端口在监听就直接 skipped —— 连登录态都不看，于是浏览器开着却
+        # 停在 `Loginb.aspx`，用户以为「有 cookie 怎么会登不上」。
+        #
+        # 方案 A（用户 2026-11-24 拍板）：端口活着时**顺手检查登录态**——
+        #   已登录 → 照旧 skipped（真没必要动）
+        #   未登录 → **就地补登录**（注入快照 / 密码重登），复用 `_chrome_start_message`
+        # 每个账号多一次本地 CDP 检查（约 1 秒），换「两个都真的能用」。
+        alive_msg = f"端口 {acc.port} 已在运行"
+        probe = _session_probe(acc, run_session)
+        if probe is None:
+            # 探不出来（脚本异常）：不敢乱动一个正在工作的浏览器，按原样跳过
+            return {"ok": False, "skipped": True, "message": alive_msg}
+        if probe.get("logged_in"):
+            return {"ok": False, "skipped": True,
+                    "message": alive_msg + "，且已登录"}
+        # 端口活着但**掉登录了** → 补登录，结果按「成功」报（用户要的状态被达成了）
+        return {"ok": True, "message": _chrome_start_message(
+            settings, acc, acc.port, run_session, already_alive=True)}
     if any(j["label"] == acc.label for j in _jobs_snapshot()):
         return {"ok": False, "blocked": True,
                 "error": "该账号有任务在跑，先「停止」再启动浏览器"}
@@ -1965,8 +1985,28 @@ def _browser_start_one(settings: Settings, label: str, *,
             "message": _chrome_start_message(settings, acc, acc.port, run_session)}
 
 
+def _session_probe(acc: Any, run_session: Any) -> dict | None:
+    """端口已经活着时，只**读**一次登录态（不起浏览器、不注入、不重登）。
+
+    返回会话脚本的 `parsed` 字典（含 `logged_in` / `url`），探不出来返回 `None`。
+
+    ⚠ 为什么单独一层而不直接调 `_chrome_start_message`：
+    那个函数会**动手**（注入快照 / 密码重登）。对一个可能正在正常工作的浏览器，
+    我们必须先确认「真的掉登录了」再动手，否则每次批量点一下就把用户的会话
+    重置一遍（还可能触发验证码）。读一次是安全的，写才开始有副作用。
+    """
+    try:
+        out = run_session(acc)
+    except Exception:                                          # noqa: BLE001
+        return None
+    if not out.get("ok"):
+        return None
+    parsed = out.get("parsed")
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _chrome_start_message(settings: Any, acc: Any, port: int,
-                          run_session: Any) -> str:
+                          run_session: Any, *, already_alive: bool = False) -> str:
     """Chrome 起来后把**登录态**弄好，拼一句给用户看的结果。
 
     `run_session` = `create_app` 内的 `_session_script`（子进程跑会话脚本），
@@ -1977,8 +2017,12 @@ def _chrome_start_message(settings: Any, acc: Any, port: int,
       ② 票过期是**常态**（cookie 全是 session 级，`expires=-1`，关窗即失效）
          → 自动改用账号密码重登一次；
       ③ 遇验证码立刻停、转人工（绝不试错：试错=撞库特征）。
+
+    `already_alive=True` 表示**浏览器本来就在跑、只是掉登录了**（方案 A，2026-11-24）。
+    这时首句不能说「已启动」，否则用户以为窗口是刚开的。
     """
-    msg = f"Chrome 已启动（端口 {port}）"
+    msg = (f"Chrome 已在运行（端口 {port}）" if already_alive
+           else f"Chrome 已启动（端口 {port}）")
     # ⚠ 凭据必须**按账号**判（2026-11-07 修 P0）：原来读全局 account.local.json，
     # 多账号下 A 配了凭据、B 没配，B 也会被判成"能自动登录" → 拿 A 的密码登 B（顶号）。
     has_cred = glogin.is_configured_for(acc, settings)

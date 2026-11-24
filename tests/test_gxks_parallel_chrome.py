@@ -198,10 +198,74 @@ class TestTwoPhaseParallel(unittest.TestCase):
         self.assertNotIn("start-and-study", cond)
 
     def test_browser_start_one_skips_retrigger(self):
-        """预触发过的账号只等端口，不能重复 /run（会多起实例）。"""
-        seg = APP_SRC.split("def _browser_start_one(", 1)[1][:2200]
+        """预触发过的账号只等端口，不能重复 /run（会多起实例）。
+
+        ⚠ 切片要够长：2026-11-24 加「端口活着先查登录态」（方案 A）后，
+        函数变长，原来 `[:2200]` 截不到 `_await_chrome_ready`。
+        """
+        seg = APP_SRC.split("def _browser_start_one(", 1)[1].split(
+            "def _session_probe", 1)[0]
         self.assertIn("pretriggered", seg)
         self.assertIn("_await_chrome_ready", seg)
+
+
+class TestAliveButLoggedOut(unittest.TestCase):
+    """端口活着 ≠ 登录态有效（方案 A，2026-11-24 用户实拍）。
+
+    用户原话：「现在 2 个账号已经启动了，一个登录，第二个 TEST 登录不了，
+    原先不是已经有 COOKIE 了吗」
+
+    真因：`.ASPXAUTH` 是**会话级** cookie（`expires=-1`）——浏览器关掉就失效，
+    服务端也有自己的超时。旧逻辑一看端口在监听就 `skipped`，**连登录态都不看**，
+    于是浏览器开着却停在 `Loginb.aspx`。
+
+    方案 A（用户拍板）：端口活着时**顺手查一次登录态**：
+      - 已登录 → 照旧 skipped（不打扰一个正常工作的浏览器）
+      - 掉登录 → 就地补登录（注入快照 / 密码重登）
+      - 探不出来 → 保守 skipped（不敢乱动）
+    """
+
+    def test_probe_is_read_only(self):
+        """探测阶段**不能**有副作用：不起浏览器、不注入、不重登。"""
+        seg = APP_SRC.split("def _session_probe(", 1)[1].split(
+            "def _chrome_start_message", 1)[0]
+        self.assertIn("run_session(acc)", seg)
+        for bad in ("--restore", "--relogin", "_trigger_chrome"):
+            self.assertNotIn(bad, seg,
+                             f"探测不能调用 {bad}（那是写操作，会重置用户会话）")
+
+    def test_alive_and_logged_in_is_skipped(self):
+        """已登录 → 保持 skipped，什么都不做。"""
+        seg = APP_SRC.split('if state["port_alive"]:', 1)[1].split(
+            'if any(j["label"] == acc.label', 1)[0]
+        self.assertIn("_session_probe", seg)
+        self.assertIn("logged_in", seg)
+        self.assertIn('"skipped": True', seg)
+
+    def test_alive_but_logged_out_relogs_in(self):
+        """掉登录 → 调 `_chrome_start_message` 补登录（含注入/重登）。"""
+        seg = APP_SRC.split('if state["port_alive"]:', 1)[1].split(
+            'if any(j["label"] == acc.label', 1)[0]
+        self.assertIn("_chrome_start_message", seg)
+        self.assertIn("already_alive=True", seg)
+        # 补登录要报成**成功**（用户要的状态被达成了），不是 skipped
+        self.assertIn('"ok": True', seg)
+
+    def test_probe_failure_is_conservative(self):
+        """探不出来（脚本异常）→ 保守跳过，不冒险动用户的浏览器。"""
+        seg = APP_SRC.split("def _session_probe(", 1)[1].split(
+            "def _chrome_start_message", 1)[0]
+        self.assertIn("return None", seg)
+        seg2 = APP_SRC.split('if state["port_alive"]:', 1)[1].split(
+            'if any(j["label"] == acc.label', 1)[0]
+        self.assertIn("if probe is None", seg2)
+
+    def test_message_says_already_running(self):
+        """补登录时首句要说「已在运行」，不能说「已启动」（否则用户以为窗口是新的）。"""
+        self.assertIn("already_alive: bool = False", APP_SRC)
+        seg = APP_SRC.split("def _chrome_start_message(", 1)[1][:900]
+        self.assertIn("已在运行", seg)
+        self.assertIn("if already_alive", seg)
 
 
 class TestAutoRegister(unittest.TestCase):
