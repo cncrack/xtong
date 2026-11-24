@@ -277,3 +277,36 @@ def submit(frame: Any) -> None:
     因为交卷前平台还会弹一次确认，而人在场时能看见题目是否真的填对了。
     """
     frame.evaluate(selectors.EXAM_SUBMIT_JS)
+
+
+# 判分页出现的判定：交卷后站点会跳到 `viewExam.aspx?...&Clerk_kscj_ID=...`
+_REVIEW_URL_RE = re.compile(r"viewExam\.aspx", re.I)
+
+
+def wait_graded(page: Any, *, timeout_ms: int = 60_000) -> dict:
+    """等交卷后的**判分页**加载完，返回 `{url, html, title}`。
+
+    ## 为什么要单独等（2026-11-24 G-7）
+
+    交卷 → 平台判分 → 跳 `viewExam.aspx`，中间有服务端写库与整页刷新。
+    不等就取 `page.content()` 会拿到"正在提交"的过渡页，解析出来是空题目。
+
+    判据用 **URL 里出现 `viewExam.aspx`**（结构锚点），不按固定 sleep。
+    """
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        try:
+            url = page.url or ""
+        except Exception:                                  # noqa: BLE001
+            url = ""
+        if _REVIEW_URL_RE.search(url):
+            # URL 已是对的结果页还不够：等文档就绪，避免拿到骨架
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except Exception:                              # noqa: BLE001
+                pass
+            return {"url": url, "html": page.content() or "",
+                    "title": (page.title() or "")}
+        page.wait_for_timeout(POLL_MS)
+    raise WorkError("structure", "交卷后没等到判分页（viewExam.aspx）："
+                                 "可能没交成功，或平台改版了跳转路径")

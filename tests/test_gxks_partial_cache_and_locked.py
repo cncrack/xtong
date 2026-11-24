@@ -75,11 +75,19 @@ class TestLearningPracticeCell(unittest.TestCase):
         self.assertEqual("\n".join(code_lines).count("未解锁"), 1)
 
     def test_ready_still_wins(self):
-        """已解锁的节（practice_ready）不受影响，仍显示「可做 #id」。"""
+        """已解锁的节（practice_ready）不受影响，仍显示「可做 #id」。
+
+        ⚠ 2026-11-24：`practiceCell` 现在按「做过几次」分两种文案——
+        没做过 → `t-bank` + 「可做」；做过 → `t-none` + 「可重做」。
+        所以断言不能钉死 `class="tag t-bank">可做`，要断言**这个分支存在**。
+        """
         seg = PAGE.split("function practiceCell(row)", 1)[1]
         seg = seg.split("// ---------------------------------------------------------------- 账号表格", 1)[0]
         self.assertIn("if (row.practice_ready)", seg)
-        self.assertIn('class="tag t-bank">可做', seg)
+        self.assertIn("t-bank", seg)
+        self.assertIn("可做", seg)
+        # 做过的节要给「可重做」，否则用户分不清这节有没有做过
+        self.assertIn("可重做", seg)
 
     def test_state_tag_unchanged(self):
         """状态标签本身不动：learning 仍是「学习中」。"""

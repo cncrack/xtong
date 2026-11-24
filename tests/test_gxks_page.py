@@ -66,8 +66,10 @@ class TestSectionsLayout(unittest.TestCase):
                       "text-align:right}", PAGE)
 
     def test_ops_first_columns_do_not_wrap(self):
-        # 并排布局下「动作」列曾被挤到 45px，四个字被拓成两行
-        self.assertIn("#ops td:nth-child(-n+3){white-space:nowrap}", PAGE)
+        # 并排布局下「动作」列曾被挤到 45px，四个字被拓成两行。
+        # ⚠ 2026-11-24 操作记录前面插了「账号」列（用户要求显示是谁操作的），
+        # 所以前**四**列（时间/账号/动作/结果）都要 nowrap；漏改会让「动作」压成竖条。
+        self.assertIn("#ops td:nth-child(-n+4){white-space:nowrap}", PAGE)
 
 
 class TestAccountTable(unittest.TestCase):

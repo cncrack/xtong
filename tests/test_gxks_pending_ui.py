@@ -32,9 +32,13 @@ class TestBackendExposesPending(unittest.TestCase):
         self.assertIn('"pending_counts": pending_counts', APP_SRC)
 
     def test_queries_before_closing_db(self):
-        """回归：曾在 return 字典里查库 → 连接已关 → ProgrammingError。"""
-        anchor = "ops = gxks_ops.recent_ops(db, account_label=label or None"
-        seg = APP_SRC.split(anchor, 1)[1][:800]
+        """回归：曾在 return 字典里查库 → 连接已关 → ProgrammingError。
+
+        ⚠ 2026-11-24：`recent_ops` 的调用改成查全部账号（`account_label` 不再传），
+        所以锚点跟着变；这里只要求「pending 查询在 db.close() 之前」这个性质不变。
+        """
+        anchor = "ops = gxks_ops.recent_ops(db, limit=100)"
+        seg = APP_SRC.split(anchor, 1)[1][:900]
         self.assertIn("pending_counts = gxks_pending.pending_counts(db)", seg)
         # 查询必须在 finally: db.close() 之前
         self.assertLess(seg.index("pending_counts = gxks_pending"),

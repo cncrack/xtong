@@ -613,8 +613,9 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
   background:#fff;padding:0 5px;border-radius:8px}
 .runlog-kind{display:inline-block;padding:1px 6px;border-radius:8px;
   background:#f1f3f6;color:#666;font-size:11.5px;margin-right:6px}
-/* 操作记录的前三列（时间/动作/结果）不折行，把余量全留给详情 */
-#ops td:nth-child(-n+3){white-space:nowrap}
+/* 操作记录的前四列（时间/账号/动作/结果）不折行，把余量全留给详情。
+   ⚠ 2026-11-24 加了「账号」列，选择器从 -n+3 改成 -n+4；漏改会让「动作」被压成竖条。 */
+#ops td:nth-child(-n+4){white-space:nowrap}
 /* 两条进度条（节数 / 学时）：纯 div，不引图表库 */
 .bars{display:flex;flex-wrap:wrap;gap:16px;margin:0 0 12px}
 .bar{flex:1 1 240px;min-width:200px}
@@ -1177,19 +1178,30 @@ function stateTag(row) {
 }
 
 function practiceCell(row) {
+  // 「做过的」要看得出来（2026-11-24 用户：「如果做过的，在面板的列表中状态要发生修改」）。
+  // 做过 1 次和做过 5 次对用户的决策完全不同（要不要重做、上次是不是做砸了）。
+  const times = Number(row.attempt_count || 0);
+  const lastAt = String(row.attempt_last_at || "");
+  const didTag = times
+    ? '<span class="tag t-done" title="本账号已提交过 ' + times + " 次" +
+      (lastAt ? "，上次 " + esc(lastAt) : "") + '">已做 ' + times + " 次</span>"
+    : "";
   if (row.practice_ready) {
-    return '<span class="tag t-bank">可做</span> <span class="muted">#' +
-      esc(row.exam_id) + "</span>";
+    return didTag + (didTag ? " " : "") +
+      '<span class="tag ' + (times ? "t-none" : "t-bank") + '">' +
+      (times ? "可重做" : "可做") + "</span> " +
+      '<span class="muted">#' + esc(row.exam_id) + "</span>";
   }
   // ⚠ 正在学的节：平台此时 `practice_locked=true`（要学完才解锁），
   // 直接写「未解锁」会和旁边的「学习中」并排成**自相矛盾**的观感
   // （2026-11-08 用户实拍截图：同一行「学习中 + 未解锁」）。
   // 这里改成「学完解锁」—— 语义准确（不是永久不可做），也不与「学习中」冲突。
   if (row.state === "learning") {
-    return '<span class="tag t-low" title="正在学：平台要学完这一节才开放课后练习">' +
+    return didTag + (didTag ? " " : "") +
+      '<span class="tag t-low" title="正在学：平台要学完这一节才开放课后练习">' +
       "学完解锁</span>";
   }
-  return '<span class="tag t-none">未解锁</span>';
+  return didTag + (didTag ? " " : "") + '<span class="tag t-none">未解锁</span>';
 }
 
 // ---------------------------------------------------------------- 账号表格
@@ -3149,11 +3161,21 @@ const ACTION_CN = { "study-start": "开始学习", "study-done": "学时达标",
 function renderOps(state) {
   const rows = state.ops || [];
   if (!rows.length) { el("ops").innerHTML = '<div class="empty">暂无记录</div>'; return; }
-  let html = '<div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>结果</th>' +
-    "<th>详情</th></tr></thead><tbody>";
+  // 「账号」列（2026-11-24 用户要求：「这个操作记录里面最好在合适的位置加上是谁操作的」）。
+  // 后端现在查**全部账号**（原来只查当前选中账号，所以那列没意义）。
+  // 显示名优先（用户认得的是「林鑫阳」不是 `default`）；批量动作没有归属账号 → 「(批量)」。
+  const cards = (state.cards || []);
+  const nameOf = (lab) => {
+    if (!lab) return "(批量)";
+    const c = cards.find((x) => x.label === lab);
+    return (c && (c.display || c.label)) || lab;
+  };
+  let html = '<div class="table-wrap"><table><thead><tr><th>时间</th><th>账号</th>' +
+    "<th>动作</th><th>结果</th><th>详情</th></tr></thead><tbody>";
   for (const r of rows) {
     const bad = r.result !== "ok";
     html += "<tr><td class=num>" + esc((r.at || "").slice(5)) + "</td><td>" +
+      esc(nameOf(r.account_label)) + "</td><td>" +
       esc(ACTION_CN[r.action] || r.action) + "</td><td>" +
       (bad ? '<span class="tag t-low">失败</span>' : '<span class="tag t-done">成功</span>') +
       "</td><td>" + esc(r.detail) +

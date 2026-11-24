@@ -131,6 +131,41 @@ def decide(
         return cur.rowcount > 0
 
 
+def verify_by_site_answer(
+    conn: sqlite3.Connection,
+    *,
+    account_label: str,
+    exercise_id: str,
+    ordinals: list[int],
+    at: str | None = None,
+) -> int:
+    """平台判分页给出了标准答案 → 把对应待确认项标 `VERIFIED`。返回改动条数。
+
+    ## 为什么可以自动核验（2026-11-24 用户定案）
+
+    用户原话：「平台判分页的标准答案 = 平台官方答案，对的，这个更好」。
+
+    与 AI 自报的 `confidence` 不同，判分页的「标准答案」是**平台自己判过的**，
+    不需要人工再核一遍。所以交卷入库成功后，这些题不必继续挂在待确认清单上。
+
+    ⚠ 只动**仍是 pending** 的行（`WHERE status=PENDING`）：已经人工决定过的不覆盖。
+    """
+    if not ordinals:
+        return 0
+    marks = ",".join("?" * len(ordinals))
+    with conn:
+        cur = conn.execute(
+            "UPDATE gx_pending SET status=?, decided_by=?, decided_at=?, "
+            "decision_note=?, updated_at=? "
+            "WHERE account_label=? AND exercise_id=? AND status=? "
+            f"AND question_ordinal IN ({marks})",
+            (VERIFIED, "site-answer", at or _now(),
+             "平台判分页标准答案（官方答案，无需人工再核）", at or _now(),
+             account_label, str(exercise_id), PENDING, *[int(o) for o in ordinals]),
+        )
+        return cur.rowcount
+
+
 def expire_stale(conn: sqlite3.Connection, *, hours: float, at: str | None = None) -> int:
     """超时标 `expired`（留痕，不删行）。返回过期条数。
 

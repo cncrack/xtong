@@ -126,6 +126,86 @@ def _answer_rows(frames: dict) -> list:
     return hits[0]
 
 
+def parse_review_question(*, node: Tag, row: list, type_map: dict,
+                          questions_doc_question: dict | None = None) -> dict:
+    """解析判分页（`viewExam.aspx`）里的**一道题**。
+
+    ## 为什么抽成独立函数（2026-11-24 G-7）
+
+    这条解析逻辑原来只存在于 `parse_capture()` 里，而 `parse_capture` 的入参全是
+    **已序列化的快照**（为了离线归档）。在线流程（`gxks_work.py` 交卷后）手上是
+    活对象，为了复用就得把数据序列化→写盘→读回来，纯属往返浪费。
+
+    抽出来后两条路共用同一份解析，不会出现「离线解析对了、在线漏了一个字段」。
+
+    ## 三类数据必须用同一套归一化
+
+    题干用 `text_of()`、选项文本用 `text_of()` —— 与回填侧（`work.py`）完全一致，
+    否则同一道题在两边算出不同指纹、也匹配不上（2026-10-30 的教训）。
+
+    `node` = `div[id^="ddTm_"]` 那一块；`row` = 答题页 `tm_arr` 的原始行
+    （用来交叉核对 qid / 题型 / 选项数 / 满分）。
+    """
+    code = str(row[1])
+    ordinal = int(str(node.get("id", "")).split("_")[-1] or 0)
+    qid = str(row[0])
+    max_score = float(row[3])
+    opts = str(row[5]).split(";")
+    if len(opts) != int(row[4]):
+        raise ValueError("分号拆分后的选项数与平台字段不一致")
+    if node.find("dt") is None:
+        raise ValueError("回顾页缺少题目结构")
+    # 题干：去掉 `<b>` 之后与答题页的 `row[2]` 比对（`<b>` 是题号装饰）
+    heading = BeautifulSoup(str(node.find("dt")), "html.parser")
+    for b in heading.select("b"):
+        b.decompose()
+    stem = _text(str(row[2]))
+    displayed = re.sub(r"^\.*\d+\.", "", heading.get_text(" ", strip=True)).strip()
+    if " ".join(displayed.split()) != stem:
+        raise ValueError("回顾题干与提交前题干不一致")
+    # 选项：可见文本必须与平台字段逐项相等（防错配答案）
+    labels = node.select(f'label[for^="tm_{ordinal}_"]')
+    visible_opts = [re.sub(r"^[A-Z]、", "", x.get_text(" ", strip=True)).strip()
+                    for x in labels]
+    if visible_opts != [_text(x) for x in opts]:
+        raise ValueError("回顾选项或排序变化，拒绝错配答案")
+    parts = [{"kind": "option", "key": chr(97 + i), "text": _text(opt), "html": opt}
+             for i, opt in enumerate(opts)]
+    keys = [p["key"] for p in parts]
+    picked = _choice(_labeled(node, "考生答案"), keys)
+    standard = _choice(_labeled(node, "标准答案"), keys)
+    grade = _labeled(node, "考生得分")
+    score_match = (re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*分\s*", grade.get_text())
+                   if grade else None)
+    score = float(score_match[1]) if score_match else None
+    if score is not None and score > max_score:
+        raise ValueError("单题得分超过满分，停止入库")
+    explanation = ""
+    for label in node.select("dd > label"):
+        if label.get_text(strip=True).startswith("试题解析"):
+            explanation = re.sub(r"^\s*试题解析", "", label.decode_contents(), count=1)
+    # 题号：优先用 `questions_doc` 里登记的顺序（离线路径），否则从 `ddTm_N` 取
+    if questions_doc_question is not None:
+        ordinal = int(questions_doc_question.get("no") or ordinal)
+        expected_qid = str(questions_doc_question.get("qid") or qid)
+        if expected_qid != qid:
+            raise ValueError("题 ID 与题目清单不一致")
+    return {
+        "ordinal": ordinal, "qid": qid, "type_code": code,
+        "type_name": (type_map or {}).get(code, "未知题型"),
+        "stem": stem, "stem_html": str(row[2]), "max_score": max_score, "parts": parts,
+        "extra": {"parent_qid": str(row[7]), "knowledge_id": str(row[8])},
+        "answer": {"picked": picked,
+                   "picked_source": "site" if picked is not None else None,
+                   "standard": standard,
+                   "standard_source": "site" if standard is not None else None,
+                   "score_got": score,
+                   "is_correct": picked["keys"] == standard["keys"]
+                   if picked is not None and standard and standard["keys"] else None,
+                   "explanation_html": explanation},
+    }
+
+
 def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
                   stage2: dict, review_meta: dict, review_html: str,
                   course_doc: dict | None = None) -> dict:
@@ -155,53 +235,16 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
     for no, row in enumerate(rows, 1):
         if len(row) < 9 or str(row[0]) != str(questions_doc["questions"][no - 1]["qid"]):
             raise ValueError("题 ID 或原始字段不完整")
-        code = str(row[1])
-        if code != "2":
-            raise ValueError(f"题型 {code} 尚未实测解析，请保留原始快照")
-        opts = str(row[5]).split(";")
-        if len(opts) != int(row[4]):
-            raise ValueError("分号拆分后的选项数与平台字段不一致")
+        if str(row[1]) != "2":
+            # 离线归档只收单选：别的题型没有实测过回顾页结构，
+            # 宁可拒绝入库也不要瞎猜（2026-10-30 定的）。
+            raise ValueError(f"题型 {row[1]} 尚未实测解析，请保留原始快照")
         node = soup.find(id=f"ddTm_{no}")
-        if node is None or node.find("dt") is None:
+        if node is None:
             raise ValueError("回顾页缺少题目结构")
-        heading = BeautifulSoup(str(node.find("dt")), "html.parser")
-        for b in heading.select("b"):
-            b.decompose()
-        stem = _text(str(row[2]))
-        displayed = re.sub(r"^\.*\d+\.", "", heading.get_text(" ", strip=True)).strip()
-        if " ".join(displayed.split()) != stem:
-            raise ValueError("回顾题干与提交前题干不一致")
-        labels = node.select(f'label[for^="tm_{no}_"]')
-        visible_opts = [re.sub(r"^[A-Z]、", "", x.get_text(" ", strip=True)).strip() for x in labels]
-        if visible_opts != [_text(x) for x in opts]:
-            raise ValueError("回顾选项或排序变化，拒绝错配答案")
-        parts = [{"kind": "option", "key": chr(97 + i), "text": _text(opt), "html": opt}
-                 for i, opt in enumerate(opts)]
-        keys = [p["key"] for p in parts]
-        picked = _choice(_labeled(node, "考生答案"), keys)
-        standard = _choice(_labeled(node, "标准答案"), keys)
-        grade = _labeled(node, "考生得分")
-        score_match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*分\s*", grade.get_text()) if grade else None
-        score = float(score_match[1]) if score_match else None
-        max_score = float(row[3])
-        if score is not None and score > max_score:
-            raise ValueError("单题得分超过满分，停止入库")
-        explanation = ""
-        for label in node.select("dd > label"):
-            if label.get_text(strip=True).startswith("试题解析"):
-                explanation = re.sub(r"^\s*试题解析", "", label.decode_contents(), count=1)
-        questions.append({
-            "ordinal": no, "qid": str(row[0]), "type_code": code,
-            "type_name": questions_doc.get("type_map", {}).get(code, "未知题型"),
-            "stem": stem, "stem_html": str(row[2]), "max_score": max_score, "parts": parts,
-            "extra": {"parent_qid": str(row[7]), "knowledge_id": str(row[8])},
-            "answer": {"picked": picked, "picked_source": "site" if picked is not None else None,
-                       "standard": standard, "standard_source": "site" if standard is not None else None,
-                       "score_got": score,
-                       "is_correct": picked["keys"] == standard["keys"]
-                       if picked is not None and standard and standard["keys"] else None,
-                       "explanation_html": explanation},
-        })
+        questions.append(parse_review_question(
+            node=node, row=row, type_map=questions_doc.get("type_map", {}),
+            questions_doc_question=questions_doc["questions"][no - 1]))
     body = soup.get_text(" ", strip=True)
     time_match = re.search(r"答卷时间\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", body)
     if not time_match or _norm_time(time_match[1]) != _norm_time(start.get("starttime", "")):
@@ -230,4 +273,80 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
         "result_id": result_id, "total_score": total_score, "got_score": got_score,
         "type_map": questions_doc.get("type_map", {}), "questions": questions,
         "source_rows": rows,
+    }
+
+
+def parse_review_online(*, account_label: str, review_url: str, review_html: str,
+                        raw_rows: list, type_map: dict, exercise_id: str,
+                        exam_start_id: str = "", section_id: str = "",
+                        section_name: str = "", course_id: str = "",
+                        start_time: str = "") -> dict:
+    """**在线**解析判分页（交卷后立刻调用），产出与 `parse_capture` 同构的 bundle。
+
+    ## 与 `parse_capture` 的分工（2026-11-24 G-7）
+
+    - `parse_capture`：离线归档用。入参是 5 份**已序列化的快照**，校验「回顾页与
+      提交前快照是不是同一次练习」（靠 `ExamStartId` / `Clerk_kscj_ID` / 题数 / 题干）。
+    - `parse_review_online`：在线流水线用。手上是**活数据**（答题帧刚读到的
+      `raw_rows` + `type_map`），交卷后拿到的 `review_html`。省掉序列化往返，
+      但**保留同样严格的逐题核对**（qid、题干、选项数、选项文本、满分、总分）。
+
+    ## 校验比离线更严的一点
+
+    离线路径只比题干字符串；这里额外用 `qid`（`row[0]`）逐题对齐 —— 在线时
+    我们**知道**每道题的平台 ID，没理由不用它。
+    """
+    review = _params(review_url)
+    result_id = review.get("clerk_kscj_id")
+    if not result_id:
+        raise ValueError("判分页 URL 缺少 Clerk_kscj_ID（可能没交卷成功）")
+    review_exercise = _exercise_id(review)
+    if review_exercise and exercise_id and review_exercise != exercise_id:
+        raise ValueError("判分页的练习 ID 与本次练习不一致")
+    soup = BeautifulSoup(review_html, "html.parser")
+    blocks = soup.select('div[id^="ddTm_"]')
+    if not raw_rows:
+        raise ValueError("交卷前没有读到题目，无法与判分页核对")
+    if len(raw_rows) != len(blocks):
+        raise ValueError("判分页题数与交卷前不一致，拒绝入库")
+    # 答题卡题号 → 该题在 `raw_rows` 里的行（在线没有 `questions_doc`，按顺序对齐）
+    questions = []
+    for no, row in enumerate(raw_rows, 1):
+        if len(row) < 9:
+            raise ValueError(f"第 {no} 题原始字段不完整")
+        node = soup.find(id=f"ddTm_{no}")
+        if node is None:
+            raise ValueError(f"判分页缺少第 {no} 题结构（ddTm_{no}）")
+        q = parse_review_question(node=node, row=row, type_map=type_map)
+        if q["ordinal"] != no:
+            raise ValueError(f"判分页题号错位：期望 {no}，实际 {q['ordinal']}")
+        questions.append(q)
+    body = soup.get_text(" ", strip=True)
+    total = re.search(r"总得分\s*(\d+(?:\.\d+)?)", body)
+    maximum = re.search(r"试卷总分\s*(\d+(?:\.\d+)?)", body)
+    got_score = float(total[1]) if total else None
+    total_score = float(maximum[1]) if maximum else None
+    # 逐题满分合计必须等于试卷总分：防「只抓到部分题目」
+    if total_score is not None:
+        if abs(sum(q["max_score"] for q in questions) - total_score) > 0.001:
+            raise ValueError("逐题满分合计不等于试卷总分，可能漏题")
+    # 逐题得分合计必须等于总得分（全都有分数时才校验）
+    scores = [q["answer"]["score_got"] for q in questions]
+    if got_score is not None and all(s is not None for s in scores):
+        if abs(sum(scores) - got_score) > 0.001:
+            raise ValueError("逐题得分合计不等于答卷总得分")
+    # 答卷开始时间（判分页会写「答卷时间 yyyy-MM-dd HH:mm:ss」）
+    if start_time:
+        tm = re.search(r"答卷时间\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", body)
+        if tm and _norm_time(tm[1]) != _norm_time(start_time):
+            raise ValueError("答卷开始时间不一致，不能把旧答卷关联到新作答")
+    return {
+        "format_version": 1, "account_label": account_label,
+        "exam_start_id": exam_start_id, "exercise_id": exercise_id,
+        "course_id": course_id, "section_id": section_id,
+        "section_name": section_name, "paper_label": "",
+        "start_time": start_time, "result_id": result_id,
+        "total_score": total_score, "got_score": got_score,
+        "type_map": type_map or {}, "questions": questions,
+        "source_rows": raw_rows,
     }

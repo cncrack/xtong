@@ -146,6 +146,19 @@ def import_bundle(conn: sqlite3.Connection, bundle: dict) -> dict:
                 "INSERT OR IGNORE INTO gx_q_paper_items(paper_id,ordinal,item_id,max_score) VALUES(?,?,?,?)",
                 (paper_id, q["ordinal"], item_id, q.get("max_score")))
             a = q.get("answer", {})
+            # **主观题只入题目、不入作答**（用户 2026-11-24 方案 A 定案）。
+            #
+            # 原话：「客观题的题目和答案要入，主观题，题目要入，答案暂不考虑入，
+            #        因为每个人不一样」。
+            #
+            # 所以主观题：
+            #   - `gx_q_items` 照写（题目共享，下次遇到同题 AI 知道它出现过）；
+            #   - `gx_q_answers` 写一行**空作答**（picked/standard 全 NULL）——
+            #     为什么不干脆不写：`gx_q_answers.import_id` 是这次快照的一部分，
+            #     缺行会让「答卷完整性」校验（题数对不上）失败。
+            #     `lookup_answer` 只认 `standard_source='site'`，NULL 自然不会被复用。
+            if not is_objective(q.get("type_code", "")):
+                a = {}
             conn.execute(
                 "INSERT INTO gx_q_answers(import_id,ordinal,picked_json,picked_source,standard_json,"
                 "standard_source,score_got,is_correct,explanation_html) VALUES(?,?,?,?,?,?,?,?,?)",

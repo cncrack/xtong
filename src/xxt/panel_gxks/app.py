@@ -1139,6 +1139,50 @@ def _normalize_stale_learning(sections: dict[str, Any]) -> dict[str, Any]:
     return sections
 
 
+def _annotate_attempts(settings: Settings, label: str,
+                       sections: dict[str, Any]) -> dict[str, Any]:
+    """给节列表的每一行补「这个账号做过几次练习、上次什么时候」。
+
+    ## 为什么需要（2026-11-24 用户）
+
+    用户原话：「这个账号先前做过2个小节的，你可以在这个课后练习中查看先前做过的。
+    如果做过的，在面板的列表中状态要发生修改」。
+
+    原来练习列永远只显示「可做 #15263」——做过 3 次和没做过长得一模一样，
+    用户无法判断「这节要不要重做」。
+
+    ## 数据来源与口径
+
+    `gx_q_papers` 按 `(account_label, exercise_id)` 记每次作答。这里一次查出
+    该账号**全部**练习的作答次数与最后一次时间，再按 `exam_id` 挂到行上。
+
+    ⚠ **只影响 /api/state 的展示，不改缓存文件**：缓存职责是「平台读到什么就存什么」，
+    作答次数是本地题库的事实，两者混写会让缓存过期时把次数一起弄丢。
+    """
+    if not sections or not sections.get("rows"):
+        return sections
+    counts: dict[str, dict[str, Any]] = {}
+    try:
+        db = open_question_bank(settings.data_dir / "gxks_questions.db")
+        try:
+            for r in db.execute(
+                    "SELECT exercise_id, COUNT(*) n, MAX(start_time) last_at "
+                    "FROM gx_q_papers WHERE account_label=? GROUP BY exercise_id",
+                    (label,)):
+                counts[str(r[0])] = {"n": int(r[1]), "last_at": str(r[2] or "")}
+        finally:
+            db.close()
+    except Exception:                                          # noqa: BLE001
+        return sections          # 题库读不到不影响节列表主功能
+    if not counts:
+        return sections
+    for row in sections["rows"]:
+        hit = counts.get(str(row.get("exam_id") or ""))
+        row["attempt_count"] = hit["n"] if hit else 0
+        row["attempt_last_at"] = hit["last_at"] if hit else ""
+    return sections
+
+
 def _pick_sections_cache(debug_dir: Path, label: str,
                          course: str = "") -> tuple[dict[str, Any], str]:
     """选这个账号该读哪一份节列表缓存，返回 `(数据, 实际读到的课程)`。
@@ -2131,7 +2175,15 @@ def create_app(settings: Settings) -> FastAPI:
         ai = gxks_ai_config.load(_db_path(settings), data_dir=settings.data_dir)
         db = open_question_bank(settings.data_dir / "gxks_questions.db")
         try:
-            ops = gxks_ops.recent_ops(db, account_label=label or None, limit=60)
+            # 操作记录**查全部账号**（2026-11-24 用户要求「加上是谁操作的」）。
+            #
+            # 原来这里是 `recent_ops(db, account_label=label)` —— 只返回当前选中
+            # 账号的记录。那样「操作记录」永远只有一个账号的行，看不出"谁做的"；
+            # 更糟的是批量动作写的是 `account_label=""`（不归属单账号），
+            # 这个过滤会把它整条滤掉 → 用户看不到批量记录。
+            #
+            # 现在查全部，由前端显示「账号」列；批量行显示为「(批量)」。
+            ops = gxks_ops.recent_ops(db, limit=100)
             # G-8（2026-11-11）：待确认队列。必须在 close 之前查完 ——
             # 原来我把查询写在 return 字典里，那时连接已关，实测报
             # `sqlite3.ProgrammingError: Cannot operate on a closed database`。
@@ -2158,6 +2210,10 @@ def create_app(settings: Settings) -> FastAPI:
         # learning 行超 90 秒无 tick 心跳 → 任务大概率已中断，降级展示
         # （只影响展示，不改缓存文件；见 _normalize_stale_learning）
         sections = _normalize_stale_learning(sections)
+        # ③ 已做过的练习要在节列表里看得出来（用户 2026-11-24）
+        # 原话：「这个账号先前做过2个小节的…如果做过的，在面板的列表中状态要发生修改」
+        # 同样**只影响展示**，不改缓存文件（缓存的职责是"平台读到什么就存什么"）。
+        sections = _annotate_attempts(settings, label, sections)
         # 该账号**所有**课程的缓存清单（前端切换器用；2026-11-03 加）
         courses_cached = _list_course_caches(debug_dir, label) if label else []
         return {
