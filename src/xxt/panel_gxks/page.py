@@ -3057,6 +3057,13 @@ async function refreshSectionsFor(label, course) {
   }
 }
 
+function confirmWorkSubmit() {
+  const rv = (STATE && STATE.work_review);
+  if (!rv || !rv.exercise_id) { toast("没有正在等确认的练习"); return; }
+  apiPost("/api/work/submit", { label: LABEL, exercise_id: rv.exercise_id })
+    .then((data) => { toast(data.message || data.error || "已提交", !data.ok); });
+}
+
 function doWork(btn) {
   post("/api/work", { exercise_id: btn.dataset.id, section_id: btn.dataset.sec,
     section_name: btn.dataset.name });
@@ -3101,6 +3108,16 @@ function renderWork(state) {
   html += '<div class="muted" style="margin-top:8px">' +
     "答案已经填进浏览器页面（未提交）。请到那个 Chrome 窗口核对，确认无误后" +
     "<b>自己点「交卷」</b>——脚本连着浏览器时点交卷会点不动。</div>";
+  // G-6（2026-11-25 用户拍板）：人工复核交卷。填完等确认 → 你核对 → 点「确认交卷」。
+  // 按钮只在「有练习在等确认」时出现；点了调 /api/work/submit 把信号发给后台驻留的脚本。
+  const rv = state.work_review;
+  if (rv && rv.exercise_id) {
+    html += '<div class="work-review-box"><span class="tag t-low">练习 #' +
+      esc(rv.exercise_id) + ' 已填完</span>' +
+      '<span class="muted">请在上方逐题表核对，无误后到浏览器窗口手动点「交卷」，' +
+      '再点这里让脚本回收标准答案入库</span>' +
+      '<button class="mini primary" onclick="confirmWorkSubmit()">确认交卷并入库</button></div>';
+  }
   // G-8（2026-11-11 用户要求）：待确认清单。要求三件事 ——
   //   ① 明确告诉「哪个章节哪里出问题」→ 每行写出 节名/第几题/原因
   //   ② 记录留痕可查 → 数据来自 gx_pending 表（后端已带 pending/pending_counts）

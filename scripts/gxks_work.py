@@ -77,10 +77,21 @@ def _default_label() -> str:
 def _make_llm(settings: Settings, chapter: str) -> Callable[[dict], dict]:
     """构造 `ask_llm(question) -> {keys, confidence, reason}`。
 
-    走超星那套 Provider 中心（`[llm]` + `data/` 里的加密 Key），所以面板配一次
-    Key，两个平台都能用；不在这里另存一份 Key。
+    ⚠ 2026-11-25 修的真 bug（用户报「我已配了 Key，AI 却说未配置」）：
+    原来这里 `LLMClient(settings.llm, settings.data_dir)` —— 而 `LLMClient._api_key()`
+    只读超星的 `data/xxt.db` 里的 `llm.key_enc`。gxks 面板把 Key 存在
+    `data/gxks_questions.db` 的 `ai.key.<provider>`，**两套库脱节**：
+    面板配了 Key，后台脚本却读不到 → 报「未配置 LLM Key」。
+    修：从 gxks 自己的库取 Key 传给 `LLMClient`（它新增了 `api_key` 参数绕过
+    超星的读取）。这样 gxks 面板配一次 Key 就能用，不影响超星侧。
     """
-    client = LLMClient(settings.llm, settings.data_dir)
+    # 从 gxks 题库取当前 provider 的 Key（解密后明文）
+    from xxt.store import gxks_ai_config
+    gxks_db = settings.data_dir / "gxks_questions.db"
+    provider = str(settings.llm.get("name") or "") or "agnies"
+    key = gxks_ai_config.load_key_for(
+        gxks_db, data_dir=settings.data_dir, provider=provider)
+    client = LLMClient(settings.llm, settings.data_dir, api_key=key)
 
     def ask(question: dict) -> dict:
         # 题型固定当单选：`gxks.allowed_types` 默认只放 "2"（单选），其他题型在
@@ -177,6 +188,94 @@ def _ensure_login(page, settings: Settings, label: str = "") -> bool:
     out = glogin.login(page, cred)
     print(f"[..] 重登结果：{out['result']}")
     return out["result"] == "ok"
+
+
+def _await_confirm_and_reclaim(
+    settings: Settings, *, label: str, port: int, exercise_id: str,
+    section_id: str, section_name: str, db, timeout_sec: int,
+    result_file: Path, raw_rows: list, type_map: dict,
+) -> dict | None:
+    """G-6 人工复核交卷流程：脚本填完停等「确认交卷」→ 你手动交卷 → 回收判分页入库。
+
+    ## 为什么断开的 session 之后才等（2026-11-25 用户拍板）
+
+    填完题后脚本**必须断开 CDP**，否则 Playwright 连着会**自动 dismiss 你手动点交卷的
+    confirm**（Q31）。所以流程：
+
+    ① 写 `work_review_<label>_<ex>.json`（phase=waiting，含 `raw_rows`/`type_map`），
+       让面板知道"这题在做、等确认"；
+    ② 断开 CDP（由调用方 close session）；
+    ③ 驻留轮询该文件的 phase —— 面板点「确认交卷」会把它改成 confirm；
+    ④ 收到 confirm → 重新连 CDP（`require_list=False`，判分页不是列表页）→ 轮询
+       `viewExam.aspx` 判分页 → 用 signal 里存的 `raw_rows`/`type_map` 做逐题核对 →
+       `parse_review_online` → `import_bundle` 入库；
+    ⑤ 超时没等到 confirm → 写 work-review 日志后退出，不泄漏进程。
+
+    ## 为什么要把 raw_rows/type_map 存进 signal
+
+    判分页解析（`parse_review_online`）需要**交卷前的题目行**（`raw_rows`）和题型表
+    （`type_map`）做逐题核对。这两个数据只在**第一次 session**（答题帧）里有；
+    重连 CDP 后拿不到。所以在断开前把它们序列化进 signal 文件，重连时读回来。
+
+    返回 `graded_bundle`（入库成功）或 None。
+    """
+    tmp = settings.data_dir / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    signal = tmp / f"work_review_{label}_{exercise_id}.json"
+
+    # ① 写 waiting 信号（幂等：已存在则覆盖）
+    try:
+        signal.write_text(json.dumps({
+            "label": label, "exercise_id": exercise_id,
+            "phase": "waiting", "result_file": result_file.name,
+            "raw_rows": raw_rows, "type_map": type_map,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }, ensure_ascii=False), encoding="utf-8")
+    except Exception:                                   # noqa: BLE001
+        print("[WARN] 写等待确认信号失败，跳过驻留流程", file=sys.stderr)
+        return None
+
+    print(f"[5/6] 已填完，等你核对并点「确认交卷」…（最多等 {timeout_sec}s）")
+    deadline = time.monotonic() + timeout_sec
+    phase = "waiting"
+    while time.monotonic() < deadline:
+        time.sleep(1.0)                      # 轮询间隔 1s
+        try:
+            data = json.loads(signal.read_text(encoding="utf-8"))
+            phase = str(data.get("phase") or "waiting")
+        except Exception:                               # noqa: BLE001
+            continue
+        if phase == "confirm":
+            break
+        if phase == "cancel":
+            # 面板/用户在等待中取消了（如去重做、放弃）
+            print("[SKIP] 用户取消确认，未交卷")
+            signal.unlink(missing_ok=True)
+            return None
+    else:
+        print("[SKIP] 等待确认超时，未交卷。答案未入库（你可在面板重新做）")
+        signal.unlink(missing_ok=True)
+        return None
+
+    # ④ 重新连 CDP 回收判分页
+    print("[6/6] 收到确认，等判分页并回收入库…")
+    try:
+        session2 = gbrowser.open_session(
+            settings, label=label, port=port, require_list=False)
+        try:
+            graded = gwork.wait_graded(session2.page)
+            return practice.parse_review_online(
+                account_label=label, review_url=graded["url"],
+                review_html=graded["html"], raw_rows=raw_rows,
+                type_map=type_map, exercise_id=exercise_id,
+                section_id=section_id, section_name=section_name)
+        finally:
+            session2.close()
+    except Exception as exc:                            # noqa: BLE001
+        print(f"[WARN] 重连回收判分页失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+    finally:
+        signal.unlink(missing_ok=True)
 
 
 def _answer_text(question: dict, keys: list[str]) -> str:
@@ -383,6 +482,39 @@ def main() -> int:
 
         print(f"[OK] 结果已写 {out_path.name}")
         print(json.dumps(result, ensure_ascii=False))
+
+        # G-6 人工复核交卷（2026-11-25 用户拍板）：填完停等「确认交卷」→ 回收判分页入库。
+        # 只在本轮确实**填了题**且开启 work_review 时才驻留；reference 模式不动页面、不驻留。
+        work_review = bool(gxks_cfg.get("work_review", False))
+        review_timeout = int(gxks_cfg.get("work_review_timeout", 600))
+        if work_review and result.get("filled"):
+            # ⚠ 必须先断开 CDP：连着会吞掉你手动点交卷的 confirm（Q31）。
+            # finally 里会再关一次（幂等，无副作用）。
+            if session is not None:
+                session.close()
+                session = None
+            graded = _await_confirm_and_reclaim(
+                settings, label=label, port=port,
+                exercise_id=args.exercise_id,
+                section_id=args.section_id, section_name=args.section_name,
+                db=db, timeout_sec=review_timeout, result_file=out_path,
+                raw_rows=paper["raw_rows"],
+                type_map=paper.get("type_map") or {})
+            if graded:
+                try:
+                    saved = gxks_questions.import_bundle(db, graded)
+                    print(f"      入库 {saved.get('questions')} 题"
+                          f"（题目全入；答案只入客观题）")
+                    site_ordinals = [
+                        q["ordinal"] for q in (graded.get("questions") or [])
+                        if is_objective(q.get("type_code", ""))
+                        and (q.get("answer") or {}).get("standard_source") == "site"]
+                    gxks_pending.verify_by_site_answer(
+                        db, account_label=label, exercise_id=args.exercise_id,
+                        ordinals=site_ordinals)
+                except Exception as exc:              # noqa: BLE001
+                    print(f"[WARN] 入库未完成：{type(exc).__name__}: {exc}", file=sys.stderr)
+
         return EXIT_OK
     except gwork.WorkError as exc:
         code = "structure" if exc.code == "structure" else "error"

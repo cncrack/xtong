@@ -255,9 +255,15 @@ class TestWorkScriptWiring(unittest.TestCase):
         self.assertIn("交卷本身已成功", body)
 
     def test_submit_happens_before_import(self):
-        """顺序不能反：没交卷就没有判分页。"""
-        self.assertLess(self.SRC.index("gwork.submit(paper[\"frame\"])"),
-                        self.SRC.index("parse_review_online("))
+        """顺序不能反：没交卷就没有判分页。
+
+        ⚠ 2026-11-25：新增的 `_await_confirm_and_reclaim` 里也有 `parse_review_online`，
+        在文件**前面**（早于主流程的 submit）。所以不能看整个文件的 index 顺序，
+        要看 **`def main()` 内部**：main 里 submit 必须先于 parse_review_online。
+        """
+        seg = self.SRC.split("def main()", 1)[1]
+        self.assertLess(seg.index("gwork.submit(paper[\"frame\"])"),
+                        seg.index("parse_review_online("))
 
 
 class TestAttemptAnnotation(unittest.TestCase):

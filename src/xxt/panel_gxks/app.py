@@ -1634,6 +1634,25 @@ def _read_json(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
+def _work_review_state(settings: Settings, label: str) -> dict[str, Any] | None:
+    """G-6：该账号是否有一个「填完在等人工确认交卷」的练习。
+
+    读 `data/tmp/work_review_<label>_<ex>.json`，phase 是 `waiting`（还没确认）
+    就返回给前端（显示「确认交卷」按钮）；phase 已是 `confirm` 或文件不存在返回 None。
+    """
+    tmp = settings.data_dir / "tmp"
+    matches = sorted(tmp.glob(f"work_review_{label}_*.json"),
+                     key=lambda p: p.stat().st_mtime)
+    if not matches:
+        return None
+    data = _read_json(matches[-1])
+    if not data or str(data.get("phase")) != "waiting":
+        return None
+    return {"label": label,
+            "exercise_id": str(data.get("exercise_id") or ""),
+            "result_file": str(data.get("result_file") or "")}
+
+
 # ---------------------------------------------------------------- 单账号动作（批量复用）
 #
 # 抽成模块级函数是为了让 `/api/study`、`/api/stop` 与批量的 `/api/accounts/batch`
@@ -2246,6 +2265,9 @@ def create_app(settings: Settings) -> FastAPI:
             "jobs": _jobs_snapshot(include_finished=True),
             "sections": sections or None,
             "work": _read_json(_latest(f"work_{label}_*.json", debug_dir)),
+            # G-6：是否有「填完在等人工确认交卷」的练习（2026-11-25）
+            # 前端据此显示「确认交卷」按钮。只对当前账号查。
+            "work_review": _work_review_state(settings, label),
             "pending": pending_rows,
             "pending_counts": pending_counts,
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
@@ -2301,6 +2323,33 @@ def create_app(settings: Settings) -> FastAPI:
             args.append("--no-fill")
         return _start(settings, label, "work", "gxks_work.py", *args,
                       message="正在开卷并作答；填完会停下等你核对——交卷要你自己点")
+
+    @app.post("/api/work/submit")
+    def work_submit(body: dict) -> dict:
+        """G-6 人工复核交卷：你核对逐题表后点「确认交卷」，把信号写进
+        `work_review_<label>_<ex>.json`（phase=confirm）。后台驻留的 `gxks_work.py`
+        读到后，重连 CDP 等判分页并回收标准答案入库。
+
+        只改信号文件的 phase；真正交卷仍是你在浏览器手动点（不吞 confirm）。
+        """
+        acc = _account(settings, str(body.get("label") or ""))
+        label = acc.label
+        exercise_id = str(body.get("exercise_id") or "").strip()
+        if not exercise_id:
+            return {"ok": False, "error": "缺少练习 ID"}
+        signal = ROOT / "data" / "tmp" / f"work_review_{label}_{exercise_id}.json"
+        if not signal.exists():
+            return {"ok": False,
+                    "error": "没有正在等确认的练习（可能已完成或超时）"}
+        try:
+            data = json.loads(signal.read_text(encoding="utf-8"))
+        except Exception:                                   # noqa: BLE001
+            data = {}
+        data["phase"] = "confirm"
+        data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        signal.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return {"ok": True,
+                "message": "已收到确认：请在浏览器窗口手动点「交卷」，脚本会自动回收判分页入库"}
 
     @app.post("/api/study")
     def do_study(body: dict) -> dict:

@@ -38,13 +38,22 @@ def _load_key_from_db(data_dir: Path) -> str | None:
 
 
 class LLMClient:
-    def __init__(self, cfg: dict[str, Any], data_dir: Path | None = None) -> None:
+    def __init__(self, cfg: dict[str, Any], data_dir: Path | None = None,
+                 api_key: str | None = None) -> None:
         self.base_url: str = str(cfg["base_url"]).rstrip("/")
         self.model: str = str(cfg["model"])
         self.timeout: int = int(cfg.get("timeout", 60))
         self.data_dir = data_dir
+        # 显式传入的 Key 优先（2026-11-25 G-5 修）：
+        # gxks 面板把 Key 存 `gxks_questions.db` 的 `ai.key.<provider>`，
+        # 而 `_load_key_from_db` 只读超星的 `xxt.db.llm.key_enc` —— 两套库脱节，
+        # 面板配了 Key 但 gxks_work 出答案时报「未配置 Key」。
+        # 这里允许调用方从正确的库取到 Key 直接传进来，绕过超星的读取。
+        self._api_key_override = api_key
 
     def _api_key(self) -> str:
+        if self._api_key_override:
+            return self._api_key_override
         key = _load_key_from_db(self.data_dir) if self.data_dir else None
         if not key:
             raise LLMError(
