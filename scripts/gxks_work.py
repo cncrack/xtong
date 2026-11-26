@@ -37,7 +37,7 @@ from xxt.adapters.gxks import login as glogin  # noqa: E402
 from xxt.adapters.gxks import selectors  # noqa: E402
 from xxt.adapters.gxks import practice  # noqa: E402
 from xxt.adapters.gxks import work as gwork  # noqa: E402
-from xxt.ai.llm import LLMClient, LLMError  # noqa: E402
+from xxt.ai.llm import LLMError  # noqa: E402   (LLM 错误类型共用；客户端用 gxks 专属的)
 from xxt.ai.quiz import build_messages, parse_llm_json  # noqa: E402
 from xxt.config import Settings, find_project_root  # noqa: E402
 from xxt.store import gxks_ops, gxks_pending  # noqa: E402
@@ -77,21 +77,20 @@ def _default_label() -> str:
 def _make_llm(settings: Settings, chapter: str) -> Callable[[dict], dict]:
     """构造 `ask_llm(question) -> {keys, confidence, reason}`。
 
-    ⚠ 2026-11-25 修的真 bug（用户报「我已配了 Key，AI 却说未配置」）：
-    原来这里 `LLMClient(settings.llm, settings.data_dir)` —— 而 `LLMClient._api_key()`
-    只读超星的 `data/xxt.db` 里的 `llm.key_enc`。gxks 面板把 Key 存在
-    `data/gxks_questions.db` 的 `ai.key.<provider>`，**两套库脱节**：
-    面板配了 Key，后台脚本却读不到 → 报「未配置 LLM Key」。
-    修：从 gxks 自己的库取 Key 传给 `LLMClient`（它新增了 `api_key` 参数绕过
-    超星的读取）。这样 gxks 面板配一次 Key 就能用，不影响超星侧。
+    ⚠ 2026-11-26 解耦（用户明确要求「两个项目不能互相影响」）：
+
+    原来这里调 `LLMClient(settings.llm, settings.data_dir)` —— 那个共享类的
+    `_api_key()` 会去读超星 `xxt.db` 的 `app_config.llm.key_enc`，gxks 根本读不到。
+    2026-11-25 我给共享类加了 `api_key` 参数绕过，但那**改了共用文件**，
+    合并回 main 会冲突，而且超星代码也不该被 gxks 的需求污染。
+
+    现在改用 gxks 专属的 `GxksLLMClient`（`adapters/gxks/llm.py`）：
+    - 它继承 `LLMClient.chat()`，**调 API 的逻辑还是共用的一份**；
+    - 只覆写 `_api_key()`，从 gxks 自己的库取 Key；
+    - 共用文件 `ai/llm.py` 恢复成 main 原样，零冲突。
     """
-    # 从 gxks 题库取当前 provider 的 Key（解密后明文）
-    from xxt.store import gxks_ai_config
-    gxks_db = settings.data_dir / "gxks_questions.db"
-    provider = str(settings.llm.get("name") or "") or "agnies"
-    key = gxks_ai_config.load_key_for(
-        gxks_db, data_dir=settings.data_dir, provider=provider)
-    client = LLMClient(settings.llm, settings.data_dir, api_key=key)
+    from xxt.adapters.gxks.llm import make_gxks_llm
+    client = make_gxks_llm(settings)
 
     def ask(question: dict) -> dict:
         # 题型固定当单选：`gxks.allowed_types` 默认只放 "2"（单选），其他题型在
