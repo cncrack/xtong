@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -160,6 +161,43 @@ def port_owner_pid(port: int) -> int:
     except Exception:                             # noqa: BLE001
         pass
     return 0
+
+
+def page_urls(port: int, *, timeout: float = 1.0) -> list[str]:
+    """只读地取该调试端口下**所有页面的 URL**（不建立 Playwright/CDP 自动化连接）。
+
+    ## 为什么需要它（2026-11-27 实拍 = Q31 的另一个面）
+
+    G-6 的流程是「你点面板『确认交卷』→ 脚本等判分页 → 你去浏览器点交卷」。
+    原来的实现：收到确认后**立刻 `connect_over_cdp` 重连**，然后 `wait_graded` 轮询 URL。
+
+    问题：**Playwright 连着 CDP 时，平台交卷的 confirm 弹窗会被自动 dismiss**
+    （Q31 记的就是这个坑）→ 用户点了「交卷」**没反应、没弹窗**。
+
+    正确做法：等判分页这段**只用 HTTP 只读**查 `/json/list` 里的 URL，
+    完全不建立自动化连接，你的 confirm 就能正常弹。
+    等 URL 真的变成 `viewExam.aspx` 了，才短暂连一次抓 HTML 然后立刻断开。
+
+    返回 `[url, ...]`；端口不活/取不到就返回空列表。
+    """
+    try:
+        with _DIRECT.open(f"http://127.0.0.1:{int(port)}/json/list",
+                          timeout=timeout) as resp:
+            if resp.status != 200:
+                return []
+            items = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:                                      # noqa: BLE001
+        return []
+    out: list[str] = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") != "page":
+            continue
+        url = str(it.get("url") or "")
+        if url:
+            out.append(url)
+    return out
 
 
 def ports_alive(ports: list[int], *, timeout: float = 0.5) -> dict[int, bool]:

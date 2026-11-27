@@ -1,4 +1,4 @@
-﻿"""G-6 人工复核交卷（2026-11-25 用户拍板）。
+"""G-6 人工复核交卷（2026-11-25 用户拍板）。
 
 用户要求：「填题 AI 做 -> 填完停下来给你看逐题核对单 -> 你确认没问题 ->
 你点交卷 -> 脚本收到「你交了」的信号 -> 立刻回收判分页入库」。
@@ -137,9 +137,26 @@ class TestGradedWaitTimeout(unittest.TestCase):
     def test_config_key_exists(self):
         self.assertIn("work_review_graded_timeout", SCRIPT)
 
-    def test_passed_to_wait_graded(self):
-        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:3000]
-        self.assertIn("timeout_ms=graded_timeout * 1000", seg)
+    def _fn_body(self):
+        """取 _await_confirm_and_reclaim 整个函数体（到下一个顶层 def 为止）。"""
+        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1]
+        return seg.split(chr(10) + "def ", 1)[0]
+
+    def test_waits_via_http_not_cdp(self):
+        """等判分页必须用**纯 HTTP 只读轮询**，不能提前连 CDP（Q31：会吞掉交卷 confirm）。
+
+        2026-11-27 实拍：用户「点了交卷没有反映、没有弹窗」——因为原实现收到确认后
+        立刻 connect_over_cdp，Playwright 连着就自动 dismiss 了 confirm。
+        """
+        seg = self._fn_body()
+        self.assertIn("page_urls(", seg)
+        poll_at = seg.index("page_urls(")
+        cdp_at = seg.index("open_session(")
+        self.assertLess(poll_at, cdp_at, "必须先 HTTP 轮询 URL，确认判分页出现后才连 CDP")
+
+    def test_graded_timeout_used_in_poll(self):
+        seg = self._fn_body()
+        self.assertIn("deadline = time.monotonic() + graded_timeout", seg)
 
     def test_default_is_300(self):
         seg = SCRIPT.split("work_review_graded_timeout", 1)[1][:40]

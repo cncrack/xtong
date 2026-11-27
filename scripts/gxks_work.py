@@ -257,14 +257,39 @@ def _await_confirm_and_reclaim(
         signal.unlink(missing_ok=True)
         return None
 
-    # ④ 重新连 CDP 回收判分页
-    print("[6/6] 收到确认，等判分页并回收入库…")
+    # ④ 等判分页 —— **先纯 HTTP 只读轮询，绝不提前连 CDP**（2026-11-27 实拍）
+    #
+    # 用户实拍：「点了没有反映，没有弹窗」。根因就是 Q31 的另一个面：
+    # 原实现收到确认后**立刻 connect_over_cdp** 再等 URL —— 而 Playwright 连着
+    # CDP 时，平台交卷的 confirm 会被自动 dismiss，用户点了交卷毫无反应。
+    #
+    # 现在：轮询期间只用 `chrome.page_urls()`（HTTP 读 /json/list，不建连接），
+    # 你的 confirm 能正常弹；等 URL 真变成 viewExam.aspx 了，才短暂连一次抓 HTML。
+    print(f"[6/6] 收到确认，等你在浏览器点「交卷」…（最多等 {graded_timeout}s）")
+    from xxt.adapters.gxks import chrome as _gchrome
+
+    review_url = ""
+    deadline = time.monotonic() + graded_timeout
+    while time.monotonic() < deadline:
+        for url in _gchrome.page_urls(port):
+            if "viewexam.aspx" in url.lower():
+                review_url = url
+                break
+        if review_url:
+            break
+        time.sleep(2.0)
+    if not review_url:
+        print("[SKIP] 等到超时仍未出现判分页——你可能还没点交卷，或平台跳转路径变了。"
+              "答案未入库（可重做一次）", file=sys.stderr)
+        signal.unlink(missing_ok=True)
+        return None
+
+    print(f"      判分页已出现，抓取并入库…")
     try:
         session2 = gbrowser.open_session(
             settings, label=label, port=port, require_list=False)
         try:
-            graded = gwork.wait_graded(session2.page,
-                                       timeout_ms=graded_timeout * 1000)
+            graded = gwork.wait_graded(session2.page, timeout_ms=15_000)
             return practice.parse_review_online(
                 account_label=label, review_url=graded["url"],
                 review_html=graded["html"], raw_rows=raw_rows,
@@ -273,7 +298,7 @@ def _await_confirm_and_reclaim(
         finally:
             session2.close()
     except Exception as exc:                            # noqa: BLE001
-        print(f"[WARN] 重连回收判分页失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"[WARN] 抓取判分页失败：{type(exc).__name__}: {exc}", file=sys.stderr)
         return None
     finally:
         signal.unlink(missing_ok=True)
