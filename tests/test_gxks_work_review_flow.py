@@ -175,9 +175,16 @@ class TestGradedWaitTimeout(unittest.TestCase):
         self.assertIn("viewExam.aspx", seg)
 
     def test_navigates_to_built_review_url(self):
-        """拼出 URL 后要主动 goto 过去（判分页不一定已在该标签打开）。"""
+        """拼出 URL 后要主动 goto 过去（判分页不一定已在该标签打开）。
+
+        ⚠ 2026-11-28：先等平台自己跳转（最多 60s），确实没到才 goto，
+        且超时放宽到 90s（实测判分页加载慢，30s 不够）。
+        变量名也从 page 改成 page2。
+        """
         seg = self._fn_body()
-        self.assertIn("page.goto(review_url", seg)
+        self.assertIn(".goto(review_url", seg)
+        self.assertIn("timeout=90_000", seg)
+        self.assertIn("判分页已在浏览器中打开", seg)
 
     def test_default_is_300(self):
         seg = SCRIPT.split("work_review_graded_timeout", 1)[1][:40]

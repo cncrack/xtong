@@ -111,6 +111,36 @@ def _choice(value: Tag | None, keys: list[str]) -> dict | None:
     return {"kind": "single", "keys": [selected] if selected else [], "text": shown}
 
 
+def _choice_alias(value: Tag | None, keys: list[str],
+                  texts: list[str]) -> dict | None:
+    """同 `_choice`，但允许用**选项文本**作答（判断题的判分页写「对」「错」）。
+
+    ⚠ 2026-11-28 判断题实拍：判分页的 `标准答案` 是文本「对」，不是字母 key。
+    单选题仍是字母（A/B/C/D），所以两种都认：
+      ① 文本直接命中某个选项（对/错）-> 取它的下标对应的 key
+      ② 否则按原逻辑（字母 key）
+    """
+    if value is None:
+        return None
+    shown = value.get_text(" ", strip=True)
+    selected = shown.lower().strip()
+    # ① 判断题的二进制答案**优先**：平台判分页写「对/错」，而答题侧/题库
+    #    用的 value 是 0/1（0=错、1=对，实测）。必须先换掉，否则会走下面的
+    #    「文本命中选项」分支返回字母 key，入库后和回填对不上，等于白存。
+    binary = {"对": "1", "正确": "1", "true": "1",
+              "错": "0", "错误": "0", "false": "0"}
+    if selected in binary:
+        return {"kind": "single", "keys": [binary[selected]], "text": shown}
+    # ② 文本命中选项 -> 换成 key（单选：选项文本直接作答的容错）
+    norm = {_text(x).lower(): keys[i] for i, x in enumerate(texts) if i < len(keys)}
+    if selected in norm:
+        return {"kind": "single", "keys": [norm[selected]], "text": shown}
+    # ② 字母 key
+    if selected and selected not in keys:
+        raise ValueError("答案不属于本题选项，停止入库等待核实")
+    return {"kind": "single", "keys": [selected] if selected else [], "text": shown}
+
+
 def _answer_rows(frames: dict) -> list:
     """取答题帧的 `tm_arr`：不认帧名，只认结构。
 
@@ -164,16 +194,45 @@ def parse_review_question(*, node: Tag, row: list, type_map: dict,
     if " ".join(displayed.split()) != stem:
         raise ValueError("回顾题干与提交前题干不一致")
     # 选项：可见文本必须与平台字段逐项相等（防错配答案）
-    labels = node.select(f'label[for^="tm_{ordinal}_"]')
-    visible_opts = [re.sub(r"^[A-Z]、", "", x.get_text(" ", strip=True)).strip()
-                    for x in labels]
-    if visible_opts != [_text(x) for x in opts]:
-        raise ValueError("回顾选项或排序变化，拒绝错配答案")
-    parts = [{"kind": "option", "key": chr(97 + i), "text": _text(opt), "html": opt}
-             for i, opt in enumerate(opts)]
+    #
+    # ⚠ 2026-11-28 判断题实拍（判分页真实结构）：
+    #     <dd><label for="tm_1_0">1、错</label><label for="tm_1_0">2、对</label></dd>
+    #   ① 两个 label 的 `for` **相同**（都是 tm_1_0）→ 按 for 前缀取会重复命中
+    #   ② 文本是「1、错」「2、对」，前缀是**序号**不是 A/B
+    #   ③ `tm_arr[5]` 是空串（选项不在平台字段里）
+    #   旧代码拿空串去比 -> 必然 "回顾选项或排序变化，拒绝错配答案"
+    # 所以判断题走**内置选项**路径，且选项文本就用平台给的（去掉序号前缀）。
+    is_builtin = bool(opts) is False or opts == [""]
+    if is_builtin:
+        # 判断题：从判分页第一个 dd 里的 label 取可见选项（保留平台顺序）
+        dd_first = node.find("dd")
+        raw_labels = dd_first.select("label") if dd_first else []
+        shown = []
+        for x in raw_labels:
+            s2 = x.get_text(" ", strip=True).strip()
+            s2 = re.sub(r"^\d+、", "", s2)      # 去掉「1、」「2、」序号前缀
+            shown.append(s2)
+        # 平台可能给「错/对」顺序，也可能「对/错」；按出现顺序当作选项顺序
+        if len(shown) < 2:
+            shown = ["对", "错"]
+        opts_list = shown[:2]
+        opts_html = list(opts_list)
+    else:
+        labels = node.select(f'label[for^="tm_{ordinal}_"]')
+        visible_opts = [re.sub(r"^[A-Z]、", "", x.get_text(" ", strip=True)).strip()
+                        for x in labels]
+        if visible_opts != [_text(x) for x in opts]:
+            raise ValueError("回顾选项或排序变化，拒绝错配答案")
+        opts_list = [_text(x) for x in opts]
+        # 单选保留**原始 HTML**（`<b>甲选项</b>` 这类），下游据此还原渲染
+        opts_html = [str(x) for x in opts]
+
+    parts = [{"kind": "option", "key": chr(97 + i), "text": opt,
+              "html": opts_html[i] if i < len(opts_html) else opt}
+             for i, opt in enumerate(opts_list)]
     keys = [p["key"] for p in parts]
-    picked = _choice(_labeled(node, "考生答案"), keys)
-    standard = _choice(_labeled(node, "标准答案"), keys)
+    picked = _choice_alias(_labeled(node, "考生答案"), keys, opts_list)
+    standard = _choice_alias(_labeled(node, "标准答案"), keys, opts_list)
     grade = _labeled(node, "考生得分")
     score_match = (re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*分\s*", grade.get_text())
                    if grade else None)

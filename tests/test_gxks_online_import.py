@@ -247,8 +247,12 @@ class TestWorkScriptWiring(unittest.TestCase):
         self.assertIn("gxks_questions.import_bundle(", self.SRC)
 
     def test_import_never_breaks_submit(self):
-        """入库整段必须在 try 里 —— 交卷是既成事实，入库只是附加收益。"""
-        seg = self.SRC.split("gwork.submit(paper[\"frame\"])", 1)[1]
+        """入库整段必须在 try 里 —— 交卷是既成事实，入库只是附加收益。
+
+        ⚠ 2026-11-27：`submit()` 的入参从 `paper["frame"]` 改成 `page`
+        （交卷必须调 Header 帧的 `SubmitExam()`，不能直接 `frmExam.submit()`）。
+        """
+        seg = self.SRC.split("gwork.submit(page)", 1)[1]
         body = seg.split("else:", 1)[0]
         self.assertIn("try:", body)
         self.assertIn("except Exception", body)
@@ -262,7 +266,7 @@ class TestWorkScriptWiring(unittest.TestCase):
         要看 **`def main()` 内部**：main 里 submit 必须先于 parse_review_online。
         """
         seg = self.SRC.split("def main()", 1)[1]
-        self.assertLess(seg.index("gwork.submit(paper[\"frame\"])"),
+        self.assertLess(seg.index("gwork.submit(page)"),
                         seg.index("parse_review_online("))
 
 

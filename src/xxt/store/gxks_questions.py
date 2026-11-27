@@ -233,7 +233,10 @@ def _norm(text: object) -> str:
 # 这里只认**已实测**的客观题代码；未列出的（含简答/论述/操作题）一律不进共享池。
 # 已实测：2 = 单选（allowed_types 默认值）。多选/判断等放行后把代码加进这里即可，
 # 这就是「题库结构留扩展余地」的落点。
-OBJECTIVE_TYPE_CODES = frozenset({"2"})
+#: 客观题（答案唯一、可跨账号复用）：单选 2 / 多选 3 / 判断 4。
+#: 2026-11-27 修正：原来只有 {"2"}，判断题被当成主观题
+#: → 不进共享库、还被标成 subjective 待确认。判断题答案同样唯一。
+OBJECTIVE_TYPE_CODES = frozenset({"2", "3", "4"})
 
 
 def is_objective(type_code: str) -> bool:

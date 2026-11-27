@@ -403,13 +403,43 @@ def read_checked(frame: Any) -> dict[int, str]:
     return {int(k): str(v) for k, v in (data or {}).items() if str(k).isdigit()}
 
 
-def submit(frame: Any) -> None:
-    """交卷：`frmExam.submit()`。
+def submit(page: Any) -> None:
+    """交卷：必须调**按钮自己的函数 `SubmitExam()`**，不能直接 `frmExam.submit()`。
 
-    只在 `gxks.auto_submit=true` 时由后台进程调用。默认路径是人工点交卷——
-    因为交卷前平台还会弹一次确认，而人在场时能看见题目是否真的填对了。
+    ## 为什么（2026-11-27 实拍「试卷保存失败，请稍后再保存」）
+
+    平台交卷按钮的 onclick 是 `SubmitExam()`，它内部做了一串**必要前置**：
+        ForbitOperate=1 -> stopclock() -> SaveMode=1 -> 写 LeftTime -> PackAnswer() -> frmExam.submit()
+    而原来的 `submit()` 直接 `frmExam.submit()`，**跳过了这些**，服务端拿到的
+    状态不完整 -> `ExamSave.aspx` 回一句
+        alert('试卷保存失败，请稍后再保存')
+
+    ## 函数在哪个帧（实测 14684）
+
+      ExamTmStepHeader 帧：`SubmitExam`      <- 交卷入口在这
+      ExamTmStepDo 帧    ：`PackAnswer` / `NavNextTm` / `frmExam` / `check_index`
+      ExamSave 帧        ：交卷结果（失败时就是那句 alert）
+
+    所以按「哪个帧里有 SubmitExam」去找，不认帧名（帧名改过一轮，见
+    docs/gxks/gaoxiaokaoshi.md §2.11 第 18 条）。
     """
-    frame.evaluate(selectors.EXAM_SUBMIT_JS)
+    # ① 首选：找到有 SubmitExam 的帧，调它（会走完整前置）
+    for f in page.frames:
+        try:
+            if f.evaluate("() => typeof SubmitExam") == "function":
+                f.evaluate("() => SubmitExam()")
+                return
+        except Exception:                                   # noqa: BLE001
+            continue
+    # ② 兜底：老路径 `frmExam.submit()`（只在没有 SubmitExam 的普通练习上）
+    for f in page.frames:
+        try:
+            if f.evaluate("() => typeof frmExam") == "object":
+                f.evaluate(selectors.EXAM_SUBMIT_JS)
+                return
+        except Exception:                                   # noqa: BLE001
+            continue
+    raise WorkError("structure", "找不到交卷入口（SubmitExam / frmExam 都没有）")
 
 
 # 判分页出现的判定：交卷后站点会跳到 `viewExam.aspx?...&Clerk_kscj_ID=...`

@@ -284,3 +284,92 @@ def test_unknown_type_still_rejected():
         assert "尚未实测" in str(exc)
     else:
         raise AssertionError("未登记题型应被拒绝")
+
+
+# ---------------------------------------------------------------- 交卷入口（2026-11-27）
+#
+# 用户点交卷，平台弹「试卷保存失败，请稍后再保存」。
+# 实测各帧：SubmitExam 在 Header 帧，PackAnswer/frmExam 在 Do 帧。
+# 交卷按钮的 onclick 是 SubmitExam()，它内部做了一串必要前置：
+#   ForbitOperate=1 -> stopclock() -> SaveMode=1 -> 写 LeftTime
+#   -> PackAnswer() -> frmExam.submit()
+# 原来直接调 frmExam.submit() 跳过这些 -> 服务端状态不完整 -> 保存失败。
+
+
+class _FakePage:
+    """假 page：frames 里放几个假帧。"""
+
+    def __init__(self, frames):
+        self.frames = frames
+
+
+class _FakeJsFrame:
+    def __init__(self, values, calls):
+        self._values = values          # {"SubmitExam": "function", ...}
+        self._calls = calls
+
+    def evaluate(self, script):
+        if "typeof" in script:
+            for k, v in self._values.items():
+                if k in script:
+                    return v
+            return "undefined"
+        # 调用语句，记下来
+        self._calls.append(script)
+        return None
+
+
+def test_submit_prefers_SubmitExam():
+    """有 SubmitExam 时必须调它（走完整前置），不能直接 frmExam.submit()。"""
+    calls = []
+    header = _FakeJsFrame({"SubmitExam": "function"}, calls)
+    do_frame = _FakeJsFrame({"frmExam": "object", "PackAnswer": "function"}, calls)
+    work.submit(_FakePage([header, do_frame]))
+    assert any("SubmitExam()" in c for c in calls), calls
+    assert not any("frmExam.submit" in c for c in calls), calls
+
+
+def test_submit_falls_back_to_frmExam():
+    """没有 SubmitExam 的普通练习才用 frmExam.submit() 兜底。"""
+    calls = []
+    do_frame = _FakeJsFrame({"frmExam": "object"}, calls)
+    work.submit(_FakePage([do_frame]))
+    assert any("frmExam.submit" in c for c in calls), calls
+
+
+def test_submit_raises_when_no_entry():
+    """两个入口都没有 → 明确报错，不静默。"""
+    calls = []
+    empty = _FakeJsFrame({}, calls)
+    try:
+        work.submit(_FakePage([empty]))
+    except work.WorkError as exc:
+        assert "交卷入口" in str(exc)
+    else:
+        raise AssertionError("没有交卷入口时应报错")
+
+
+# ---------------------------------------------------------------- 答案文本（问号 bug）
+
+def test_answer_text_judge_values():
+    """回归：判断题 value 是 0/1，原来按字母算会越界显示「?」。"""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "_gw", _P(__file__).resolve().parents[1] / "scripts" / "gxks_work.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    q = {"options": ["对", "错"], "option_keys": ["1", "0"]}
+    assert m._answer_text(q, ["1"]) == "A、对"
+    assert m._answer_text(q, ["0"]) == "B、错"
+
+
+def test_answer_text_single_choice_still_works():
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "_gw2", _P(__file__).resolve().parents[1] / "scripts" / "gxks_work.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    q = {"options": ["甲", "乙", "丙"], "option_keys": ["a", "b", "c"]}
+    assert m._answer_text(q, ["b"]) == "B、乙"

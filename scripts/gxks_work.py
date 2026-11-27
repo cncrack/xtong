@@ -313,11 +313,25 @@ def _await_confirm_and_reclaim(
         session2 = gbrowser.open_session(
             settings, label=label, port=port, require_list=False)
         try:
-            # 判分页可能还没在这个标签里打开（我们只是拼了 URL）→ 主动导航过去
-            if "viewexam.aspx" not in (session2.page.url or "").lower():
-                session2.page.goto(review_url, wait_until="domcontentloaded",
-                                   timeout=30_000)
-            graded = gwork.wait_graded(session2.page, timeout_ms=20_000)
+            # ⚠ 2026-11-28 实拍：交卷成功了（说明 SubmitExam 修复有效），但
+            #   这里 `goto` 判分页 30 秒超时 -> 没入库。两个原因：
+            #   ① 用户手动交卷后**浏览器已经自己跳到判分页**，我们不该再 goto 一次
+            #      （重新加载 = 又等一遍，实测判分页本身加载就很慢）
+            #   ② 判分页题多资源多，30 秒不够
+            # 所以：**先等一会儿让页面自己到位**；确实没到才 goto，且给 90 秒。
+            page2 = session2.page
+            deadline2 = time.monotonic() + 60        # 等平台自己跳转，最多 60s
+            while time.monotonic() < deadline2:
+                if "viewexam.aspx" in (page2.url or "").lower():
+                    break
+                time.sleep(1.0)
+            if "viewexam.aspx" not in (page2.url or "").lower():
+                print("      浏览器没自己跳到判分页，主动导航…")
+                page2.goto(review_url, wait_until="domcontentloaded",
+                           timeout=90_000)
+            else:
+                print("      判分页已在浏览器中打开，直接抓取")
+            graded = gwork.wait_graded(page2, timeout_ms=60_000)
             return practice.parse_review_online(
                 account_label=label, review_url=graded["url"],
                 review_html=graded["html"], raw_rows=raw_rows,
@@ -334,13 +348,28 @@ def _await_confirm_and_reclaim(
 
 
 def _answer_text(question: dict, keys: list[str]) -> str:
-    """把 key 还原成人看的一句（面板核对列用）：`B、《宪法》`。"""
+    """把 key 还原成人看的一句（面板核对列用），**按题型**解析 value。
+
+    ⚠ 2026-11-27 修：判断题的 value 是 0/1，而这里原来按字母算
+    （ord(key)-97），"1" 会算出 -48 越界 → 面板显示「?」。
+    现在先按该题的 option_keys 反查下标，查不到再退回字母假设。
+    """
+    options = list(question.get("options") or [])
+    spec_keys = list(question.get("option_keys") or [])
     parts = []
     for key in keys:
-        idx = ord(key) - 97
-        options = question["options"]
-        label = chr(ord("A") + idx) if 0 <= idx < 26 else "?"
-        parts.append(f"{label}、{options[idx]}" if 0 <= idx < len(options) else label)
+        s = str(key).strip()
+        idx = -1
+        if s in spec_keys:
+            idx = spec_keys.index(s)
+        elif s.lower() in spec_keys:
+            idx = spec_keys.index(s.lower())
+        elif len(s) == 1 and "a" <= s.lower() <= "z":
+            idx = ord(s.lower()) - ord("a")
+        if 0 <= idx < len(options):
+            parts.append(chr(ord("A") + idx) + "、" + options[idx])
+        else:
+            parts.append(s)
     return "；".join(parts)
 
 
@@ -448,7 +477,7 @@ def main() -> int:
                 raise gwork.WorkError("structure", f"回填后回读不一致：第 {wrong} 题")
             if do_submit:
                 print("[!!] auto_submit=true → 交卷")
-                gwork.submit(paper["frame"])
+                gwork.submit(page)      # submit 现在需要整个 page（SubmitExam 在 Header 帧里）
                 # G-7（2026-11-24 用户方案 A）：交卷成功后**立刻回收判分页入库**。
                 #
                 # 为什么必须在这里做：平台只在判分页（`viewExam.aspx`）显示「标准答案」，
