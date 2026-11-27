@@ -290,7 +290,16 @@ def lookup_answer(conn: sqlite3.Connection, *, stem: str, options: list[str]) ->
             "WHERE item_id = ? AND kind = 'option' ORDER BY ordinal", (item_id,)
         ).fetchall()
         stored = [_norm(json.loads(r[1]).get("text")) for r in part_rows]
-        if stored != opts_norm:
+        # ⚠ 2026-11-28（1.6 判断题实跑）：判断题的「判分页」与「答题页」
+        # 选项**展示顺序不一致** —— 判分页 <label>1、错</label><label>2、对</label>，
+        # 而答题页 radio 是「对(value=1)」「错(value=0)」。
+        # 严格按顺序比会永远判不中，题库里明明有答案却「题库命中 0」。
+        # 所以：**判断题按集合比**（对/错 只有两个，顺序无意义，答案存的是 value 不靠下标）。
+        # 单选/多选仍严格按顺序（选项顺序变了字母含义就变了）。
+        if str(type_code).strip() in ("4",):
+            if sorted(stored) != sorted(opts_norm):
+                continue
+        elif stored != opts_norm:
             continue
         answer = conn.execute(
             "SELECT a.standard_json FROM gx_q_answers a "

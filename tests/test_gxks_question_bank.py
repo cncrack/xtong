@@ -201,3 +201,43 @@ def test_future_schema_rejected(conn):
     with pytest.raises(ValueError, match="降级"):
         migrate(conn)
     assert conn.execute("SELECT value FROM meta WHERE key='gxks_schema_version'").fetchone()[0] == "99"
+
+
+def test_judge_options_compared_as_set():
+    """回归：判断题的判分页与答题页**选项顺序不一致**（2026-11-28 实跑）。
+
+    判分页：<label>1、错</label><label>2、对</label>
+    答题页：radio 顺序「对(value=1)」「错(value=0)」
+    `lookup_answer` 原来严格按顺序比 -> 永远判不中 ->
+    题库里明明有答案却「题库命中 0」-> AI 重新瞎猜（第2题又答错）。
+
+    修：判断题（type 4）按**集合**比选项，单选/多选仍严格按顺序。
+    """
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src" / "xxt" / "store"
+           / "gxks_questions.py").read_text(encoding="utf-8")
+    seg = src.split("def lookup_answer(", 1)[1][:2200]
+    assert 'in ("4",)' in seg
+    assert "sorted(stored) != sorted(opts_norm)" in seg
+
+
+def test_choice_still_order_sensitive():
+    """单选必须严格按顺序（选项换序则字母含义变了）。"""
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src" / "xxt" / "store"
+           / "gxks_questions.py").read_text(encoding="utf-8")
+    seg = src.split("def lookup_answer(", 1)[1][:2200]
+    assert "elif stored != opts_norm:" in seg
+
+
+def test_prompt_has_strict_judge_rule():
+    """判断题要有「严格按事实核对、不许替题目圆场」的硬规则（2026-11-28）。
+
+    AI 对「2025年是人民海军成立75周年」的 reasoning 是：
+      「1949年成立，2024年为75周年，题目表述有误，但……可能指2024年」
+    —— 自己算出不对，还是答了「对」。
+    """
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src" / "xxt" / "ai"
+           / "quiz.py").read_text(encoding="utf-8")
+    assert "判断题必须严格按事实核对" in src
