@@ -193,6 +193,7 @@ def _await_confirm_and_reclaim(
     settings: Settings, *, label: str, port: int, exercise_id: str,
     section_id: str, section_name: str, db, timeout_sec: int,
     result_file: Path, raw_rows: list, type_map: dict,
+    graded_timeout: int = 300,
 ) -> dict | None:
     """G-6 人工复核交卷流程：脚本填完停等「确认交卷」→ 你手动交卷 → 回收判分页入库。
 
@@ -262,7 +263,8 @@ def _await_confirm_and_reclaim(
         session2 = gbrowser.open_session(
             settings, label=label, port=port, require_list=False)
         try:
-            graded = gwork.wait_graded(session2.page)
+            graded = gwork.wait_graded(session2.page,
+                                       timeout_ms=graded_timeout * 1000)
             return practice.parse_review_online(
                 account_label=label, review_url=graded["url"],
                 review_html=graded["html"], raw_rows=raw_rows,
@@ -460,7 +462,13 @@ def main() -> int:
                 db, account_label=label,
                 question_ordinal=int(risk["ordinal"]),
                 reason=str((risk.get("reasons") or ["ai_used"])[0]),
-                course_id=str(args.course or ""),
+                # ⚠ 2026-11-27 修崩溃：这里原来写 `args.course`，但 argparse
+                # **从未定义** `--course` → 每次填完题走到写待确认记录就抛
+                # `AttributeError: 'Namespace' object has no attribute 'course'`，
+                # 整个 work 任务在「已填题但还没写出 [5/6] 等确认信号」之前就死了
+                # （用户实拍：点交卷后「关闭」没反应，因为脚本早已退出）。
+                # 课程名的正确来源与 L100 一致：配置里的 platform.name。
+                course_id=str(settings.raw.get("platform", {}).get("name", "")),
                 section_id=args.section_id, section_name=args.section_name,
                 exercise_id=args.exercise_id,
                 type_code=str(risk.get("type_code") or ""),
@@ -486,6 +494,11 @@ def main() -> int:
         # 只在本轮确实**填了题**且开启 work_review 时才驻留；reference 模式不动页面、不驻留。
         work_review = bool(gxks_cfg.get("work_review", False))
         review_timeout = int(gxks_cfg.get("work_review_timeout", 600))
+        # 「收到确认后等判分页」的独立超时（2026-11-27 实拍）：
+        # 你点了「确认交卷」之后还要**切到浏览器窗口**手动点交卷 + 确认弹窗，
+        # 原来写死 60 秒，实拍就超时了（[WARN] 交卷后没等到判分页）。
+        # 给足 5 分钟，且独立于「等你核对」的 work_review_timeout。
+        graded_timeout = int(gxks_cfg.get("work_review_graded_timeout", 300))
         if work_review and result.get("filled"):
             # ⚠ 必须先断开 CDP：连着会吞掉你手动点交卷的 confirm（Q31）。
             # finally 里会再关一次（幂等，无副作用）。
@@ -498,7 +511,8 @@ def main() -> int:
                 section_id=args.section_id, section_name=args.section_name,
                 db=db, timeout_sec=review_timeout, result_file=out_path,
                 raw_rows=paper["raw_rows"],
-                type_map=paper.get("type_map") or {})
+                type_map=paper.get("type_map") or {},
+                graded_timeout=graded_timeout)
             if graded:
                 try:
                     saved = gxks_questions.import_bundle(db, graded)

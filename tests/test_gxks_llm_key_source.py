@@ -1,4 +1,4 @@
-﻿"""G-6 Key 解耦测试（2026-11-26）。架构：共用文件不动，gxks 用自己的客户端。"""
+"""G-6 Key 解耦测试（2026-11-26）。架构：共用文件不动，gxks 用自己的客户端。"""
 from __future__ import annotations
 import subprocess
 import tempfile
@@ -96,3 +96,50 @@ class TestGxksClientRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoMissingArgparseAttr(unittest.TestCase):
+    """回归：gxks_work.py 引用了 argparse 里不存在的参数（2026-11-27 实拍）。
+
+    用户点交卷后「关闭」没反应。日志：填完 3 题后立刻
+    [FAIL] AttributeError: Namespace object has no attribute course
+
+    真因：gxks_pending.add(..., course_id=str(args.course or ""))，
+    但该脚本 argparse 从未定义 --course。
+    后果更阴：题已填进浏览器，「等确认」信号还没写出就抛异常，
+    work_review 流程根本没启动 → 面板没在等确认，「关闭」自然没反应。
+    """
+
+    def test_all_args_attrs_are_defined(self):
+        import re as _re
+        import ast
+        src = Path(__file__).resolve().parents[1] / "scripts" / "gxks_work.py"
+        text = src.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        # ① argparse 里定义的：从 add_argument 的第一个字面量参数取
+        definedvex = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "add_argument"):
+                continue
+            for arg0 in node.args[:1]:
+                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                    name = arg0.value.lstrip("-").replace("-", "_")
+                    if name and name != "h":
+                        definedvex.add(name)
+        # ② 代码里用的 args.xxx（去注释；注释里的引用不算 bug）
+        used = set()
+        for line in text.split(chr(10)):
+            code = line.split(chr(35), 1)[0]          # 去掉 # 后的注释
+            for m in _re.finditer(r"\bargs\.([A-Za-z_][A-Za-z0-9_]*)", code):
+                used.add(m.group(1))
+        missing = sorted(used - definedvex)
+        self.assertEqual(missing, [],
+                         f"引用了 argparse 里没有的参数：{missing}")
+
+
+if __name__ == "__main__":
+    unittest.main()
+

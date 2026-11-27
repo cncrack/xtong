@@ -124,5 +124,31 @@ class TestWorkReviewStateHelper(unittest.TestCase):
             self.assertIsNone(panel_app._work_review_state(s, "a1"))
 
 
+
+class TestGradedWaitTimeout(unittest.TestCase):
+    """回归：等判分页的 60 秒写死，实拍超时（2026-11-27）。
+
+    用户点「确认交卷」后要切到浏览器窗口手动点交卷 + 确认弹窗，
+    原来 wait_graded 默认 60 秒 -> 日志报
+    [WARN] 交卷后没等到判分页（viewExam.aspx）。
+    修：新增配置 work_review_graded_timeout（默认 300 秒）并传给 wait_graded。
+    """
+
+    def test_config_key_exists(self):
+        self.assertIn("work_review_graded_timeout", SCRIPT)
+
+    def test_passed_to_wait_graded(self):
+        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:3000]
+        self.assertIn("timeout_ms=graded_timeout * 1000", seg)
+
+    def test_default_is_300(self):
+        seg = SCRIPT.split("work_review_graded_timeout", 1)[1][:40]
+        self.assertIn("300", seg)
+
+    def test_signature_accepts_it(self):
+        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:400]
+        self.assertIn("graded_timeout", seg)
+
+
 if __name__ == "__main__":
     unittest.main()
