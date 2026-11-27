@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -193,6 +194,7 @@ def _await_confirm_and_reclaim(
     settings: Settings, *, label: str, port: int, exercise_id: str,
     section_id: str, section_name: str, db, timeout_sec: int,
     result_file: Path, raw_rows: list, type_map: dict,
+    exam_start_id: str = "", start_time: str = "",
     graded_timeout: int = 300,
 ) -> dict | None:
     """G-6 人工复核交卷流程：脚本填完停等「确认交卷」→ 你手动交卷 → 回收判分页入库。
@@ -229,6 +231,7 @@ def _await_confirm_and_reclaim(
             "label": label, "exercise_id": exercise_id,
             "phase": "waiting", "result_file": result_file.name,
             "raw_rows": raw_rows, "type_map": type_map,
+            "exam_start_id": exam_start_id, "start_time": start_time,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }, ensure_ascii=False), encoding="utf-8")
     except Exception:                                   # noqa: BLE001
@@ -319,7 +322,8 @@ def _await_confirm_and_reclaim(
                 account_label=label, review_url=graded["url"],
                 review_html=graded["html"], raw_rows=raw_rows,
                 type_map=type_map, exercise_id=exercise_id,
-                section_id=section_id, section_name=section_name)
+                section_id=section_id, section_name=section_name,
+                exam_start_id=exam_start_id, start_time=start_time)
         finally:
             session2.close()
     except Exception as exc:                            # noqa: BLE001
@@ -386,6 +390,24 @@ def main() -> int:
         print(f"[1/4] 开卷 练习ID={args.exercise_id} …")
         landed = gwork.open_exercise(page, args.exercise_id)
         print(f"      落地 {landed[:100]}")
+        # ⚠ 2026-11-27 端到端演练查出的断点：`import_bundle` 强制要求
+        # `exam_start_id` 非空（它是每次作答的唯一键），而原来脚本**从没提取过它**
+        # → 判分页解析出来的 bundle 带着空字符串，入库前就被 `_validate` 拒绝。
+        # 它就在答题页 URL 里：`...&ExamStartId=24726784&...`
+        exam_start_id = ""
+        m_start = re.search(r"[?&]ExamStartId=(\d+)", landed or "", re.I)
+        if m_start:
+            exam_start_id = m_start.group(1)
+            print(f"      本次作答 ExamStartId={exam_start_id}")
+        else:
+            print("      [WARN] 答题页 URL 里没找到 ExamStartId，入库会失败",
+                  file=sys.stderr)
+        # 答卷开始时间（判分页会拿它交叉核对，避免把旧答卷认成这次的）
+        exam_start_time = ""
+        m_t = re.search(r"[?&]StartTime=([^&]+)", landed or "", re.I)
+        if m_t:
+            from urllib.parse import unquote as _uq
+            exam_start_time = _uq(m_t.group(1)).replace("/", "-")
 
         print("[2/4] 读题 …")
         paper = gwork.read_paper(page)
@@ -562,6 +584,7 @@ def main() -> int:
                 db=db, timeout_sec=review_timeout, result_file=out_path,
                 raw_rows=paper["raw_rows"],
                 type_map=paper.get("type_map") or {},
+                exam_start_id=exam_start_id, start_time=exam_start_time,
                 graded_timeout=graded_timeout)
             if graded:
                 try:

@@ -1174,8 +1174,12 @@ def _annotate_attempts(settings: Settings, label: str,
                 counts[str(r[0])] = {"n": int(r[1]), "last_at": str(r[2] or "")}
         finally:
             db.close()
-    except Exception:                                          # noqa: BLE001
-        return sections          # 题库读不到不影响节列表主功能
+    except Exception as exc:                                   # noqa: BLE001
+        # 题库读不到不影响节列表主功能，但**必须留痕**：
+        # 静默吞掉会让「做过但状态没变」变得无迹可查（2026-11-27 排查时就卡在这）。
+        print(f"[WARN] 读作答次数失败（节列表状态可能不更新）："
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return sections
     if not counts:
         return sections
     for row in sections["rows"]:
