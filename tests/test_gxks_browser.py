@@ -355,6 +355,35 @@ class TestAutoNavigateBackToList(unittest.TestCase):
         self.assertIn("if fallback is not None:", src)
 
 
+
+class TestNavBackUsesNetworkIdle(unittest.TestCase):
+    """回归：导航回学习入口必须用 `networkidle` 等待（2026-11-27 实测三种策略）。
+
+    平台的学习入口是「外层页 + iframe 列表」，实测：
+      domcontentloaded -> goto 报成功，但 iframe 停在 about:blank，列表帧永不出现
+      load             -> 同上
+      networkidle      -> 列表帧 LibraryStudyList.aspx 才真正加载出来
+
+    用错策略的表现就是用户说的「自己跳到学习入口界面，但没有自动跳出对应节的题目」
+    ——因为我以为导航成功了，其实列表帧没出来，后续找不到课程。
+    """
+
+    def test_uses_networkidle(self):
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        seg = src.split("fallback.goto(", 1)[1][:300]
+        self.assertIn("networkidle", seg)
+        self.assertNotIn("domcontentloaded", seg)
+
+    def test_still_verifies_list_frame(self):
+        """networkidle 之后仍要轮询确认列表帧（双保险）。"""
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        seg = src.split("fallback.goto(", 1)[1][:1200]
+        self.assertIn("selectors.LIST_PATH", seg)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

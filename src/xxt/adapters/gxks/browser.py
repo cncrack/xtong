@@ -310,11 +310,17 @@ def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Sessio
         fallback = _pick_any_page(browser)
         if fallback is not None:
             try:
-                fallback.goto(selectors.MAIN_PAGE, wait_until="domcontentloaded",
-                              timeout=30_000)
-                # 等列表帧加载出来（它是 iframe，goto 返回时可能还没挂上）
+                # ⚠ 等待策略必须是 `networkidle`（2026-11-27 实测三种策略）：
+                #   domcontentloaded -> 外层页返回了，但 iframe 还停在 about:blank
+                #   load             -> 同上，列表帧依然不出现
+                #   networkidle      -> 列表帧 LibraryStudyList.aspx 才真正加载出来
+                # 用前两种时 goto 会说"成功"，但 `_pick_list_page` 永远找不到列表帧
+                # —— 这就是用户「点了没反应/自己跳到学习入口但没开题」的真因。
+                fallback.goto(selectors.MAIN_PAGE, wait_until="networkidle",
+                              timeout=45_000)
+                # 再兜一层：networkidle 后轮询确认列表帧真的在（最长 15 秒）
                 import time as _t
-                deadline = _t.time() + 20
+                deadline = _t.time() + 15
                 while _t.time() < deadline:
                     try:
                         if any(selectors.LIST_PATH in (f.url or "")
@@ -324,6 +330,8 @@ def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Sessio
                     except Exception:                      # noqa: BLE001
                         pass
                     _t.sleep(0.5)
+                if page is None:
+                    _log.info("导航回学习入口后仍未出现列表帧")
             except Exception as exc:                       # noqa: BLE001
                 _log.info("导航回学习入口失败：%s", exc)
 
