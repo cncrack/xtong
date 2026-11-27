@@ -298,6 +298,35 @@ def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Sessio
             "仍然不行就在面板点「停止」再「启动并登录」。",
         ) from exc
     page = _pick_list_page(browser) if require_list else _pick_any_page(browser)
+
+    # ⚠ 2026-11-27 用户实拍：做完一节练习后浏览器**停在判分页**
+    # （viewExam.aspx）。用户接着点面板另一节「做练习」时，
+    # `_pick_list_page` 找不到课程列表帧 -> 报「连上了但找不到平台页面」，
+    # 用户以为按钮坏了，实际是他必须手动把窗口切回列表页。
+    #
+    # 修：找不到列表页时，如果当前有任意平台页面，就**主动导航回学习入口**，
+    # 等列表帧出现。这样「做完一节 -> 直接点下一节」能连贯，不用人工干预。
+    if page is None and require_list:
+        fallback = _pick_any_page(browser)
+        if fallback is not None:
+            try:
+                fallback.goto(selectors.MAIN_PAGE, wait_until="domcontentloaded",
+                              timeout=30_000)
+                # 等列表帧加载出来（它是 iframe，goto 返回时可能还没挂上）
+                import time as _t
+                deadline = _t.time() + 20
+                while _t.time() < deadline:
+                    try:
+                        if any(selectors.LIST_PATH in (f.url or "")
+                               for f in fallback.frames):
+                            page = fallback
+                            break
+                    except Exception:                      # noqa: BLE001
+                        pass
+                    _t.sleep(0.5)
+            except Exception as exc:                       # noqa: BLE001
+                _log.info("导航回学习入口失败：%s", exc)
+
     if page is None:
         session = Session("cdp", browser=browser, _playwright=pw)
         session.close()                                    # Q31：连上了没页面也要立刻断

@@ -326,5 +326,35 @@ class TestManagedBackend(unittest.TestCase):
         self.assertTrue(self.pw.stopped)
 
 
+
+class TestAutoNavigateBackToList(unittest.TestCase):
+    """回归：做完练习后浏览器停在判分页，下一节点「做练习」会失败（2026-11-27 实拍）。
+
+    用户：「我做完一个练习，没有办法自动回到列表，所以我点面板中另一节
+    做练习，没反应」「窗口还是停留在上一节的答案解析界面」。
+
+    真因：`_pick_list_page()` 要求页面里有课程列表帧；判分页没有 ->
+    返回 None -> 报「连上了但找不到平台页面」。
+
+    修：找不到列表页但存在任意平台页面时，主动 goto 学习入口并等列表帧。
+    """
+
+    def test_navigates_back_when_no_list_page(self):
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        self.assertIn("fallback.goto(selectors.MAIN_PAGE", src)
+        self.assertIn("if page is None and require_list:", src)
+        # 导航后要等列表帧出现（它是 iframe，goto 返回时可能还没挂上）
+        self.assertIn("selectors.LIST_PATH", src)
+
+    def test_guarded_by_any_page(self):
+        """没有页面可用时不该盲导航（也不要吞掉原来的 no_page 错误）。"""
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        self.assertIn("fallback = _pick_any_page(browser)", src)
+        self.assertIn("if fallback is not None:", src)
+
+
 if __name__ == "__main__":
     unittest.main()
+
