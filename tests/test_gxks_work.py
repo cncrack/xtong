@@ -214,3 +214,73 @@ def test_fill_answers_accepts_uppercase_key():
 def test_read_checked_parses_ordinals():
     frame = _FakeFrame(checked={1: "b", 3: "a"})
     assert work.read_checked(frame) == {1: "b", 3: "a"}
+
+
+# ---------------------------------------------------------------- 判断题（type_code=4）
+#
+# 2026-11-27 用户报「1.6 是判断题，又不行了」。实测真实 DOM 后确认：
+#   <label for="tm_1_1"><input type=radio name=tmda_1 value="0">1、错</label>
+#   <label for="tm_1_0"><input type=radio name=tmda_1 value="1">2、对</label>
+# 「1、」「2、」是序号前缀，**value=0 是错、value=1 是对**。
+# 且判断题 radio **没有 ExamRadio class**，原来的 read_checked 读不到。
+
+_JUDGE_ROW = ["9385823", "4", "国防是国家生存与发展的安全保障。", "33", "1",
+              "", "", "0", "1475172", "", "z", "0", "", "1"]
+
+
+def test_judge_options_are_builtin():
+    """判断题的选项是平台内置的对/错，不来自 tm_arr（那格是空串）。"""
+    qs = work.parse_tm_rows([_JUDGE_ROW], {"4": "判断题"})
+    q = qs[0]
+    assert q["type_code"] == "4"
+    assert q["options"] == ["对", "错"]
+    assert q["option_keys"] == ["1", "0"]     # 对=1、错=0（实测）
+
+
+def test_judge_does_not_fail_on_empty_option_string():
+    """回归：原来会因为 `declared(1) != 拆出(1)` 之类误判而抛错。"""
+    qs = work.parse_tm_rows([_JUDGE_ROW], {"4": "判断题"})
+    assert len(qs) == 1
+
+
+def test_judge_normalize_text_answers():
+    """模型答「对/错/正确/错误」都要能映射成 1/0。"""
+    q = work.parse_tm_rows([_JUDGE_ROW], {"4": "判断题"})[0]
+    assert work.normalize_keys(q, ["对"]) == ["1"]
+    assert work.normalize_keys(q, ["错"]) == ["0"]
+    assert work.normalize_keys(q, ["正确"]) == ["1"]
+    assert work.normalize_keys(q, ["错误"]) == ["0"]
+
+
+def test_judge_normalize_letter_answers():
+    """模型答 A/B（按选项顺序）也要映射对。"""
+    q = work.parse_tm_rows([_JUDGE_ROW], {"4": "判断题"})[0]
+    assert work.normalize_keys(q, ["a"]) == ["1"]    # 第1个选项=对
+    assert work.normalize_keys(q, ["b"]) == ["0"]    # 第2个选项=错
+
+
+def test_judge_binary_values_preserved():
+    """已经是 0/1 的原样保留（不要被小写化或字母化）。"""
+    q = work.parse_tm_rows([_JUDGE_ROW], {"4": "判断题"})[0]
+    assert work.normalize_keys(q, ["1"]) == ["1"]
+    assert work.normalize_keys(q, ["0"]) == ["0"]
+
+
+def test_supported_types_includes_judge():
+    assert "2" in work.supported_types()
+    assert "4" in work.supported_types()
+
+
+def test_unknown_type_still_rejected():
+    """未登记题型仍要明确报错（不能因为加了判断题就放行所有）。"""
+    row = list(_JUDGE_ROW)
+    row[1] = "1"          # 填空题，尚未实测
+    qs = work.parse_tm_rows([row], {"1": "填空题"})
+    assert qs[0]["type_code"] == "1"
+    # plan_answers 要拦住它
+    try:
+        work.plan_answers(qs, allowed_types={"2", "4"}, bank=None, ask_llm=None)
+    except work.WorkError as exc:
+        assert "尚未实测" in str(exc)
+    else:
+        raise AssertionError("未登记题型应被拒绝")

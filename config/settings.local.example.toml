@@ -49,7 +49,7 @@ work_review_graded_timeout = 300
 # 账号表里查不到该代号时的兜底 CDP 端口（端口是账号属性，以账号表为准）。
 port_base = 9300
 # 允许的题型代码：目前实测只有单选=2，未实测题型整卷停。
-allowed_types = "2"
+allowed_types = "2,4"
 # 浏览器后端：cdp（默认，连本机已登好的 Chrome）| managed（程序自己起，容器用）
 # 详见 src/xxt/adapters/gxks/browser.py 与 docs/gxks/PLAN-GXKS.md §13.6 P1。
 browser_backend = "cdp"

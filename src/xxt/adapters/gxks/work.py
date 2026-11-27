@@ -57,6 +57,116 @@ def parse_tx_arr(rows: list | None) -> dict[str, str]:
     return out
 
 
+# ---------------------------------------------------------------- 题型规格表
+#
+# ## 为什么需要它（2026-11-27 用户报「1.6 是判断题，又不行了」）
+#
+# 原来只有「单选能用」，靠 `gxks.allowed_types` 白名单挡着其他题型 ——
+# 遇到新题型就停,用户只能一节一节试出来再找我加。这不是解法。
+#
+# 实测后我发现**不同题型的差别只在两处**，其余（点选项、check_index、回读）
+# 完全一样：
+#
+#   ① 选项从哪来：
+#      单选题 → `tm_arr[5]` 是 "A选项;B选项;C选项;D选项"
+#      判断题 → `tm_arr[5]` 是**空串**，选项是平台内置的「对 / 错」
+#   ② 选项的 value 是什么：
+#      单选题 → `a` / `b` / `c` / `d`
+#      判断题 → `0` / `1`（且 0=对、1=错，与 label 顺序相反！）
+#
+# 所以做成数据表：加新题型只加一行，不用改填题逻辑。
+# 每项: (选项文本列表, 对应的 value 列表)
+TYPE_SPECS: dict[str, dict] = {
+    # 单选：选项与 value 都按 a/b/c/d 顺序，由 tm_arr 提供
+    "2": {"options_from": "tm_arr", "value_style": "letter"},
+    # 多选：结构与单选一致，只是 keys 可能多个；能否用取决于平台渲染
+    "3": {"options_from": "tm_arr", "value_style": "letter"},
+    # 判断题：平台内置两个 radio，`tm_arr[5]` 是空串（选项不在里面）。
+    # ⚠ 实测 2026-11-27（练习 14684）原始 HTML：
+    #     <label for="tm_1_1"><input type=radio name=tmda_1 value="0">1、错</label>
+    #     <label for="tm_1_0"><input type=radio name=tmda_1 value="1">2、对</label>
+    #   「1、」「2、」是**序号前缀，不是答案**。真实含义是：
+    #     **value=0 → 错，value=1 → 对**
+    #   （我一开始按 label 顺序猜反了，实测 DOM 才纠正。）
+    "4": {"options_from": "builtin", "value_style": "binary",
+          "builtin_options": ["对", "错"],
+          "builtin_values": ["1", "0"]},
+}
+
+#: 判断题的「对/错」别名 → 归一到 0/1。模型可能答「对/错/正确/错误/True/False」
+#: ⚠ 实测口径：value=1 是「对」，value=0 是「错」（见 TYPE_SPECS["4"] 的注释）。
+BINARY_ALIASES = {
+    "1": "1", "0": "0",
+    "对": "1", "正确": "1", "是": "1", "true": "1", "t": "1",
+    "错": "0", "错误": "0", "否": "0", "false": "0", "f": "0",
+}
+
+
+def type_spec(code: str) -> dict | None:
+    """取题型规格；没登记 = 尚未实测。"""
+    return TYPE_SPECS.get(str(code or "").strip())
+
+
+def supported_types() -> set[str]:
+    """当前代码**真正能填**的题型集合（供配置默认值与面板提示共用）。"""
+    return set(TYPE_SPECS)
+
+
+def question_options(question: dict) -> tuple[list[str], list[str]]:
+    """按题型规格返回 `(选项文本, 对应 value)`。
+
+    单选从 `tm_arr` 来；判断题用平台内置的「对/错」+ 0/1。
+    """
+    code = str(question.get("type_code") or "").strip()
+    spec = type_spec(code) or {}
+    if spec.get("options_from") == "builtin":
+        return (list(spec.get("builtin_options") or []),
+                list(spec.get("builtin_values") or []))
+    options = list(question.get("options") or [])
+    return options, _keys(len(options))
+
+
+def normalize_keys(question: dict, keys: list[str]) -> list[str]:
+    """把 key 归一到该题型真正要用的 value 形态。
+
+    判断题要把 `a/b`（按选项顺序算出来的）换成 `0/1`，
+    并接受「对/错/正确/错误/true/false」这类文本答案。
+    """
+    code = str(question.get("type_code") or "").strip()
+    spec = type_spec(code) or {}
+    if spec.get("value_style") != "binary":
+        return [str(k).lower() for k in keys]
+    options, values = question_options(question)
+    out: list[str] = []
+    for k in keys:
+        s = str(k).strip().lower()
+        # 已经是 0/1
+        if s in ("0", "1"):
+            out.append(s)
+            continue
+        # 文本答案（对/错/正确/错误…）
+        if s in BINARY_ALIASES:
+            out.append(BINARY_ALIASES[s])
+            continue
+        # a/b 形态：按选项顺序换成 value
+        if len(s) == 1 and "a" <= s <= "z":
+            idx = ord(s) - ord("a")
+            if 0 <= idx < len(values):
+                out.append(values[idx])
+                continue
+        # 直接命中选项文本
+        for i, opt in enumerate(options):
+            if s == str(opt).strip().lower():
+                if i < len(values):
+                    out.append(values[i])
+                break
+        else:
+            raise WorkError(
+                "structure", f"第 {question.get('ordinal')} 题答案 {k!r} "
+                             f"无法映射到判断题的 对/错")
+    return out
+
+
 def parse_tm_rows(rows: list | None, type_map: dict[str, str] | None = None) -> list[dict]:
     """把 `tm_arr` 原始行转成题目字典。
 
@@ -71,12 +181,22 @@ def parse_tm_rows(rows: list | None, type_map: dict[str, str] | None = None) -> 
         if not isinstance(row, list) or len(row) < need:
             got = len(row) if isinstance(row, list) else 0
             raise WorkError("structure", f"第 {ordinal} 题字段不完整（{got}/{need}）")
-        options = [text_of(x) for x in str(row[field["options"]]).split(";")]
-        declared = int(row[field["option_count"]])
-        if len(options) != declared:
-            raise WorkError(
-                "structure", f"第 {ordinal} 题选项数不符：拆出 {len(options)}，平台声明 {declared}")
         code = str(row[field["type_code"]]).strip()
+        spec = type_spec(code) or {}
+        raw_opts = str(row[field["options"]])
+        declared = int(row[field["option_count"]])
+        if spec.get("options_from") == "builtin":
+            # 判断题这类：平台不给选项串（`tm_arr[5]` 是空串），选项是内置的。
+            # 不要去校验 declared（实测判断题 declared=1，而真实 radio 有 2 个）。
+            options = list(spec.get("builtin_options") or [])
+            option_keys = list(spec.get("builtin_values") or [])
+        else:
+            options = [text_of(x) for x in raw_opts.split(";")]
+            if len(options) != declared:
+                raise WorkError(
+                    "structure",
+                    f"第 {ordinal} 题选项数不符：拆出 {len(options)}，平台声明 {declared}")
+            option_keys = _keys(len(options))
         questions.append({
             "ordinal": ordinal,
             "qid": str(row[field["qid"]]).strip(),
@@ -85,7 +205,7 @@ def parse_tm_rows(rows: list | None, type_map: dict[str, str] | None = None) -> 
             "stem": text_of(row[field["stem"]]),
             "max_score": float(row[field["max_score"]]),
             "options": options,
-            "option_keys": _keys(len(options)),
+            "option_keys": option_keys,
         })
     if not questions:
         raise WorkError("structure", "答题帧里没有题目（tm_arr 为空）")
@@ -152,7 +272,7 @@ def plan_answers(
             raise WorkError(
                 "structure",
                 f"第 {question['ordinal']} 题题型 {code}（{question['type_name']}）"
-                f"尚未实测，停止回填")
+                f"尚未实测，停止回填（当前支持：{sorted(supported_types())}）")
         hit = bank(question["stem"], question["options"]) if bank else None
         if hit:
             plan.append({**question, "keys": list(hit["keys"]), "source": "bank",
@@ -241,7 +361,14 @@ def fill_answers(frame: Any, keys_by_ordinal: dict[int, list[str]]) -> list[dict
     for ordinal, keys in sorted(keys_by_ordinal.items()):
         name = selectors.EXAM_RADIO_NAME.format(ordinal=ordinal)
         for key in keys:
-            selector = f'input[name="{name}"][value="{key.lower()}"]'
+            # `key` 通常已经在 `normalize_keys()` 里换成该题型真正的 value
+            # （单选 a/b/c/d；判断 0/1）。这里做一次**幂等**的小写兜底：
+            # 纯数字（判断题的 0/1）原样保留，字母统一小写 ——
+            # 平台单选 value 是小写，调用方传大写时也能点中。
+            k = str(key).strip()
+            if not k.isdigit():
+                k = k.lower()
+            selector = f'input[name="{name}"][value="{k}"]'
             locator = frame.locator(selector)
             if locator.count() != 1:
                 raise WorkError(
@@ -256,15 +383,21 @@ def fill_answers(frame: Any, keys_by_ordinal: dict[int, list[str]]) -> list[dict
                 except Exception:                        # noqa: BLE001
                     raise WorkError(
                         "structure", f"第 {ordinal} 题选项 {key} 点不上：{exc}") from exc
-            filled.append({"ordinal": ordinal, "key": key.lower()})
+            filled.append({"ordinal": ordinal, "key": k})
     return filled
 
 
 def read_checked(frame: Any) -> dict[int, str]:
-    """回读每题当前选中的 key：`{题号: key}`。交卷前核对用。"""
+    """回读每题当前选中的 value：`{题号: value}`。交卷前核对用。
+
+    ⚠ 2026-11-27：原来只认 `input.ExamRadio:checked`，而**判断题的 radio
+    没有 `ExamRadio` class**（实测原始 HTML 只有 `type=radio name=tmda_N`），
+    于是判断题回读永远是空 → 回填校验必然判"不一致"。
+    改成按 `name^="tmda_"` 匹配，单选/判断都覆盖。
+    """
     data = frame.evaluate(
         "() => { const out = {};"
-        " document.querySelectorAll('input.ExamRadio:checked').forEach(el => {"
+        " document.querySelectorAll('input[name^=\"tmda_\"]:checked').forEach(el => {"
         "   out[el.name.replace('tmda_', '')] = el.value; });"
         " return out; }")
     return {int(k): str(v) for k, v in (data or {}).items() if str(k).isdigit()}

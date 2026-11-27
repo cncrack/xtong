@@ -423,6 +423,16 @@ def main() -> int:
         bank_hits = sum(1 for p in plan if p["source"] == "bank")
         print(f"      题库命中 {bank_hits} / AI {len(plan) - bank_hits}")
 
+        # 2026-11-27：把答案 key 归一到**该题型真正的 value**。
+        # 单选是 a/b/c/d；判断题平台用的是 0/1（0=错、1=对，实测 DOM），
+        # AI 常答「对/错/正确/错误」，这里统一映射，避免「点不上」。
+        for p in plan:
+            try:
+                p["keys"] = gwork.normalize_keys(p, p["keys"])
+            except gwork.WorkError as exc:
+                print(f"      [WARN] 第 {p['ordinal']} 题答案无法归一：{exc}",
+                      file=sys.stderr)
+
         filled: list[dict] = []
         checked: dict[int, str] = {}
         # G-7：交卷后回收的判分结果（没交卷时保持 None，不参与 result）
