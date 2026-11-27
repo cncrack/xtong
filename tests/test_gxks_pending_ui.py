@@ -38,7 +38,8 @@ class TestBackendExposesPending(unittest.TestCase):
         所以锚点跟着变；这里只要求「pending 查询在 db.close() 之前」这个性质不变。
         """
         anchor = "ops = gxks_ops.recent_ops(db, limit=100)"
-        seg = APP_SRC.split(anchor, 1)[1][:900]
+        # ⚠ 2026-11-27：又插了 verified_rows 查询块，切片要从 900 放宽
+        seg = APP_SRC.split(anchor, 1)[1][:1600]
         self.assertIn("pending_counts = gxks_pending.pending_counts(db)", seg)
         # 查询必须在 finally: db.close() 之前
         self.assertLess(seg.index("pending_counts = gxks_pending"),

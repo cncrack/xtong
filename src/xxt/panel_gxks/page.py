@@ -3130,9 +3130,13 @@ function renderWork(state) {
 // `state.pending_counts` 是**全部账号**的合计（顶部红点用）。
 function renderPendingBlock(state) {
   const rows = (state && state.pending) || [];
+  const verified = (state && state.verified) || [];
   const counts = (state && state.pending_counts) || {};
   const total = Number(counts.__total__ || 0);
-  if (!rows.length && !total) return "";
+  // ⚠ 2026-11-27：原来 `if (!rows.length && !total) return ""` ——
+  // 平台标准答案把待确认项全自动核验后，pending 变空，整块就消失了，
+  // 用户看不到「已经核验过了」（以为核验没发生）。所以 verified 非空也要显示。
+  if (!rows.length && !total && !verified.length) return "";
   const REASON_CN = {
     ai_used: "AI 生成（无平台标准答案）",
     no_site_answer: "题库无标准答案",
@@ -3159,6 +3163,23 @@ function renderPendingBlock(state) {
         '<td><span class="stem" title="' + esc(r.stem) + '">' +
         esc(r.stem) + "</span></td>" +
         '<td class="muted">' + esc((r.created_at || "").slice(5, 16)) + "</td></tr>";
+    }
+    h += "</tbody></table></div>";
+  }
+  // 平台判分页给了标准答案 → 这些题已被自动核验（无需人工再核）
+  if (verified.length) {
+    h += '<div class="muted" style="margin-top:8px">' +
+      '<span class="tag t-done">已自动核验 ' + esc(verified.length) + " 题</span> " +
+      "平台判分页给出了标准答案（官方答案），这些题不需要你人工核对。</div>";
+    h += '<div class="table-wrap"><table><thead><tr>' +
+      "<th>节</th><th class=num>题</th><th>状态</th><th>题干</th>" +
+      "</tr></thead><tbody>";
+    for (const r of verified) {
+      h += "<tr><td>" + esc(r.section_name || r.section_id || "—") +
+        "</td><td class=num>" + esc(r.question_ordinal) + "</td>" +
+        '<td><span class="tag t-done">已核验</span></td>' +
+        '<td><span class="stem" title="' + esc(r.stem) + '">' +
+        esc(r.stem) + "</span></td></tr>";
     }
     h += "</tbody></table></div>";
   }

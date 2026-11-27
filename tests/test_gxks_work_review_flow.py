@@ -188,5 +188,37 @@ class TestGradedWaitTimeout(unittest.TestCase):
         self.assertIn("graded_timeout", seg)
 
 
+
+class TestVerifiedVisible(unittest.TestCase):
+    """平台标准答案自动核验后，用户要**看得见**（2026-11-27 实拍）。
+
+    用户问：「待确认清单：3 题已按平台标准答案标为已核验 这个在哪里提示，没有看到」。
+
+    两个真问题：
+    ① 脚本里 `verify_by_site_answer(...)` 的返回值被丢弃，终端根本没打印；
+    ② 面板 `list_pending()` 默认只查 pending 状态——全标成 verified 后
+       整块消失，界面上一片空白，用户以为核验没发生。
+    """
+
+    def test_script_prints_verified_count(self):
+        self.assertIn("cleared = gxks_pending.verify_by_site_answer(", SCRIPT)
+        self.assertIn("题已按平台标准答案", SCRIPT)
+
+    def test_state_exposes_verified(self):
+        self.assertIn('"verified": verified_rows', APP)
+        self.assertIn("gxks_pending.VERIFIED", APP)
+
+    def test_frontend_shows_verified_even_without_pending(self):
+        seg = PAGE.split("function renderPendingBlock(state)", 1)[1][:600]
+        self.assertIn("verified", seg)
+        # 没有 pending 但有 verified 时不能直接 return ""
+        self.assertIn("!verified.length", seg)
+
+    def test_frontend_renders_verified_section(self):
+        self.assertIn("已自动核验", PAGE)
+        self.assertIn("已核验", PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()
+

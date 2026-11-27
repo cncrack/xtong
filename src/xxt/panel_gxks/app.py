@@ -2217,6 +2217,14 @@ def create_app(settings: Settings) -> FastAPI:
                 db, account_label=label, status=gxks_pending.PENDING, limit=100)
                 if label else [])
             pending_counts = gxks_pending.pending_counts(db)
+            # 2026-11-27：**已自动核验**的题也要看得见。
+            # 平台判分页给了标准答案后，`verify_by_site_answer` 会把这些行标成
+            # verified —— 但 `list_pending` 默认只查 pending，于是界面上「什么都没了」，
+            # 用户以为核验没发生（终端那行一闪而过，也不在面板里）。
+            # 这里单独取最近的 verified 行，前端显示「已自动核验 N 题」。
+            verified_rows = (gxks_pending.list_pending(
+                db, account_label=label, status=gxks_pending.VERIFIED, limit=30)
+                if label else [])
         finally:
             db.close()
         # 端口探活**一次并发做完**，卡片与浏览器区共用同一份结果。
@@ -2274,6 +2282,7 @@ def create_app(settings: Settings) -> FastAPI:
             "work_review": _work_review_state(settings, label),
             "pending": pending_rows,
             "pending_counts": pending_counts,
+            "verified": verified_rows,
             "browser": (_browser_state(settings, label, alive=alive.get(cur_port))
                         if label else None),
             # 该账号的交互式计划任务状态（2026-11-23 方案 B）：面板显示「已注册 / 未注册」，

@@ -595,9 +595,17 @@ def main() -> int:
                         q["ordinal"] for q in (graded.get("questions") or [])
                         if is_objective(q.get("type_code", ""))
                         and (q.get("answer") or {}).get("standard_source") == "site"]
-                    gxks_pending.verify_by_site_answer(
+                    cleared = gxks_pending.verify_by_site_answer(
                         db, account_label=label, exercise_id=args.exercise_id,
                         ordinals=site_ordinals)
+                    # 2026-11-27：原来这里丢弃了返回值，用户看不到「哪些题已按
+                    # 平台标准答案自动核验」（数据库里其实是标了 verified 的）。
+                    if cleared:
+                        print(f"      待确认清单：{cleared} 题已按平台标准答案"
+                              f"标为已核验（无需人工再核）")
+                    elif site_ordinals:
+                        print(f"      待确认清单：{len(site_ordinals)} 题暂无待确认项"
+                              f"（可能已核验过）")
                 except Exception as exc:              # noqa: BLE001
                     print(f"[WARN] 入库未完成：{type(exc).__name__}: {exc}", file=sys.stderr)
 
