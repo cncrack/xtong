@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 from ...core.browser import persistent_launch_kwargs
 from ...core.stealth import STEALTH_JS, context_kwargs
 from . import accounts, selectors
+from .chrome import port_alive
 
 _log = logging.getLogger(__name__)
 
@@ -277,10 +278,24 @@ def _open_cdp(settings: Any, port: int = 0, require_list: bool = True) -> Sessio
             pw.stop()
         except Exception:                                  # noqa: BLE001
             pass
+        # ⚠ 2026-11-27 用户实拍：Chrome 被关掉后，脚本报
+        # `ECONNREFUSED 127.0.0.1:9222` + 一串 Playwright call log，
+        # 提示还让人去手敲 chrome.exe 命令行 —— 又长又不解决他的实际问题。
+        # 真正该做的是「回面板点启动并登录」。这里把两类情况分开说：
+        #   端口没在听  -> 浏览器根本没开，去面板点启动
+        #   端口在听但连不上 -> 被别的进程占了，或 CDP 还没就绪
+        if not port_alive(cdp_port):
+            raise SessionError(
+                "connect",
+                f"浏览器没开（端口 {cdp_port} 没在监听）",
+                "到面板右侧点「启动并登录」；"
+                "如果是你一顺手把 Chrome 窗口关了，就是这个原因。",
+            ) from exc
         raise SessionError(
-            "connect", f"连不上 CDP {url}：{exc}",
-            f"先起浏览器：chrome.exe --remote-debugging-port={cdp_port} "
-            f'--user-data-dir="<该账号专用目录>"',
+            "connect",
+            f"端口 {cdp_port} 在监听但连不上调试接口",
+            "可能被别的程序占用，或 Chrome 刚起还没就绪 —— 稍等几秒重试；"
+            "仍然不行就在面板点「停止」再「启动并登录」。",
         ) from exc
     page = _pick_list_page(browser) if require_list else _pick_any_page(browser)
     if page is None:

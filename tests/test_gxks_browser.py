@@ -218,7 +218,9 @@ class TestCdpBackend(unittest.TestCase):
             with self.assertRaises(gbrowser.SessionError) as ctx:
                 gbrowser.open_session(self.settings, port=9222)
         self.assertEqual(ctx.exception.code, "connect")
-        self.assertIn("remote-debugging-port=9222", ctx.exception.hint)   # 给人照抄的起法
+        # 2026-11-27 改：提示不再让人手敲 chrome.exe 命令行（太长、不解决问题），
+        # 改成指向面板的「启动并登录」——那才是用户真正该做的动作。
+        self.assertIn("启动并登录", ctx.exception.hint)
         self.assertTrue(pw.stopped)
 
     def test_start_url_ignored_under_cdp(self):

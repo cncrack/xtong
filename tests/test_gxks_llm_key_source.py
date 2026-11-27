@@ -94,8 +94,32 @@ class TestGxksClientRuntime(unittest.TestCase):
             client._api_key()
 
 
+
+class TestBrowserNotOpenHint(unittest.TestCase):
+    """回归：Chrome 被关掉后的提示要可操作（2026-11-27 实拍）。
+
+    用户做 1.4 时报 `ECONNREFUSED 127.0.0.1:9222` + 一串 Playwright call log，
+    hint 还让人去手敲 chrome.exe 命令行 —— 又长又不解决他的实际问题。
+    真正该做的是「回面板点启动并登录」。
+    """
+
+    def test_connect_error_tells_user_to_click_start(self):
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        self.assertIn("浏览器没开", src)
+        self.assertIn("启动并登录", src)
+        # 不该再让人手敲命令行
+        self.assertNotIn("--user-data-dir=\"<该账号专用目录>\"", src)
+
+    def test_distinguishes_port_not_listening(self):
+        src = (Path(__file__).resolve().parents[1] / "src" / "xxt" / "adapters"
+               / "gxks" / "browser.py").read_text(encoding="utf-8")
+        self.assertIn("if not port_alive(cdp_port):", src)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 class TestNoMissingArgparseAttr(unittest.TestCase):
