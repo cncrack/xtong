@@ -158,6 +158,27 @@ class TestGradedWaitTimeout(unittest.TestCase):
         seg = self._fn_body()
         self.assertIn("deadline = time.monotonic() + graded_timeout", seg)
 
+    def test_handles_exammessage_intermediate_page(self):
+        """平台交卷后先到 `ExamMessage.aspx`，不是直接 viewExam（2026-11-27 实拍）。
+
+        实拍 URL：
+          ExamMessage.aspx?Tk_Cl_Id=14666&Clerk_Kscj_Id=23445377
+                          &AllowSeePaper=1&Message=交卷成功！
+
+        原实现只认 `viewexam.aspx` → 一直空转到超时，日志停在「等你点交卷」。
+        修：识别中间页，用 Tk_Cl_Id / Clerk_Kscj_Id **自己拼** viewExam URL。
+        """
+        seg = self._fn_body()
+        self.assertIn("exammessage.aspx", seg.lower())
+        self.assertIn("Tk_Cl_Id", seg)
+        self.assertIn("Clerk_Kscj_Id", seg)
+        self.assertIn("viewExam.aspx", seg)
+
+    def test_navigates_to_built_review_url(self):
+        """拼出 URL 后要主动 goto 过去（判分页不一定已在该标签打开）。"""
+        seg = self._fn_body()
+        self.assertIn("page.goto(review_url", seg)
+
     def test_default_is_300(self):
         seg = SCRIPT.split("work_review_graded_timeout", 1)[1][:40]
         self.assertIn("300", seg)

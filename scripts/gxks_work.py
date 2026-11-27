@@ -266,14 +266,35 @@ def _await_confirm_and_reclaim(
     # 现在：轮询期间只用 `chrome.page_urls()`（HTTP 读 /json/list，不建连接），
     # 你的 confirm 能正常弹；等 URL 真变成 viewExam.aspx 了，才短暂连一次抓 HTML。
     print(f"[6/6] 收到确认，等你在浏览器点「交卷」…（最多等 {graded_timeout}s）")
+    from urllib.parse import parse_qs, urlparse
+
     from xxt.adapters.gxks import chrome as _gchrome
+    from xxt.adapters.gxks.selectors import MAIN_PAGE
 
     review_url = ""
     deadline = time.monotonic() + graded_timeout
     while time.monotonic() < deadline:
         for url in _gchrome.page_urls(port):
-            if "viewexam.aspx" in url.lower():
-                review_url = url
+            low = url.lower()
+            if "viewexam.aspx" in low:
+                review_url = url                      # 直接到了判分页
+                break
+            # ⚠ 2026-11-27 实拍：平台交卷后先跳 **ExamMessage.aspx**（交卷成功提示页），
+            # 不是直接到 viewExam.aspx（`practice.py` 那句「不再经过交卷成功页」已过时）。
+            # 那个中间页的 URL 里已经带了拼判分页所需的两个参数：
+            #   Tk_Cl_Id      → viewExam 的 ExamID
+            #   Clerk_Kscj_Id → viewExam 的 Clerk_kscj_ID
+            # 所以我们**自己拼**判分页 URL，不用等平台自动跳。
+            if "exammessage.aspx" in low:
+                q = parse_qs(urlparse(url).query)
+                exam_id = (q.get("Tk_Cl_Id") or q.get("tk_cl_id") or [""])[0]
+                result_id = (q.get("Clerk_Kscj_Id") or q.get("clerk_kscj_id") or [""])[0]
+                if exam_id and result_id:
+                    base = urlparse(MAIN_PAGE)
+                    review_url = (f"{base.scheme}://{base.netloc}"
+                                  f"/ExamList/ExamPage/viewExam.aspx"
+                                  f"?ExamID={exam_id}&Clerk_kscj_ID={result_id}")
+                    print(f"      交卷成功页 → 拼出判分页 {review_url[:90]}")
                 break
         if review_url:
             break
@@ -284,12 +305,16 @@ def _await_confirm_and_reclaim(
         signal.unlink(missing_ok=True)
         return None
 
-    print(f"      判分页已出现，抓取并入库…")
+    print("      判分页已定位，抓取并入库…")
     try:
         session2 = gbrowser.open_session(
             settings, label=label, port=port, require_list=False)
         try:
-            graded = gwork.wait_graded(session2.page, timeout_ms=15_000)
+            # 判分页可能还没在这个标签里打开（我们只是拼了 URL）→ 主动导航过去
+            if "viewexam.aspx" not in (session2.page.url or "").lower():
+                session2.page.goto(review_url, wait_until="domcontentloaded",
+                                   timeout=30_000)
+            graded = gwork.wait_graded(session2.page, timeout_ms=20_000)
             return practice.parse_review_online(
                 account_label=label, review_url=graded["url"],
                 review_html=graded["html"], raw_rows=raw_rows,
