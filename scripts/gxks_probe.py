@@ -111,6 +111,28 @@ def snapshot_deep(port: int) -> dict:
                     o[el.name] = el.value; });
                   return o; }""")
                 info["checked"] = checked
+                # 题型分布 + 每题输入控件类型（判断多选是 radio 还是 checkbox）
+                types = frame.evaluate("""() => {
+                  const out = [];
+                  const tm = (typeof tm_arr !== 'undefined') ? tm_arr : [];
+                  // 每题由 tm_arr 给题型码；再按题号查它的 input 类型
+                  for (let i = 0; i < tm.length; i++) {
+                    const no = i + 1;
+                    const ins = document.querySelectorAll(
+                      'input[name="tmda_' + no + '"]');
+                    const kinds = {};
+                    ins.forEach(el => { kinds[el.type] = (kinds[el.type] || 0) + 1; });
+                    out.push({
+                      ordinal: no,
+                      type_code: String(tm[i][1]),
+                      stem: String(tm[i][2] || '').slice(0, 30),
+                      input_types: kinds,
+                      option_count: Number(tm[i][4]) || 0,
+                    });
+                  }
+                  return out;
+                }""")
+                info["questions"] = types
         except Exception:
             pass
     finally:
@@ -118,17 +140,68 @@ def snapshot_deep(port: int) -> dict:
     return info
 
 
+def record_types(deep: dict) -> None:
+    """把探测到的题型累积到 `data/debug/type_stats.json`（只增不改，供分析用）。
+
+    目的：不再靠"碰到才试"。每次你正常做练习，探针顺手记下这节用到的题型码、
+    输入控件类型（radio/checkbox）、选项数 —— 攒几次就知道平台实际用了哪几种，
+    再决定给 `TYPE_SPECS` 加哪些。
+    """
+    qs = deep.get("questions") or []
+    if not qs:
+        return
+    path = (Path(__file__).resolve().parent.parent / "data" / "debug"
+            / "type_stats.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        stats = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        stats = {}
+    changed = False
+    for q in qs:
+        code = str(q.get("type_code") or "")
+        if not code:
+            continue
+        entry = stats.setdefault(code, {
+            "type_code": code,
+            "seen": 0,
+            "input_types": {},
+            "option_counts": [],
+            "sample_stems": [],
+        })
+        entry["seen"] = int(entry.get("seen", 0)) + 1
+        for k, v in (q.get("input_types") or {}).items():
+            entry["input_types"][k] = int(entry["input_types"].get(k, 0)) + int(v)
+        oc = q.get("option_count")
+        if oc and oc not in entry["option_counts"]:
+            entry["option_counts"].append(oc)
+        stem = str(q.get("stem") or "")
+        if stem and stem not in entry["sample_stems"] and len(entry["sample_stems"]) < 3:
+            entry["sample_stems"].append(stem)
+        changed = True
+    if changed:
+        path.write_text(json.dumps(stats, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        print(json.dumps({"recorded": True, "file": str(path),
+                          "types": sorted(stats)}, ensure_ascii=False),
+              file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=9222)
     ap.add_argument("--watch", action="store_true", help="持续监控（每 3 秒一次）")
     ap.add_argument("--deep", action="store_true", help="连 CDP 读帧与答案（更详细）")
+    ap.add_argument("--record", action="store_true",
+                    help="把题型累积到 data/debug/type_stats.json（配合 --deep）")
     args = ap.parse_args()
 
     def once():
         snap = snapshot(args.port)
         if args.deep and snap["alive"]:
             snap["deep"] = snapshot_deep(args.port)
+            if args.record:
+                record_types(snap["deep"])
         print(json.dumps(snap, ensure_ascii=False, indent=2))
 
     if not args.watch:

@@ -368,6 +368,8 @@ def fill_answers(frame: Any, keys_by_ordinal: dict[int, list[str]]) -> list[dict
             k = str(key).strip()
             if not k.isdigit():
                 k = k.lower()
+            # `input[name=..][value=..]` **不限定 type**，radio / checkbox 都能命中
+            # ——所以多选（若用 checkbox）在"点选项"这一步天然兼容，无需特判。
             selector = f'input[name="{name}"][value="{k}"]'
             locator = frame.locator(selector)
             if locator.count() != 1:
