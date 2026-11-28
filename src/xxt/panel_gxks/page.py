@@ -3073,6 +3073,33 @@ function studyOne(sectionId) {
   post("/api/study", { max_sections: 1, sections: String(sectionId) });
 }
 
+// 二次验证结果（2026-11-28 用户要求「交卷前二次验证」）。
+//
+// 意义：AI 答完再让模型自己**换个角色复核一遍**。实测 1.6 第 2 题
+// 「2025年是海军成立75周年」，AI 自己算出「2024 年为 75 周年，题目表述有误」
+// 却仍答「对」——这类"替题目圆场"的错，二次验证能抓出来。
+//
+// 注意：**不一致时答案不会自动改**（保留第一遍），只在这里提示你复核。
+function verifyCell(q) {
+  const v = q.verify;
+  if (!v) {
+    // 题库命中的题不验（平台官方答案是权威）
+    return q.source === "bank"
+      ? '<span class="muted">题库答案，无需验</span>'
+      : '<span class="muted">—</span>';
+  }
+  if (v.error) return '<span class="tag t-low" title="' + esc(v.error) + '">验证出错</span>';
+  if (v.agree === true) return '<span class="tag t-bank">✓ 一致</span>';
+  if (v.agree === false) {
+    return '<span class="tag t-low" title="' +
+      esc((v.reason || "") + " 它认为是：" + (v.suggested || []).join("/")) +
+      '">⚠ 不一致</span>' +
+      '<span class="muted"> 它认为 ' + esc((v.suggested || []).join("/") || "—") + "</span>";
+  }
+  return '<span class="muted">未表态</span>';
+}
+
+
 function renderWork(state) {
   const w = state.work;
   const box = el("work");
@@ -3088,7 +3115,8 @@ function renderWork(state) {
     " · 题库 " + (s.bank || 0) + " / AI " + (s.ai || 0) +
     (state.auto_submit ? " · 自动交卷：开" : " · 自动交卷：关");
   let html = '<div class="table-wrap"><table><thead><tr><th class="num">题号</th>' +
-    "<th>题干</th><th>答案</th><th>来源</th><th>置信度</th></tr></thead><tbody>";
+    "<th>题干</th><th>答案</th><th>来源</th><th>置信度</th><th>二次验证</th>" +
+    "</tr></thead><tbody>";
   for (const q of w.questions) {
     const src = q.source === "bank"
       ? '<span class="tag t-bank">题库</span>'
@@ -3102,7 +3130,7 @@ function renderWork(state) {
       esc((q.options || []).join(" / ")) + '">' +
       esc((q.options || []).length) + " 个选项</span></td>" +
       '<td class="ans">' + esc(q.answer_text) + "</td><td>" + src +
-      "</td><td>" + conf + "</td></tr>";
+      "</td><td>" + conf + "</td><td>" + verifyCell(q) + "</td></tr>";
   }
   html += "</tbody></table></div>";
   html += '<div class="muted" style="margin-top:8px">' +

@@ -48,6 +48,59 @@ def _answer_shape(qtype: str) -> str:
     return '["选项文本或A/B/C"]' if qtype in ("single", "multi") else '"答案文本或对/错"'
 
 
+#: 二次验证（审核）用的提示词。
+#:
+#: ## 为什么需要（2026-11-28 用户要求「交卷前二次验证」）
+#:
+#: 实测 1.6 第 2 题：`2025年是人民海军成立75周年。`，平台标准 = **错**
+#: （1949+75=2024）。AI 的 reasoning 明明写着「2024 年为 75 周年，题目表述有误」，
+#: **自己算出不对，却还是答了「对」** —— 它在替题目圆场。
+#:
+#: 换一个角色再问一次能显著降低这类错误：第一次是「作答者」（倾向于把题做对），
+#: 第二次是「审核者」（倾向于挑毛病）。**两次独立、不复用第一次的推理**。
+_VERIFY_PROMPT = """你是在校对一份已经作答的测验。请独立核对，不要假设原答案正确。
+
+课程：{course}
+章节：{chapter}
+题型：{qtype_desc}
+题目原文：{stem}
+选项：
+{options}
+
+待核对的答案：{answer}
+
+请核对：
+- 判断题：逐字核对题干里的每一个要件（年份、数量、名称、归属、单位等）。
+  任一要件与事实不符就应判「错」。**不要**因为"可能是笔误""常见题库这么写"
+  而替题目圆场——题目写错了就是错。
+- 选择题：核对答案是否真的回答了题干所问，有没有更贴切的选项。
+
+只输出一个 JSON 对象，不要任何其他文字：
+{{"answer": {answer_shape}, "agree": true或false, "confidence": 0到1的小数, "reason": "20字内说明，若不同意请写清依据"}}"""
+
+
+def build_verify_messages(stem: str, qtype: str, options: list[str],
+                          answer: str, context: str = "",
+                          course: str = "", chapter: str = "") -> list[dict[str, str]]:
+    """构建**二次验证**的提示词：把已给的答案交给模型独立复核一遍。
+
+    与 `build_messages` 的区别：
+    - 明确告知「这是在核对，不是重新作答」，并要求 `agree` 字段；
+    - 不传 `extra_requirements`（那是作答偏好，不该影响事实核对）。
+    """
+    ctx = f"课程背景资料：{context}\n" if context else ""
+    text = _VERIFY_PROMPT.format(
+        course=course or "在线课程", chapter=chapter or "（未提供）",
+        qtype_desc=_qtype_desc(qtype), stem=stem.strip(),
+        options="\n".join(f"- {o}" for o in options) or "（无选项）",
+        answer=answer or "（未作答）",
+        answer_shape=_answer_shape(qtype),
+    )
+    if ctx:
+        text = ctx + text
+    return [{"role": "user", "content": text}]
+
+
 def build_messages(stem: str, qtype: str, options: list[str], context: str = "",
                    course: str = "", chapter: str = "",
                    extra_requirements: str = "") -> list[dict[str, str]]:

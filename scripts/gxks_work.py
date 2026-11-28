@@ -107,6 +107,53 @@ def _make_llm(settings: Settings, chapter: str) -> Callable[[dict], dict]:
     return ask
 
 
+def _make_verifier(settings: Settings, chapter: str) -> Callable[[dict, list[str]], dict]:
+    """构造 `verify_llm(question, keys) -> {keys, agree, confidence, reason}`。
+
+    这是**交卷前二次验证**（2026-11-28 用户要求）：换个角色把已给的答案独立
+    复核一遍，专门对付「AI 自己算出不对、却替题目圆场」这类错误
+    （1.6 第 2 题「2025年是海军成立75周年」就是这么错的）。
+
+    为什么不复用 `_make_llm` 的 prompt：两次问法必须**不同**——第一次是
+    「你来答题」（倾向于把题做对），第二次是「你来校对」（倾向于挑毛病）。
+    同一段 prompt 问两遍，模型会给同样的答案，什么都没验到。
+    """
+    from xxt.adapters.gxks.llm import make_gxks_llm
+    from xxt.ai.quiz import build_verify_messages
+    client = make_gxks_llm(settings)
+    course = str(settings.raw.get("platform", {}).get("name", ""))
+
+    def verify(question: dict, keys: list[str]) -> dict:
+        options = question["options"]
+        # 把 key 还原成模型看得懂的形式（字母 + 选项文本），别只给它 "a"
+        shown = []
+        for k in keys:
+            idx = ord(str(k)) - ord("a") if str(k).isalpha() else -1
+            if 0 <= idx < len(options):
+                shown.append(f"{chr(ord('A') + idx)}、{options[idx]}")
+            else:
+                shown.append(str(k))
+        messages = build_verify_messages(
+            question["stem"], "single", options,
+            answer="；".join(shown), chapter=chapter, course=course)
+        data = parse_llm_json(client.chat(messages))
+        try:
+            v_keys = gwork.keys_from_answer(data["answer"], options)
+        except gwork.WorkError:
+            # 审核者给不出合法选项时，就当它没表态（不阻断）
+            v_keys = []
+        # agree 缺省时用「答案是否与第一遍相同」推断，比信任模型自报更稳
+        agree = data.get("agree")
+        if not isinstance(agree, bool):
+            agree = bool(v_keys) and [str(x) for x in v_keys] == [str(x) for x in keys]
+        return {"keys": v_keys,
+                "agree": agree,
+                "confidence": data.get("confidence", 0.0),
+                "reason": data.get("reason", "")}
+
+    return verify
+
+
 def build_review(plan: list[dict], *, low_confidence: float = LOW_CONFIDENCE) -> dict:
     """G-9 第 1 级 + G-8：产出「交卷前核对单」的风险明细（纯函数，可离线测）。
 
@@ -386,6 +433,8 @@ def main() -> int:
                     help="作答策略；缺省取配置 gxks.work_mode")
     ap.add_argument("--auto-submit", action="store_true", help="填完直接交卷（默认不交）")
     ap.add_argument("--no-fill", action="store_true", help="只出答案，不动页面")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="关掉交卷前二次验证（默认开：AI 答的题再独立复核一遍）")
     args = ap.parse_args()
     label = args.label or _default_label()
 
@@ -445,10 +494,14 @@ def main() -> int:
               f"{sorted({q['type_name'] for q in questions})}")
 
         print("[3/4] 出答案（题库优先 → AI 兜底）…")
+        # 二次验证开关（2026-11-28 用户要求）：默认开，可用 --no-verify 关掉。
+        want_verify = (mode != "reference") and not getattr(args, "no_verify", False)
         plan = gwork.plan_answers(
             questions, allowed_types=allowed,
             bank=lambda stem, options: lookup_answer(db, stem=stem, options=options),
-            ask_llm=_make_llm(settings, args.section_name) if mode != "reference" else None)
+            ask_llm=_make_llm(settings, args.section_name) if mode != "reference" else None,
+            verify_llm=(_make_verifier(settings, args.section_name)
+                        if want_verify else None))
         bank_hits = sum(1 for p in plan if p["source"] == "bank")
         print(f"      题库命中 {bank_hits} / AI {len(plan) - bank_hits}")
 

@@ -259,11 +259,27 @@ def plan_answers(
     allowed_types: set[str],
     bank: Callable[[str, list[str]], dict | None] | None = None,
     ask_llm: Callable[[dict], dict] | None = None,
+    verify_llm: Callable[[dict, list[str]], dict | None] | None = None,
 ) -> list[dict]:
-    """逐题出答案：题库优先 → LLM 兜底。
+    """逐题出答案：题库优先 → LLM 兜底 →（可选）二次验证。
 
-    `bank` / `ask_llm` 由调用方注入（题库走 sqlite、LLM 走 Provider 中心），
-    这样这段编排可以完全离线测，不必连平台也不必真调模型。
+    `bank` / `ask_llm` / `verify_llm` 由调用方注入（题库走 sqlite、LLM 走
+    Provider 中心），这样这段编排可以完全离线测，不必连平台也不必真调模型。
+
+    ## 二次验证（2026-11-28 用户要求）
+
+    `verify_llm(question, keys)` 返回 `{"keys": [...], "agree": bool,
+    "confidence": float, "reason": str}` 或 None（没验成）。
+
+    三条硬规则，都是刻意的：
+
+    ① **题库命中的题不验**。平台官方答案就是权威，AI 没资格质疑它；
+       验了反而可能把正确答案改错。省钱又避免倒退。
+    ② **不一致时不自动改答案**：`keys` 保留**第一遍**的结果，只在
+       `verify` 字段里记「审核者不同意，它认为是 X」。改不改由人决定——
+       自动改等于用第二个可能错的答案替换第一个。
+    ③ **验证失败不影响主流程**：任何异常都吞掉，只记 `verify.error`。
+       决不能让"锦上添花的检查"把整卷弄挂。
     """
     plan: list[dict] = []
     for question in questions:
@@ -282,9 +298,28 @@ def plan_answers(
             raise WorkError(
                 "ai", f"第 {question['ordinal']} 题题库未命中，且未配置 AI 作答")
         got = ask_llm(question)
-        plan.append({**question, "keys": list(got["keys"]), "source": "ai",
-                     "confidence": float(got.get("confidence", 0.0)),
-                     "reason": str(got.get("reason", ""))[:60]})
+        item = {**question, "keys": list(got["keys"]), "source": "ai",
+                "confidence": float(got.get("confidence", 0.0)),
+                "reason": str(got.get("reason", ""))[:60]}
+        # ② 二次验证：只对 AI 作答的题做（题库命中跳过）
+        if verify_llm is not None:
+            try:
+                v = verify_llm(question, list(item["keys"]))
+            except Exception as exc:                   # noqa: BLE001
+                v = {"error": f"{type(exc).__name__}: {str(exc)[:60]}"}
+            if v:
+                agree = v.get("agree")
+                v_keys = [str(k) for k in (v.get("keys") or [])]
+                item["verify"] = {
+                    "checked": v.get("error") is None,
+                    "agree": agree,
+                    # 只有明确"不同意"时才记它建议的答案，避免噪声
+                    "suggested": v_keys if agree is False else [],
+                    "confidence": v.get("confidence"),
+                    "reason": str(v.get("reason", ""))[:60],
+                    "error": v.get("error", ""),
+                }
+        plan.append(item)
     return plan
 
 
