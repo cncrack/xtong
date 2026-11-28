@@ -75,7 +75,22 @@ def make_printer(log_path: Path):
                 r = ev["row"]
                 extra = f" {r.get('done_minutes')}/{r.get('required_minutes')} {r.get('state')}"
             elif kind == "no_report":
-                extra = f" 已 {ev.get('stale')}s 无上报（updates={ev.get('updates')}）→ 查网络，学时没在入账"
+                # ⚠ 2026-11-28：原来这里写死「学时没在入账」——**是错的**。
+                # 实测上报间隔 1分43秒~2分13秒，攒到 5 分钟才提示；而同期
+                # `progress` 的已完成节数在涨（0→4→10→14），学时正常入账。
+                # 现在只陈述事实 + 带上 `done_minutes` 证据，让看日志的人自己判断。
+                done = ev.get("done_minutes")
+                need = ev.get("required_minutes")
+                changed = ev.get("done_changed")
+                if changed is True:
+                    verdict = "但学时在涨，属正常（平台上报本来就不快）"
+                elif changed is False:
+                    verdict = "学时没涨 → 真的要查网络/会话"
+                else:
+                    verdict = "学时是否在涨：无对比数据（还没回读过第二次）"
+                dur = (f"，学时 {done}/{need}" if done is not None else "")
+                extra = (f" 已 {ev.get('stale')}s 无新上报"
+                         f"（updates={ev.get('updates')}{dur}）→ {verdict}")
             elif kind == "session_lost":
                 rep = ev.get("reports") or {}
                 extra = (f" 页面={ev.get('url')} 上报状态={rep.get('by_status')}"

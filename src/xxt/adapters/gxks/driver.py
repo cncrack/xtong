@@ -34,7 +34,70 @@ STALL_LAG_SECONDS = 10            # 播放位置落后实时超过 10 秒 → �
 RELOAD_COOLDOWN_SECONDS = 180     # 两次重载之间至少隔 3 分钟，防重载风暴
 MAX_RECOVERIES_PER_SECTION = 6    # 单节重载上限，超了转人工
 MAX_PAUSE_RECOVERIES = 3          # 同一节反复被判 paused 时最多拉回几次（C2：不能无限 play）
-NO_REPORT_AFTER_SECONDS = 75      # 上报是 60 秒一拍；超过 75 秒没新增上报 = 网络/上报断了
+#: `no_report` 的**最小**阈值（秒）。真实阈值按观察到的上报间隔自适应，
+#: 见 `report_stale_threshold()`。
+#:
+#: ## 为什么不能写死（2026-11-28 实测）
+#:
+#: 2026-10-29 定 75 秒时依据是：1.2 跑到 clock=2166s 时 updates=36
+#: （2166/60≈36）⇒ 上报约 60 秒一次。当天的日志也证实了：
+#:   11-08 下午 平均 69.8 秒；11-08 晚 平均 61.0 秒 —— 75 秒阈值合适。
+#:
+#: 但 11-28 同一账号同一平台，实测平均 **119.3 秒**（103~133 秒）：
+#:   14:29:48 updates=1 -> 14:31:48 updates=2 -> 14:34:01 updates=3
+#: 于是每 75 秒必然假报一次「学时没在入账」，而同期本节学时 0→4→10→14→20
+#: （注意：progress 里是**本节** done_minutes/required_minutes，不是节数）。
+#:
+#: 平台的上报节奏会变（片长、清晰度、服务端策略都可能影响），写死要么误报、
+#: 要么迟钝。所以改成：**看到几次上报之后，按最大间隔的 2.5 倍当阈值**；
+#: 还没观察到就退回这个最小值（保守，保持 10-29 的行为）。
+NO_REPORT_MIN_SECONDS = 75
+
+#: 自适应阈值的上限：再慢也不该等到 10 分钟才提示。
+NO_REPORT_MAX_SECONDS = 600
+
+#: 观察窗口：只用最近这么多次上报间隔来估，避免早期抖动永久抬高阈值。
+NO_REPORT_INTERVAL_SAMPLES = 5
+
+#: 启动阶段（还没见过第一次上报）的阈值上限。见 `report_stale_threshold`。
+#: 实测 11-28 首次上报要 120 秒，所以这个上限必须 > 120，否则一开始就假警。
+NO_REPORT_BOOTSTRAP_MAX_SECONDS = 240
+
+
+def report_stale_threshold(intervals: list[float], *,
+                           started_at: float | None = None,
+                           now: float | None = None) -> float:
+    """按**已观察到的上报间隔**算出「多久没新上报才算可疑」。
+
+    - 有样本   → 取最近 `NO_REPORT_INTERVAL_SAMPLES` 个的最大值 × 2.5，
+                 并夹在 [MIN, MAX] 之间
+    - 无样本（还没见过一次上报）→ **按已等时长渐进放宽**：
+      `max(MIN, 已等时长 × 1.5)`，封顶 `NO_REPORT_BOOTSTRAP_MAX_SECONDS`。
+      这样即使这一节第一次上报就要 120 秒，也不会在第 75 秒就假警；
+      而如果真的完全没上报，最多等到 bootstrap 上限也就报了。
+
+    ## 为什么要「渐进放宽」而不是直接给个大值
+
+    直接给 300 秒会让 60 秒节奏的场景迟钝 5 倍（真断网 5 分钟才发现）。
+    渐进则相反：等得越久阈值越大，**"确实异常"仍会被抓住**，
+    只是不会在「人家正常慢」的节奏上乱叫。
+
+    为什么是 2.5 倍：正常抖动（实测有 60/65/73、120/133 这种）不该触发；
+    而真断网后上报会**完全停住**，2.5 倍足够把「抖动」和「真断」分开。
+    """
+    if not intervals:
+        # 启动阶段：还没见过任何上报 —— 不能硬套 75 秒（平台可能本来就是 120 秒一次）。
+        # 用「已经等了多久」渐进放宽，避免"第一次上报都没到就喊断网"。
+        if started_at is not None and now is not None:
+            waited = max(0.0, float(now) - float(started_at))
+            return float(min(NO_REPORT_BOOTSTRAP_MAX_SECONDS,
+                             max(NO_REPORT_MIN_SECONDS, waited * 1.5)))
+        return float(NO_REPORT_MIN_SECONDS)
+    recent = list(intervals)[-NO_REPORT_INTERVAL_SAMPLES:]
+    baseline = max(float(x) for x in recent)
+    threshold = baseline * 2.5
+    return float(min(NO_REPORT_MAX_SECONDS,
+                     max(NO_REPORT_MIN_SECONDS, threshold)))
 OVERRUN_MARGIN_MINUTES = 2        # 达标不能“刚刚好”：学时 ≥ 要求 + 本余量 才停（C11）
 MAX_REPLAYS_PER_SECTION = 1         # 视频播完还差学时 → 重播补足，最多补播几次（Q26）
 
@@ -182,6 +245,30 @@ def quota_gap(row: dict[str, Any]) -> int | None:
     if done is None or required is None:
         return None
     return max(0, required - done)
+
+
+def _no_report_evidence(last_row: dict | None, prev_row: dict | None) -> dict:
+    """判断"到底有没有在入账"，给 `no_report` 事件带上**证据**而不是结论。
+
+    ⚠ 2026-11-28：原来 `no_report` 的日志文案写死「学时没在入账」——
+    但实测那只是**上报计数没变**，学时其实在涨（`progress` 0→4→10→14）。
+    把"上报慢"和"真的没入账"混为一谈，用户会以为白跑了。
+
+    这里只提供事实：
+      - `done_changed`：相对上一次回读，`done_minutes` 有没有增加；
+      - `done_minutes` / `required_minutes`：当前值。
+    判定留给看日志的人（以及 README 里的说明），日志不再替用户下结论。
+    """
+    cur = last_row or {}
+    old = prev_row or {}
+    cur_done = cur.get("done_minutes")
+    old_done = old.get("done_minutes")
+    changed = None
+    if isinstance(cur_done, int) and isinstance(old_done, int):
+        changed = cur_done > old_done
+    return {"done_minutes": cur_done,
+            "required_minutes": cur.get("required_minutes"),
+            "done_changed": changed}
 
 
 def section_status(row: dict[str, Any]) -> str:
@@ -867,11 +954,16 @@ class GxksDriver:
         pause_recoveries = 0
         last_updates: int | None = None
         last_update_at = started
+        # 已观察到的上报间隔（秒）。`no_report` 阈值按它自适应，
+        # 因为平台上报节奏会变（11-08 实测 60~70s，11-28 实测 120s）。
+        update_intervals: list[float] = []
         # 心跳用（2026-11-04）：页面自己的计时器 `m_time`（墙钟，每采样都有）
         last_clock: int | None = None
         last_tick_at = started
         next_read = started
         last_row: dict[str, Any] | None = None
+        # 上一次回读的 row（只给 `no_report` 判「学时有没有涨」用）
+        prev_row_for_evidence: dict[str, Any] | None = None
 
         def emit(kind: str, **extra: Any) -> None:
             if on_event:
@@ -1035,13 +1127,26 @@ class GxksDriver:
                 ups = sample.get("updates")
                 if isinstance(ups, int):
                     if last_updates is None or ups != last_updates:
+                        if last_updates is not None:
+                            # 记一次真实间隔（只在真有"变化"时算）
+                            gap = now - last_update_at
+                            if gap > 0:
+                                update_intervals.append(gap)
+                                # 只留最近几次，避免早期抖动永久影响阈值
+                                del update_intervals[:-NO_REPORT_INTERVAL_SAMPLES]
                         last_updates, last_update_at = ups, now
-                    elif now - last_update_at >= NO_REPORT_AFTER_SECONDS:
+                    elif now - last_update_at >= report_stale_threshold(
+                            update_intervals, started_at=started, now=now):
+                        # ⚠ 2026-11-28：带上「学时到底有没有涨」的证据。
+                        # 原来只报 stale/updates，日志文案直接断言"学时没在入账"，
+                        # 而实测那只是上报慢；同期 progress 显示节数在涨。
+                        ev = _no_report_evidence(last_row, prev_row_for_evidence)
                         emit("no_report", stale=round(now - last_update_at), updates=ups,
-                             reports=report_summary(reports))
-                        last_update_at = now          # 每 75 秒最多报一次，不刷屏
+                             reports=report_summary(reports), **ev)
+                        last_update_at = now          # 每过一个阈值最多报一次，不刷屏
 
             if now >= next_read:
+                prev_row_for_evidence = last_row      # 留旧值给 no_report 做对比
                 last_row = self.read_row(section_id)
                 status = section_status(last_row or {})
                 emit("progress", status=status, row=last_row)
