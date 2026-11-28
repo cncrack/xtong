@@ -643,8 +643,14 @@ def main() -> int:
                         print(f"      待确认清单：{cleared} 题已按平台标准答案"
                               f"标为已核验（无需人工再核）")
                     elif site_ordinals:
-                        print(f"      待确认清单：{len(site_ordinals)} 题暂无待确认项"
-                              f"（可能已核验过）")
+                        # ⚠ 2026-11-28：原来说「暂无待确认项（可能已核验过）」——
+                        # 「可能」这种措辞让用户没法判断到底是"早核验过了"还是"根本
+                        # 不需要核"。实测（1.6 第三次作答）：题库命中 3/3、平台判分
+                        # 全对，`gx_pending` 里压根没有新的待确认行 —— **这是正常且
+                        # 最好的结果**，不该说得含糊。
+                        # 现在只陈述事实：这些题走的是平台标准答案。
+                        print(f"      待确认清单：本次 {len(site_ordinals)} 题均用平台标准答案"
+                              f"判定，无需人工确认")
                 except Exception as exc:              # noqa: BLE001
                     print(f"[WARN] 入库未完成：{type(exc).__name__}: {exc}", file=sys.stderr)
 

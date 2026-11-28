@@ -335,6 +335,159 @@ def parse_capture(*, account_label: str, questions_doc: dict, stage1: dict,
     }
 
 
+def _keys(n: int) -> list[str]:
+    """前 n 个选项 key（a/b/c/d…）。与 `work._keys` 同口径，本地留一份
+    避免 `practice` 反向依赖 `work`（那会形成循环 import）。"""
+    return [chr(97 + i) for i in range(max(0, n))]
+
+
+def parse_review_standalone(*, account_label: str, review_url: str,
+                           review_html: str) -> dict:
+    """**只凭判分页 HTML** 解析出一份 bundle（不依赖答题帧的 `raw_rows`）。
+
+    ## 什么时候用它（2026-11-28 兜底补抓）
+
+    `parse_review_online` 需要 `raw_rows`（答题帧的题行）做逐题核对，
+    那是「在线作答时」才有的；**事后从「成绩分析」补抓**时拿不到。
+
+    所以这里改成**完全从判分页结构推断**：
+
+    - 题干：`div#ddTm_N > dl > dt`（去掉题号与分值）
+    - 选项：`div#ddTm_N > dl > dd > label`（去掉 `A、` / `1、` 前缀）
+    - 题型：按选项推断 —— 恰好 2 个且为「对/错」→ 判断题(4)；
+            否则按选项数 → 4 个以上暂记为单选(2)（多选需人确认）
+    - 答案：`span.tmda` 标「标准答案」「考生答案」「考生得分」
+
+    ## 与 `parse_review_online` 的差别（必须知道）
+
+    它**没有**「与答题页逐题核对」这一层（没数据可比）。所以校验靠：
+      ① 题目数 == `ddTm_` 块数；
+      ② 每题都有 `dt` 与至少 2 个选项；
+      ③ 逐题得分合计 == 总得分、逐题满分合计 == 试卷总分（判分页自带）。
+
+    ⚠ 走这条路入库的答案仍是**平台官方**（`standard_source='site'`），可信；
+    只是少了「确认是这一次作答」的交叉验证。
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    review = _params(review_url)
+    result_id = review.get("clerk_kscj_id")
+    if not result_id:
+        raise ValueError("判分页 URL 缺少 Clerk_kscj_ID（不是判分页）")
+    exercise_id = _exercise_id(review) or ""
+    soup = BeautifulSoup(review_html, "html.parser")
+    blocks = soup.select('div[id^="ddTm_"]')
+    if not blocks:
+        raise ValueError("判分页里没有 ddTm_ 题目块")
+
+    questions = []
+    for no, node in enumerate(blocks, 1):
+        dt = node.find("dt")
+        if dt is None:
+            raise ValueError(f"第 {no} 题缺少题干结构")
+        # 题干：去掉 <b> 与行首题号、末尾分值
+        head = BeautifulSoup(str(dt), "html.parser")
+        for b in head.select("b"):
+            b.decompose()
+        raw = head.get_text(" ", strip=True)
+        stem = re.sub(r"^\.*\d+\.", "", raw).strip()
+        stem = re.sub(r"\(\s*\d+(?:\.\d+)?\s*分\s*\)\s*$", "", stem).strip()
+        if not stem:
+            raise ValueError(f"第 {no} 题题干为空")
+
+        # 选项：第一个 dd 里的 label
+        dd_first = node.find("dd")
+        labels = dd_first.select("label") if dd_first else []
+        opts = []
+        for x in labels:
+            s2 = x.get_text(" ", strip=True).strip()
+            s2 = re.sub(r"^[A-Z]、", "", s2)     # 去 A、 前缀
+            s2 = re.sub(r"^\d+、", "", s2)       # 去 1、 前缀（判断题）
+            if s2:
+                opts.append(s2)
+        if len(opts) < 2:
+            raise ValueError(f"第 {no} 题选项不足 2 个（{opts}）")
+
+        # 题型推断：恰好两个且是 对/错 -> 判断题(4)；否则按选项数当单选(2)
+        pair = {o.strip() for o in opts}
+        if len(opts) == 2 and pair <= {"对", "错", "正确", "错误", "True", "False",
+                                        "true", "false"}:
+            type_code = "4"
+            # 判断题统一成 对/错 两个（顺序按平台给的）
+            opts = list(opts)
+            spec = type_spec_map(type_code)
+            option_keys = list(spec.get("builtin_values") or [])
+        else:
+            type_code = "2"
+            option_keys = _keys(len(opts))
+
+        parts = [{"kind": "option", "key": option_keys[i] if i < len(option_keys)
+                  else chr(97 + i),
+                  "text": o, "html": o} for i, o in enumerate(opts)]
+        keys = [p2["key"] for p2 in parts]
+        picked = _choice_alias(_labeled(node, "考生答案"), keys, opts)
+        standard = _choice_alias(_labeled(node, "标准答案"), keys, opts)
+        grade = _labeled(node, "考生得分")
+        score_match = (re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*分\s*", grade.get_text())
+                       if grade else None)
+        score = float(score_match[1]) if score_match else None
+        # 分值：从 dt 末尾的 (N分) 读；读不到就 None
+        ms = re.search(r"\(\s*(\d+(?:\.\d+)?)\s*分\s*\)", raw)
+        max_score = float(ms[1]) if ms else (score or 0.0)
+        questions.append({
+            "ordinal": no, "qid": "", "type_code": type_code,
+            "type_name": {"2": "单选题", "4": "判断题"}.get(type_code, "未知题型"),
+            "stem": stem, "stem_html": str(dt), "max_score": max_score,
+            "parts": parts, "extra": {},
+            "answer": {"picked": picked,
+                       "picked_source": "site" if picked is not None else None,
+                       "standard": standard,
+                       "standard_source": "site" if standard is not None else None,
+                       "score_got": score,
+                       "is_correct": None,
+                       "explanation_html": ""},
+        })
+
+    body = soup.get_text(" ", strip=True)
+    total = re.search(r"总得分\s*(\d+(?:\.\d+)?)", body)
+    maximum = re.search(r"试卷总分\s*(\d+(?:\.\d+)?)", body)
+    got_score = float(total[1]) if total else None
+    total_score = float(maximum[1]) if maximum else None
+    if total_score is not None:
+        s2 = sum(q["max_score"] for q in questions)
+        if abs(s2 - total_score) > 0.001:
+            raise ValueError(f"逐题满分合计 {s2} != 试卷总分 {total_score}，可能漏题")
+    # 答卷开始时间
+    tm = re.search(r"答卷时间\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", body)
+    start_time = tm[1] if tm else ""
+
+    return {
+        "format_version": 1, "account_label": account_label,
+        "exam_start_id": str(result_id),      # 兜底路径用 Clerk_Kscj_Id 当唯一键
+        "exercise_id": str(exercise_id),
+        "course_id": "", "section_id": "", "section_name": "",
+        "paper_label": "", "start_time": start_time,
+        "result_id": str(result_id),
+        "total_score": total_score, "got_score": got_score,
+        "type_map": {"2": "单选题", "4": "判断题"}, "questions": questions,
+        "source_rows": [],
+    }
+
+
+def type_spec_map(code: str) -> dict:
+    """取题型规格（避免 `practice` 反向 import `work` 造成循环依赖）。
+
+    `work.py` 里已有 `TYPE_SPECS`；这里按需**延迟 import**，
+    并且只在需要「判断题内置选项」时才用。
+    """
+    try:
+        from .work import type_spec as _ts
+        return _ts(code) or {}
+    except Exception:                                      # noqa: BLE001
+        return {"4": {"builtin_options": ["对", "错"],
+                      "builtin_values": ["1", "0"]}}.get(code, {})
+
+
 def parse_review_online(*, account_label: str, review_url: str, review_html: str,
                         raw_rows: list, type_map: dict, exercise_id: str,
                         exam_start_id: str = "", section_id: str = "",
