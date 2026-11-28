@@ -453,24 +453,29 @@ def _await_confirm_and_reclaim(
         session2 = gbrowser.open_session(
             settings, label=label, port=port, require_list=False)
         try:
-            # ⚠ 2026-11-28 实拍：交卷成功了（说明 SubmitExam 修复有效），但
-            #   这里 `goto` 判分页 30 秒超时 -> 没入库。两个原因：
-            #   ① 用户手动交卷后**浏览器已经自己跳到判分页**，我们不该再 goto 一次
-            #      （重新加载 = 又等一遍，实测判分页本身加载就很慢）
-            #   ② 判分页题多资源多，30 秒不够
-            # 所以：**先等一会儿让页面自己到位**；确实没到才 goto，且给 90 秒。
+            # ⚠ 2026-11-28 22:00 用户问「为什么交卷后到解析页要停比较长时间」，
+            #   查日志查出来的**设计冗余**，本次删掉：
+            #
+            # 原来这里先「等平台自己跳到判分页，最多 60 秒」，等不到才 goto。
+            # 那句等待源于 11-28 00:42 时的**一条错误推测**：
+            #   「用户手动交卷后浏览器已经自己跳到判分页，不该再 goto 一次」
+            # 但翻遍全部日志，实际是反过来的：
+            #   · 「判分页已在浏览器中打开」（等待命中）—— 只有 1 次，
+            #     而且那次是我手工补抓后页面恰好停在 viewExam；
+            #   · 空等 60 秒后才走 goto 的分支 —— **5 次**。
+            # 也就是说平台**从不自己跳**，它停在 `ExamMessage.aspx` 就完了。
+            # 所以那 60 秒**每次都在空等**，用户感受到的「停很久」就是它。
+            #
+            # 现在：已经在判分页就直接抓，否则立刻 goto（不再空等）。
+            # 判分页加载本身慢的问题由 `wait_graded()`（等 ddTm_ 出现，60s）
+            # 和 goto 的 90s 超时兜住，删掉空等不影响可靠性。
             page2 = session2.page
-            deadline2 = time.monotonic() + 60        # 等平台自己跳转，最多 60s
-            while time.monotonic() < deadline2:
-                if "viewexam.aspx" in (page2.url or "").lower():
-                    break
-                time.sleep(1.0)
-            if "viewexam.aspx" not in (page2.url or "").lower():
-                print("      浏览器没自己跳到判分页，主动导航…")
+            if "viewexam.aspx" in (page2.url or "").lower():
+                print("      判分页已在浏览器中打开，直接抓取")
+            else:
+                print("      主动导航到判分页…")
                 page2.goto(review_url, wait_until="domcontentloaded",
                            timeout=90_000)
-            else:
-                print("      判分页已在浏览器中打开，直接抓取")
             graded = gwork.wait_graded(page2, timeout_ms=60_000)
             return practice.parse_review_online(
                 account_label=label, review_url=graded["url"],

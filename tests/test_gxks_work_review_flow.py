@@ -177,12 +177,27 @@ class TestGradedWaitTimeout(unittest.TestCase):
         self.assertIn("Clerk_Kscj_Id", seg)
         self.assertIn("viewExam.aspx", seg)
 
+    def test_no_redundant_wait_before_navigation(self):
+        """不许再「先空等平台自己跳」——实测平台从不自己跳。
+
+        2026-11-28 用户问「为什么交卷后到解析页要停比较长时间」。
+        查日志：6 次里 5 次是空等满 60s 才 goto（平台停在 ExamMessage 不动）。
+        所以那段 `deadline2 = ... + 60` 的循环必须不存在。
+        """
+        seg = self._fn_body()
+        assert "deadline2" not in seg, "又加回了空等循环？"
+        assert "浏览器没自己跳到判分页" not in seg, "旧的空等分支文案还在"
+        # 但「已经在判分页就直接抓」的快速路径要保留
+        assert "判分页已在浏览器中打开" in seg
+
     def test_navigates_to_built_review_url(self):
         """拼出 URL 后要主动 goto 过去（判分页不一定已在该标签打开）。
 
-        ⚠ 2026-11-28：先等平台自己跳转（最多 60s），确实没到才 goto，
-        且超时放宽到 90s（实测判分页加载慢，30s 不够）。
-        变量名也从 page 改成 page2。
+        ⚠ 2026-11-28 22:00：**去掉了原来「先等平台自己跳 60s」的空等**。
+        查日志发现平台**从不自己跳**（停在 ExamMessage.aspx），
+        6 次里 5 次都是空等满 60s 才 goto —— 用户感受到的「停很久」就是它。
+        现在：已在判分页就直接抓，否则立刻 goto（90s 超时不变）。
+        可靠性由 `wait_graded()`（等 ddTm_）兜住。
         """
         seg = self._fn_body()
         self.assertIn(".goto(review_url", seg)
