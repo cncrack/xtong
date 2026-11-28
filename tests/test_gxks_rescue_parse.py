@@ -124,3 +124,61 @@ def test_score_sum_mismatch_rejected():
             account_label="甲同学",
             review_url="http://x/ViewExam.aspx?Clerk_Kscj_ID=9",
             review_html=html)
+
+
+# ---------------------------------------------------------------- 1.8 实跑暴露的 bug
+#
+# 判断题在平台字段里 `tm_arr[5]`（选项串）是**空串**、`tm_arr[4]`（声明数）是 1，
+# `"".split(";")` 得到 `[""]`（长度 1）——多数时候碰巧相等就过了。
+# 但 1.8 那次不等，于是在**早期校验**就抛
+#   `分号拆分后的选项数与平台字段不一致`
+# 后面写好的判断题处理根本执行不到。
+
+JI = "4"
+
+
+def _judge_html() -> str:
+    return """
+    <html><body>
+      <div id="ddTm_1">
+        <dl>
+          <dt>.1.076型两栖攻击舰首舰命名为南昌舰。<b>(33分)</b></dt>
+          <dd><label>1、错</label><label>2、对</label></dd>
+          <dd><label><span class="tmda">考生答案</span><span>错</span>
+              <span class="tmda">标准答案</span><span>错</span>
+              <span class="tmda">考生得分</span><span>33 分</span></label></dd>
+        </dl>
+      </div>
+      <div>总得分 33.0 试卷总分 33.0</div>
+    </body></html>
+    """
+
+
+def test_judge_skips_option_count_check_when_declared_mismatch():
+    """回归：判断题不能因为「声明数与拆分数不等」在早期校验就炸。
+
+    1.8 实跑时 `row[4]` 与 `[""]` 长度不等 -> 直接抛错，判分页白抓。
+    """
+    rows = [["q1", JI, "076型两栖攻击舰首舰命名为南昌舰。", "33",
+             "2",          # ← 声明 2 个（与 [""] 的 1 不等）
+             "", "", "0", ""]]
+    b = practice.parse_review_online(
+        account_label="甲同学",
+        review_url="http://x/ViewExam.aspx?Clerk_Kscj_ID=9&ExamID=15264",
+        review_html=_judge_html(), raw_rows=rows,
+        type_map={"4": "判断题"}, exercise_id="15264",
+        section_id="1", section_name="1.8", exam_start_id="9", start_time="")
+    assert len(b["questions"]) == 1
+    assert b["questions"][0]["type_code"] == "4"
+
+
+def test_non_judge_still_checks_option_count():
+    """非判断题仍要严格校验选项数（不能因为放宽把错的放进来）。"""
+    rows = [["q1", "2", "题干", "33", "4", "甲;乙", "", "0", ""]]
+    with pytest.raises(ValueError, match="选项数"):
+        practice.parse_review_online(
+            account_label="甲同学",
+            review_url="http://x/ViewExam.aspx?Clerk_Kscj_ID=9",
+            review_html=_judge_html(), raw_rows=rows,
+            type_map={"2": "单选题"}, exercise_id="1",
+            section_id="1", section_name="x", exam_start_id="9", start_time="")

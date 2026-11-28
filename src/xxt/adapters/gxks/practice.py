@@ -181,7 +181,17 @@ def parse_review_question(*, node: Tag, row: list, type_map: dict,
     qid = str(row[0])
     max_score = float(row[3])
     opts = str(row[5]).split(";")
-    if len(opts) != int(row[4]):
+    # ⚠ 2026-11-28（1.8 实跑暴露）：这个"选项数校验"必须**跳过判断题**。
+    #
+    # 判断题在平台字段里 `tm_arr[5]`（选项串）是**空串**、`tm_arr[4]`（声明数）
+    # 是 1，`"".split(";")` 得到 `[""]`（长度 1）——多数时候碰巧相等就过了。
+    # 但 1.8 那次不等（判断题实际有 2 个内置选项，声明数不一定是 2），
+    # 于是在这里就抛 `分号拆分后的选项数与平台字段不一致`，
+    # 后面那段已经写好的判断题处理**根本执行不到**。
+    #
+    # 判断依据与下面 `is_builtin` 一致：选项串为空（或只有空串）= 平台不给选项。
+    _builtin_type = str(row[5]).strip() == "" or opts == [""]
+    if not _builtin_type and len(opts) != int(row[4]):
         raise ValueError("分号拆分后的选项数与平台字段不一致")
     if node.find("dt") is None:
         raise ValueError("回顾页缺少题目结构")
