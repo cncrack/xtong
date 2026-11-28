@@ -571,13 +571,20 @@ def main() -> int:
         else:
             print("[4/4] 只出答案，未动页面（reference 模式）")
 
+        # ⚠ 2026-11-28：组装 result 时**必须带上 `verify`**。
+        # `plan_answers` 算好了二次验证结果，但这里原来没搬到 items 里，
+        # 于是面板「二次验证」列永远空着（实测 1.7 第一次跑就是这样）。
+        # 用 `**({"verify": p["verify"]} if "verify" in p else {})` 保持向后兼容：
+        # 没做验证的题（题库命中 / --no-verify）不带这个字段。
         items = [{"ordinal": p["ordinal"], "qid": p["qid"],
                   "type_code": p.get("type_code", ""),
                   "type_name": p["type_name"], "stem": p["stem"],
                   "options": p["options"], "keys": p["keys"],
                   "answer_text": _answer_text(p, p["keys"]),
                   "source": p["source"], "confidence": p["confidence"],
-                  "reason": p["reason"]} for p in plan]
+                  "reason": p["reason"],
+                  **({"verify": p["verify"]} if "verify" in p else {})}
+                 for p in plan]
         review = build_review(plan, low_confidence=LOW_CONFIDENCE)
         pending_ids: list[int] = []
         if do_fill and do_submit and not review["auto_eligible"]:
