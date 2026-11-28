@@ -597,8 +597,13 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 #runlog{max-height:min(72vh,900px);overflow-y:auto;scrollbar-width:thin;
   background:#fafbfc;border:1px solid var(--line);border-radius:8px;
   padding:8px 10px}
+/* ⚠ 2026-11-28 用户实拍：「运行日志这个高度没有变化」——因为我之前只把外层
+   `#runlog` 的 max-height 调大了，但真正显示日志的 `<pre>` 有**全局**
+   `pre{max-height:150px}`（约 6 行），把高度又卡住了。
+   这里用 `#runlog pre` 精确覆盖（只影响运行日志这一块，不动别处的 <pre>），
+   让 pre 撑满外层容器；外层已有 max-height + overflow-y，滚动仍由外层负责。 */
 #runlog pre{margin:0;font-size:12.5px;line-height:1.5;white-space:pre-wrap;
-  word-break:break-word}
+  word-break:break-word;max-height:none;overflow:visible}
 /* 「最新在上」的说明：一行小字，不占地方（2026-11-04） */
 .runlog-hint{font-size:11.5px;color:var(--dim);margin:0 0 4px;
   padding-bottom:3px;border-bottom:1px dashed var(--line)}

@@ -300,6 +300,7 @@ def _await_confirm_and_reclaim(
     print("      两种都行：① 浏览器点「交卷」→ 我自动发现并入库；"
           "② 或点面板「确认交卷并入库」")
     from xxt.adapters.gxks import chrome as _gchrome_early
+    from xxt.adapters.gxks.selectors import MAIN_PAGE
     from urllib.parse import parse_qs as _pqs, urlparse as _uparse
 
     def _find_review(known_clerk: set[str]) -> str:
@@ -314,9 +315,29 @@ def _await_confirm_and_reclaim(
         #      就已经存在的判分页」，属于历史，不能算本次。
         for _u in _gchrome_early.page_urls(port):
             _low = _u.lower()
+            _q = _pqs(_uparse(_u).query)
+            # ⚠ 2026-11-28 用户实拍「没有发现自动并入库呀」：
+            #   平台交卷后**先停在 `ExamMessage.aspx`（交卷成功页）**，
+            #   不是直接跳 `viewExam.aspx`。原检测只认 viewexam，
+            #   于是交卷成功了却检测不到，白等 10 分钟。
+            #   这里两种页面都认：
+            #     · viewexam  -> 直接就是判分页
+            #     · exammessage -> 从它带的 Tk_Cl_Id/Clerk_Kscj_Id 拼出判分页
+            #       （与主流程第 ④ 步拼法完全一致，别写第二套）
+            if "exammessage.aspx" in _low:
+                _m_eid = (_q.get("Tk_Cl_Id") or _q.get("tk_cl_id") or [""])[0]
+                _m_cid = (_q.get("Clerk_Kscj_Id") or _q.get("clerk_kscj_id") or [""])[0]
+                if not _m_eid or not _m_cid:
+                    continue
+                if str(_m_eid) != str(exercise_id):
+                    continue
+                if _m_cid in known_clerk:
+                    continue
+                _b = _uparse(MAIN_PAGE)
+                return (f"{_b.scheme}://{_b.netloc}/ExamList/ExamPage/viewExam.aspx"
+                        f"?ExamID={_m_eid}&Clerk_kscj_ID={_m_cid}")
             if "viewexam.aspx" not in _low:
                 continue
-            _q = _pqs(_uparse(_u).query)
             _eid = (_q.get("ExamID") or _q.get("examid") or [""])[0]
             _cid = (_q.get("Clerk_kscj_ID") or _q.get("clerk_kscj_id") or [""])[0]
             if str(_eid) != str(exercise_id):
@@ -330,11 +351,14 @@ def _await_confirm_and_reclaim(
     baseline_clerk: set[str] = set()
     try:
         for _u in _gchrome_early.page_urls(port):
-            if "viewexam.aspx" in _u.lower():
-                _q = _pqs(_uparse(_u).query)
-                _cid = (_q.get("Clerk_kscj_ID") or _q.get("clerk_kscj_id") or [""])[0]
-                if _cid:
-                    baseline_clerk.add(_cid)
+            _ul = _u.lower()
+            if "viewexam.aspx" not in _ul and "exammessage.aspx" not in _ul:
+                continue
+            _q = _pqs(_uparse(_u).query)
+            _cid = (_q.get("Clerk_kscj_ID") or _q.get("clerk_kscj_id")
+                    or _q.get("Clerk_Kscj_Id") or [""])[0]
+            if _cid:
+                baseline_clerk.add(_cid)
     except Exception:                                   # noqa: BLE001
         pass
 
@@ -387,8 +411,6 @@ def _await_confirm_and_reclaim(
     from urllib.parse import parse_qs, urlparse
 
     from xxt.adapters.gxks import chrome as _gchrome
-    from xxt.adapters.gxks.selectors import MAIN_PAGE
-
     review_url = ""
     deadline = time.monotonic() + graded_timeout
     # 自动检测到的情况：把它找出来填进 review_url，直接跳过下面的等待
