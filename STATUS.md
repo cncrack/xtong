@@ -33,8 +33,10 @@
 
 ## 3. 交接字段（每次会话收尾必更，**覆盖写不追加**）
 
-- **进行中**：**无（2026-11-29）**。STATUS 拆分与模板抽取刚完成，待提交。
-- **下一步第一个动作**：提交本轮 → 继续做 gxks 题库（下一节练习：3.1 军事思想概述 `exam_id=14672`）。
+- **进行中**：**无（2026-11-29 01:35 收工）**。STATUS 拆分 + 模板抽取**已提交并推送**
+  （`eefc0db`），工作区干净、待推送 0、临时脚本已清。
+- **下一步第一个动作**：继续做 gxks 题库 —— 下一节 **3.1 军事思想概述**
+  （`exam_id=14672`）。需先确认面板/Chrome 已启动。
 - **阻塞点**：无
 - **等用户**：无
 
@@ -49,9 +51,9 @@
 |---|---|---|
 | 未修问题 | **45 条** | [`docs/BACKLOG.md`](docs/BACKLOG.md) |
 | 已归档问题 | **80 条** | [`docs/BACKLOG-archive-index.md`](docs/BACKLOG-archive-index.md) |
-| 最近一次会话 | devlog `2026-11-29-01` | `docs/devlog/` |
+| 最近一次会话 | devlog `2026-11-29-01`（STATUS 拆分 + 模板） | `docs/devlog/` |
 | 测试 | **1516 全绿** | `.venv/Scripts/python.exe -m pytest -q` |
-| 本题库（gxks） | 13 份答卷 | `data/gxks_questions.db` |
+| 题库（gxks） | **14 份答卷 / 36 题 / 42 答案** | `data/gxks_questions.db` |
 
 ---
 
