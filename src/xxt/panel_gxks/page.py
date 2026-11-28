@@ -825,7 +825,7 @@ button.mini{padding:3px 9px;font-size:13px}
         title="选中当前筛选里可见、且浏览器没开或没在跑的账号（再点一次取消）">全选</button>
       <button id="btn-bstudy" class="bgrp-btn primary" type="button"
         onclick="batchBrowserAction('start-and-study')"
-        title="一键：起浏览器 → 等端口就绪 → 开始学习（每个约 10~40 秒）">启动并学习</button>
+        title="一键：起浏览器 → 等端口就绪 → 开始**看视频**（不是做练习；做练习请点节列表里的「做练习」，每节需视频学完才解锁）。每个约 10~40 秒">启动并看视频</button>
       <button id="btn-bbrowser" class="bgrp-btn bgrp-btn--sub" type="button"
         onclick="batchBrowserAction('start-browser')"
         title="只启动浏览器（不开始学习）：为选中的账号逐个拉起 Chrome，每个约 10~40 秒">只启浏览器</button>
@@ -1523,7 +1523,7 @@ function renderBatchBar(shown) {
     ? '<button class="mini primary" onclick="batchAction(\'start-and-study\')" title="' +
       "一键：为没开浏览器的账号逐个拉起 Chrome（每个约 10~40 秒）→ 等端口就绪 → " +
       "自动开始学习。已在跑的自动跳过；并发满了的会排队" +
-      '">启动并学习<span class="bb-note">（' + deadSel + " 个要起浏览器）</span></button>"
+      '">启动并看视频<span class="bb-note">（' + deadSel + " 个要起浏览器）</span></button>"
     : "";
   html += '<b>已选 ' + n + ' 个</b>' +
     (runningSel ? '<span class="tag t-learn">其中 ' + runningSel + " 个运行中</span>" : "") +
@@ -1736,7 +1736,7 @@ async function batchAction(action) {
   if (!labels.length) return;
   const CN = { start: "开始学习", stop: "停止", enable: "启用",
                disable: "停用", delete: "删除", "start-browser": "启动浏览器",
-               "start-and-study": "启动并学习" };
+               "start-and-study": "启动并看视频" };
   // 选中里有几个正在跑。「开始学习」会跳过它们；「停用/删除」会被它们挡住
   // （后端拒绝：有任务在跑先停）—— 两种情况都要在**点之前**说清（2026-11-06）。
   const cards = (STATE && STATE.cards) || [];
@@ -1780,7 +1780,7 @@ async function batchAction(action) {
       ? "完成后会自动注入登录态，**并直接开始学习**。"
       : "完成后会自动注入登录态（不会开始学习）。";
     if (!confirm((action === "start-and-study"
-        ? "一键「启动并学习」：对选中的 " + labels.length + " 个账号，"
+        ? "一键「启动并看视频」：对选中的 " + labels.length + " 个账号，"
         : "为选中的 " + labels.length + " 个账号启动浏览器？\n\n") +
       (action === "start-and-study" ? "\n\n" : "") +
       (dead.length ? dead.length + " 个的浏览器没开（" + dead.join("、") + "），会逐个拉起。\n"
@@ -2759,7 +2759,7 @@ function renderBrowserBatch() {
 async function batchBrowserAction(action) {
   const labels = [...SEL];
   if (!labels.length) return;
-  const CN = { "start-browser": "批量启动浏览器", "start-and-study": "一键启动并学习",
+  const CN = { "start-browser": "批量启动浏览器", "start-and-study": "一键启动并看视频",
                "stop": "批量停止学习任务" };
   // 提示要等多久（浏览器冷启动 10~40 秒）；「停止」不涉及浏览器，不用吓人
   const slow = action !== "stop";

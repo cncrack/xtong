@@ -1184,9 +1184,12 @@ class TestBrowserButtonsLayout(unittest.TestCase):
         """批量行 4 个按钮必须能挤进一行（2026-11-06 用户：「批量停止能不能和上面同一行」）。
 
         侧栏内容宽最窄约 315px；按 11.5px 字号 + 左右 7px padding + 1px 边框算，
-        4 个按钮（全选/启动并学习/只启浏览器/停止）+ 38px 标题 + 4 个 5px gap ≈ 288px。
-        这条测试锁住**文案长度**：谁把「停止」改回「批量停止」、把「只启浏览器」
-        改回「只启动浏览器」，总宽就会超出一行、又变成两行。
+        4 个按钮 + 38px 标题 + 4 个 5px gap。
+
+        ⚠ 2026-11-28：文案从「启动并学习」改成「启动并看视频」（用户要求说清
+        这个按钮是**看视频**、不是做练习）。新文案总宽 300px，仍在 315 内。
+        这条测试锁住**文案长度**：谁再把它改长（比如「一键启动并看视频」），
+        总宽就会超出一行、又变成两行。
         """
         FONT, PAD, BORDER, GAP, TITLE = 11.5, 14, 2, 5, 38
 
@@ -1194,7 +1197,7 @@ class TestBrowserButtonsLayout(unittest.TestCase):
             return sum(FONT if ord(ch) > 0x2000 else FONT * 0.55 for ch in text)
 
         total = TITLE + GAP
-        for text in ("全选", "启动并学习", "只启浏览器", "停止"):
+        for text in ("全选", "启动并看视频", "只启浏览器", "停止"):
             self.assertIn(">" + text + "</button>", PAGE,
                           f"批量按钮文案「{text}」变了，需重算一行是否放得下")
             total += width(text) + PAD + BORDER + GAP
