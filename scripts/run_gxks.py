@@ -262,8 +262,34 @@ def main() -> int:
             print("  ⚠ 服务端要验证码 → 必须人工登录，脚本不再尝试")
         return out["result"] == "ok"
 
+    # ------------------------------------------------ 看视频也记操作记录
+    #
+    # 2026-11-28 用户：「为何操作记录里面第二个账号的日志比较少」。
+    # 查证：`work-fill` / `work-review` / `sections-read` / `browser-start` 都写
+    # `gx_ops`，但**学视频全程一个记录点都没有** —— 所以 test 账号在看视频时
+    # 操作记录里只有一条 `browser-start`，看着像什么都没干。
+    #
+    # 这里补三个关键节点（只记事实，不改任何播放行为）：
+    #   ① 开始学习        ② 每节学完（含用了多少分钟）      ③ 收工汇总
+    # 写失败一律吞掉 —— 记录是附加收益，不能影响刷课。
+    def _log_op(action: str, detail: str) -> None:
+        try:
+            from xxt.store import gxks_ops
+            from xxt.store.schema_gxks import open_question_bank
+            db = open_question_bank(_settings.data_dir / "gxks_questions.db")
+            try:
+                gxks_ops.record_op(db, account_label=acc_label, action=action,
+                                   result="ok", detail=detail[:180])
+            finally:
+                db.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
     print(f"=== 连续播放开始 {datetime.now():%H:%M:%S}"
           f"（最多 {args.max_sections} 节 / {args.max_total_hours:.1f} 小时）===")
+    _log_op("study-start",
+            f"开始学视频（最多 {args.max_sections} 节 / "
+            f"{args.max_total_hours:.1f} 小时）")
 
     # 拟人化（2026-10-29 用户要求）：节间不再是固定几十秒，改为「每节随机短歇 + 每 N 节一次长歇」。
     # 只在**时间轴**上加随机性，不碰播放行为（不快进、不跳段、不伪造上报）。
@@ -486,6 +512,10 @@ def main() -> int:
                            course=str(args.course or ""))
         except Exception as exc:                            # noqa: BLE001
             print(f"⚠ 记账失败（不影响播放）：{exc}")
+        # 用户要能看出「这账号到底学了哪几节」，所以每节一条
+        _log_op("study-section",
+                f"{section} {row['name']} 学完 → "
+                f"{final.get('done_minutes')}/{final.get('required_minutes')} 分钟")
 
         # **练理解锁状态：不在这里重读**（2026-11-04 我犯的错）。
         #
@@ -509,6 +539,9 @@ def main() -> int:
                 print(f"歇 {gap:.0f} 秒再切下一节 …")
             time.sleep(gap)
 
+    _log_op("study-done",
+            f"收工：完成 {len(finished)} 节，总耗时 "
+            f"{(time.monotonic() - started) / 60:.1f} 分钟")
     print("\n=== 本次汇总 ===")
     if finished:
         for f in finished:

@@ -285,16 +285,70 @@ def _await_confirm_and_reclaim(
         print("[WARN] 写等待确认信号失败，跳过驻留流程", file=sys.stderr)
         return None
 
-    print(f"[5/6] 已填完，等你核对并点「确认交卷」…（最多等 {timeout_sec}s）")
+    # ③ 等确认 —— 同时**自动检测你是否已经自己交卷**（2026-11-28 用户要求）
+    #
+    # 用户实拍：「我忘记直接点交卷了，没有点确认交卷并入库」。
+    # 两道人工动作（浏览器交卷 + 面板确认）容易漏一个，漏了就白做。
+    #
+    # 所以这里不只听信号文件，还每秒用 `chrome.page_urls()`（**纯 HTTP 只读**，
+    # 不建 CDP 连接 → 不会吞掉交卷的 confirm，Q31）看判分页有没有出现。
+    # 一旦发现本次练习的判分页，就当作「已确认」继续走入库，不必等面板。
+    #
+    # ⚠ 只认**本次练习**的判分页：URL 里必须带 `ExamID=<本次 exercise_id>`，
+    # 否则可能抓到上一次留下的旧判分页，把旧数据当新的入库。
+    print(f"[5/6] 已填完，等你核对并交卷…（最多等 {timeout_sec}s）")
+    print("      两种都行：① 浏览器点「交卷」→ 我自动发现并入库；"
+          "② 或点面板「确认交卷并入库」")
+    from xxt.adapters.gxks import chrome as _gchrome_early
+    from urllib.parse import parse_qs as _pqs, urlparse as _uparse
+
+    def _find_review(known_clerk: set[str]) -> str:
+        # 找**本次**的判分页 URL；找不到返回空串。
+        #
+        # ⚠ 判分页 URL 只有 ExamID + Clerk_kscj_ID，**没有 exam_start_id**，
+        # 所以只按 ExamID 认会把「上一次同一节的旧判分页」也当成新的
+        # （1.8 做第二次时就会踩到，直接把旧答卷当新的入库）。
+        # 这里用两个条件卡住：
+        #   ① ExamID == 本次 exercise_id；
+        #   ② Clerk_kscj_ID **不在** known_clerk 里 —— 那是「等待开始前
+        #      就已经存在的判分页」，属于历史，不能算本次。
+        for _u in _gchrome_early.page_urls(port):
+            _low = _u.lower()
+            if "viewexam.aspx" not in _low:
+                continue
+            _q = _pqs(_uparse(_u).query)
+            _eid = (_q.get("ExamID") or _q.get("examid") or [""])[0]
+            _cid = (_q.get("Clerk_kscj_ID") or _q.get("clerk_kscj_id") or [""])[0]
+            if str(_eid) != str(exercise_id):
+                continue
+            if _cid and _cid in known_clerk:
+                continue                    # 等待开始前就有的旧判分页
+            return _u
+        return ""
+
+    # 基线：等待开始前已经存在的判分页（历史），要排除掉
+    baseline_clerk: set[str] = set()
+    try:
+        for _u in _gchrome_early.page_urls(port):
+            if "viewexam.aspx" in _u.lower():
+                _q = _pqs(_uparse(_u).query)
+                _cid = (_q.get("Clerk_kscj_ID") or _q.get("clerk_kscj_id") or [""])[0]
+                if _cid:
+                    baseline_clerk.add(_cid)
+    except Exception:                                   # noqa: BLE001
+        pass
+
     deadline = time.monotonic() + timeout_sec
     phase = "waiting"
+    auto_detected = False
+    auto_url = ""
     while time.monotonic() < deadline:
         time.sleep(1.0)                      # 轮询间隔 1s
         try:
             data = json.loads(signal.read_text(encoding="utf-8"))
             phase = str(data.get("phase") or "waiting")
         except Exception:                               # noqa: BLE001
-            continue
+            pass                    # 文件暂时读不到不算错，继续等
         if phase == "confirm":
             break
         if phase == "cancel":
@@ -302,8 +356,18 @@ def _await_confirm_and_reclaim(
             print("[SKIP] 用户取消确认，未交卷")
             signal.unlink(missing_ok=True)
             return None
+        # 自动检测：本次练习的判分页出现了吗？
+        try:
+            auto_url = _find_review(baseline_clerk)
+        except Exception:                               # noqa: BLE001
+            auto_url = ""
+        if auto_url:
+            print("      检测到判分页（你自己交卷了）→ 自动入库，不用点面板")
+            auto_detected = True
+            break
     else:
-        print("[SKIP] 等待确认超时，未交卷。答案未入库（你可在面板重新做）")
+        print("[SKIP] 等待超时：既没检测到本次判分页，也没收到面板确认。")
+        print("       答案未入库（你可在面板重新做，或交卷后用兜底补抓脚本）")
         signal.unlink(missing_ok=True)
         return None
 
@@ -315,7 +379,11 @@ def _await_confirm_and_reclaim(
     #
     # 现在：轮询期间只用 `chrome.page_urls()`（HTTP 读 /json/list，不建连接），
     # 你的 confirm 能正常弹；等 URL 真变成 viewExam.aspx 了，才短暂连一次抓 HTML。
-    print(f"[6/6] 收到确认，等你在浏览器点「交卷」…（最多等 {graded_timeout}s）")
+    if auto_detected:
+        # 判分页已经在了（你自己点的交卷被我们发现了）→ 不用再等
+        print("[6/6] 判分页已就绪，直接抓取入库…")
+    else:
+        print(f"[6/6] 收到确认，等你在浏览器点「交卷」…（最多等 {graded_timeout}s）")
     from urllib.parse import parse_qs, urlparse
 
     from xxt.adapters.gxks import chrome as _gchrome
@@ -323,7 +391,10 @@ def _await_confirm_and_reclaim(
 
     review_url = ""
     deadline = time.monotonic() + graded_timeout
-    while time.monotonic() < deadline:
+    # 自动检测到的情况：把它找出来填进 review_url，直接跳过下面的等待
+    if auto_detected and auto_url:
+        review_url = auto_url          # 就是刚才检测到的那个，不重找
+    while not review_url and time.monotonic() < deadline:
         for url in _gchrome.page_urls(port):
             low = url.lower()
             if "viewexam.aspx" in low:

@@ -48,11 +48,14 @@ class TestWorkReviewScript(unittest.TestCase):
         self.assertIn('"type_map": type_map', seg)
 
     def test_cancel_phase_exits_cleanly(self):
-        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:3000]
+        # ⚠ 2026-11-28：这个函数体变长了（加了自动检测判分页的逻辑），
+        # 原来取前 3000 字符已经够不到 `phase == "cancel"`。放宽到 8000。
+        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:8000]
         self.assertIn('phase == "cancel"', seg)
 
     def test_cleans_signal_on_exit(self):
-        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:3000]
+        # 同上：函数体变长，放宽窗口。
+        seg = SCRIPT.split("def _await_confirm_and_reclaim(", 1)[1][:8000]
         self.assertIn("signal.unlink(missing_ok=True)", seg)
 
     def test_only_when_filled(self):

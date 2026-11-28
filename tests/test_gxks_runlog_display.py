@@ -17,7 +17,7 @@
 2. **别抢用户的滚动**：用户往上翻看历史时，重绘后**还原原来的 scrollTop**，
    否则每 4 秒把他拽回底部，同样很难用。
 
-另外把容器限高（`max-height:min(52vh,520px)`）—— 原来没有固定高度，
+另外把容器限高（`max-height:min(72vh,900px)`）—— 原来没有固定高度，
 日志一长整页被撑得很高。
 """
 
@@ -30,7 +30,7 @@ from xxt.panel_gxks.page import PAGE
 
 class TestRunLogHeight(unittest.TestCase):
     def test_container_has_max_height(self):
-        self.assertIn("#runlog{max-height:min(52vh,520px)", PAGE,
+        self.assertIn("#runlog{max-height:min(72vh,900px)", PAGE,
                       "运行日志要限高并在内部滚动，否则整页被长日志撑高")
 
     def test_container_scrolls(self):
@@ -39,7 +39,7 @@ class TestRunLogHeight(unittest.TestCase):
 
     def test_mobile_breakpoint(self):
         """窄屏也要限高（375px 约定）。"""
-        self.assertIn("#runlog{max-height:46vh}", PAGE)
+        self.assertIn("#runlog{max-height:56vh}", PAGE)
 
 
 class TestRunLogAutoScroll(unittest.TestCase):

@@ -590,7 +590,11 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
    - 原来没有固定高度，日志一长整页被撑得很高；
    - 现在给 52vh 上限 + 内部滚动，默认**滚到底部看最新一行**；
    - `scroll-behavior:smooth` 让 4 秒一次的重绘不至于跳得生硬。 */
-#runlog{max-height:min(52vh,520px);overflow-y:auto;scrollbar-width:thin;
+/* 高度（2026-11-28 用户要求「把运行日志区域的显示高度增加一些，方便查看」）：
+   原来是 min(52vh,520px)，看几行就要滚，尤其多账号合并流时很局促。
+   现在放到 min(72vh,900px)——常见的 1080p 屏能显示约 500px 内容（≈26 行），
+   1280x800 这类小屏也能到 ~46vh。仍保留内部滚动，不把整页撑爆。 */
+#runlog{max-height:min(72vh,900px);overflow-y:auto;scrollbar-width:thin;
   background:#fafbfc;border:1px solid var(--line);border-radius:8px;
   padding:8px 10px}
 #runlog pre{margin:0;font-size:12.5px;line-height:1.5;white-space:pre-wrap;
@@ -598,7 +602,7 @@ tr.grp td{background:#f7f8fa;color:var(--dim);font-size:12px;font-weight:600}
 /* 「最新在上」的说明：一行小字，不占地方（2026-11-04） */
 .runlog-hint{font-size:11.5px;color:var(--dim);margin:0 0 4px;
   padding-bottom:3px;border-bottom:1px dashed var(--line)}
-@media (max-width:760px){ #runlog{max-height:46vh} }
+@media (max-width:760px){ #runlog{max-height:56vh} }
 /* 「任务已结束，这是最后一次输出」提示条（2026-11-03 用户要求保留日志回看）：
    绿色左边框 + 淡绿底，和「正在跑」区分开，一眼看出这不是实时输出。 */
 .runlog-done{margin:0 0 6px;padding:5px 9px;border-radius:6px;
